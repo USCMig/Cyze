@@ -80,3 +80,41 @@ export const startSidecar = (port: number | null) =>
 export const stopSidecar = () => invoke<void>("stop_sidecar");
 export const sidecarStatus = () => invoke<SidecarStatus>("sidecar_status");
 export const exportSidecarCert = () => invoke<string>("export_sidecar_cert");
+
+// Ceremonies
+export type Ciphersuite = "ed25519" | "redpallas";
+
+export interface StartDkgArgs {
+  suite: Ciphersuite;
+  description: string;
+  threshold: number;
+  participants: string[];
+  server_url: string | null;
+  session_id: string | null;
+}
+
+export interface PendingSession {
+  session_id: string;
+  coordinator: string | null;
+  coordinator_pubkey: string;
+  matching_groups: string[];
+}
+
+export const startDkg = (args: StartDkgArgs) => invoke<string>("start_dkg", { args });
+export const cancelCeremony = (ceremonyId: string) =>
+  invoke<void>("cancel_ceremony", { ceremonyId });
+export const createSigningSession = (args: {
+  group_id: string;
+  message_hex: string;
+  signers: string[];
+  server_url: string | null;
+}) => invoke<string>("create_signing_session", { args });
+export const joinSigningSession = (args: {
+  group_id: string;
+  session_id: string;
+  server_url: string | null;
+}) => invoke<string>("join_signing_session", { args });
+export const respondToSigning = (ceremonyId: string, approve: boolean) =>
+  invoke<void>("respond_to_signing", { ceremonyId, approve });
+export const listPendingSessions = (serverUrl: string | null) =>
+  invoke<PendingSession[]>("list_pending_sessions", { serverUrl });

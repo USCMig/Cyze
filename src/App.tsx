@@ -13,6 +13,9 @@ import Dashboard from "./screens/Dashboard";
 import Contacts from "./screens/Contacts";
 import Groups from "./screens/Groups";
 import ServerSettings from "./screens/ServerSettings";
+import DkgWizard from "./screens/DkgWizard";
+import NewSigningSession from "./screens/NewSigningSession";
+import Inbox from "./screens/Inbox";
 
 function Layout() {
   const { unlocked, loaded, setUnlocked } = useKeystore();
@@ -24,6 +27,9 @@ function Layout() {
         <NavLink to="/" end>Dashboard</NavLink>
         <NavLink to="/contacts">Contacts</NavLink>
         <NavLink to="/groups">Groups</NavLink>
+        <NavLink to="/dkg">New DKG</NavLink>
+        <NavLink to="/sign">Sign</NavLink>
+        <NavLink to="/inbox">Inbox</NavLink>
         <NavLink to="/server">Server</NavLink>
         <div className="spacer" />
         <a
@@ -53,6 +59,9 @@ const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: "contacts", element: <Contacts /> },
       { path: "groups", element: <Groups /> },
+      { path: "dkg", element: <DkgWizard /> },
+      { path: "sign", element: <NewSigningSession /> },
+      { path: "inbox", element: <Inbox /> },
       { path: "server", element: <ServerSettings /> },
     ],
   },

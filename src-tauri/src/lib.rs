@@ -32,6 +32,12 @@ pub fn run() {
             commands::server::stop_sidecar,
             commands::server::sidecar_status,
             commands::server::export_sidecar_cert,
+            commands::dkg::start_dkg,
+            commands::dkg::cancel_ceremony,
+            commands::signing::create_signing_session,
+            commands::signing::join_signing_session,
+            commands::signing::respond_to_signing,
+            commands::signing::list_pending_sessions,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
