@@ -2,7 +2,7 @@ use frost_app_core::transport::{FrostdClient, ServerTrust};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::sidecar::{self, SidecarStatus};
 use crate::state::{AppState, Settings};
 
@@ -120,7 +120,3 @@ pub async fn export_sidecar_cert(state: State<'_, AppState>) -> AppResult<String
     let (cert_pem, _, _) = sidecar::ensure_certs(&state)?;
     Ok(cert_pem)
 }
-
-/// Used by ceremony commands to silence unused import warnings until M3.
-#[allow(dead_code)]
-fn _unused(_: AppError) {}

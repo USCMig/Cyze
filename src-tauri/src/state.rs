@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use frost_app_core::keystore::Keystore;
-use frost_app_core::CoreError;
 use frost_client::cli::config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Mutex, RwLock};
@@ -114,9 +113,4 @@ impl AppState {
         let unlocked = guard.as_ref().ok_or_else(AppError::locked)?;
         f(&unlocked.config)
     }
-}
-
-/// Convert a CoreError keystore unlock failure for command results.
-pub fn core_err(e: CoreError) -> AppError {
-    e.into()
 }

@@ -26,10 +26,8 @@ pub async fn keystore_status(state: State<'_, AppState>) -> AppResult<KeystoreSt
 pub async fn create_keystore(state: State<'_, AppState>, passphrase: String) -> AppResult<()> {
     let (privkey, pubkey) = frost_client::cipher::Cipher::generate_keypair()
         .map_err(|e| AppError::new("crypto", e.to_string()))?;
-    let config = Config {
-        communication_key: Some(CommunicationKey { privkey, pubkey }),
-        ..Default::default()
-    };
+    let mut config = Config::default();
+    config.communication_key = Some(CommunicationKey { privkey, pubkey });
     let toml = frost_app_core::config::serialize_config(&config)?;
     state.keystore().create(toml.as_bytes(), &passphrase)?;
     *state.unlocked.write().await = Some(crate::state::UnlockedState {
