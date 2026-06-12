@@ -1,0 +1,38 @@
+[package]
+name = "frost-app-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+frost-client = { workspace = true }
+frost-core = { workspace = true }
+frost-ed25519 = { workspace = true }
+frost-rerandomized = { workspace = true }
+reddsa = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+argon2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+rcgen = { workspace = true }
+postcard = { workspace = true }
+bech32 = { workspace = true }
+dirs = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+# Not used directly: pins the transitive xeddsa version for frost-client,
+# which breaks against xeddsa 1.1 (rand_core trait changes).
+xeddsa = "=1.0.2"
+
+[dev-dependencies]
+tempfile = "3"

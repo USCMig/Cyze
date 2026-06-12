@@ -1,0 +1,14 @@
+//! Core logic for the FROST companion app: encrypted keystore, frostd
+//! transport, and DKG/signing ceremony state machines.
+//!
+//! This crate is Tauri-free so everything can be tested with plain
+//! `cargo test`. The Tauri app crate is a thin adapter that forwards
+//! ceremony events to the frontend.
+
+pub mod config;
+pub mod error;
+pub mod keystore;
+pub mod tls;
+pub mod transport;
+
+pub use error::CoreError;
