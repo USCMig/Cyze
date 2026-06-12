@@ -1,6 +1,41 @@
 [workspace]
-members = ["core"]
+members = [".", "core"]
 resolver = "2"
+
+[package]
+name = "frost-app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+frost-app-core = { path = "core" }
+frost-client = { workspace = true }
+frost-core = { workspace = true }
+frost-ed25519 = { workspace = true }
+frost-rerandomized = { workspace = true }
+reddsa = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+postcard = { workspace = true }
+dirs = { workspace = true }
+tracing = { workspace = true }
+
+[lib]
+name = "frost_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace.dependencies]
 frost-client = { git = "https://github.com/ZcashFoundation/frost-tools.git", rev = "3d2985cfbc5df9314f3882a6d693bbe0d711051f" }
