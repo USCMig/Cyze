@@ -26,7 +26,7 @@ pub struct StartDkgArgs {
 }
 
 #[tauri::command]
-pub async fn start_dkg(app: AppHandle, args: StartDkgArgs) -> AppResult<Uuid> {
+pub async fn start_dkg<R: tauri::Runtime>(app: AppHandle<R>, args: StartDkgArgs) -> AppResult<Uuid> {
     let state = app.state::<AppState>();
 
     let server_url = match args.server_url {
@@ -154,7 +154,7 @@ pub async fn start_dkg(app: AppHandle, args: StartDkgArgs) -> AppResult<Uuid> {
 }
 
 #[tauri::command]
-pub async fn cancel_ceremony(app: AppHandle, ceremony_id: Uuid) -> AppResult<()> {
+pub async fn cancel_ceremony<R: tauri::Runtime>(app: AppHandle<R>, ceremony_id: Uuid) -> AppResult<()> {
     let state = app.state::<AppState>();
     if let Some(handle) = state.ceremonies.lock().await.remove(&ceremony_id) {
         handle.cancel.cancel();

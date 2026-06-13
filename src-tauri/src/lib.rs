@@ -1,7 +1,7 @@
-mod commands;
-mod error;
-mod sidecar;
-mod state;
+pub mod commands;
+pub mod error;
+pub mod sidecar;
+pub mod state;
 
 use state::AppState;
 use tauri::Manager;

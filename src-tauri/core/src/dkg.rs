@@ -4,7 +4,7 @@
 //! and `frost_client::cli::dkg`, restructured as a cancellable async task
 //! that reports progress over an mpsc channel instead of stdin/stdout.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use frost_client::api::{self, PublicKey, Uuid};
 use frost_client::cipher::{Cipher, PrivateKey};
@@ -104,25 +104,35 @@ async fn run_dkg_generic<C: Ciphersuite + MaybeIntoEvenY + 'static>(
 
     let result = run_rounds::<C>(&client, session_id, &params, &events, &cancel).await;
 
-    // Cleanup: initiators close the session on failure (and on success,
-    // below); everyone logs out.
+    // Cleanup. On success the initiator must NOT close the session right
+    // away: other participants may still need to fetch their final round 2
+    // packages from the server queue (closing drops it). Defer the close by
+    // a grace period covering a few poll intervals.
     match &result {
-        Ok(_) => {
-            if is_initiator {
+        Ok(_) if is_initiator => {
+            let mut client = client;
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 let _ = client
                     .close_session(&api::CloseSessionArgs { session_id })
                     .await;
-            }
+                let _ = client.logout().await;
+            });
+        }
+        Ok(_) => {
+            let _ = client.logout().await;
         }
         Err(_) => {
+            // On failure, tear down immediately so peers fail fast instead
+            // of waiting on a dead ceremony.
             if is_initiator {
                 let _ = client
                     .close_session(&api::CloseSessionArgs { session_id })
                     .await;
             }
+            let _ = client.logout().await;
         }
     }
-    let _ = client.logout().await;
     result
 }
 
@@ -224,9 +234,13 @@ async fn run_rounds<C: Ciphersuite + MaybeIntoEvenY + 'static>(
     }
     let _ = events.send(DkgEvent::Round1).await;
 
-    poll_until(client, session_id, &mut cipher, &mut state, identifier, cancel, |s| {
-        s.has_round1_packages()
-    })
+    // Decrypted messages that arrived ahead of the phase that consumes them.
+    let mut pending = VecDeque::new();
+
+    poll_until(
+        client, session_id, &mut cipher, &mut state, identifier, cancel, &mut pending,
+        |s| s.has_round1_packages(),
+    )
     .await?;
 
     // Echo-broadcast round (only needed for 3+ participants).
@@ -257,9 +271,10 @@ async fn run_rounds<C: Ciphersuite + MaybeIntoEvenY + 'static>(
                     .await?;
             }
         }
-        poll_until(client, session_id, &mut cipher, &mut state, identifier, cancel, |s| {
-            s.has_round1_broadcast_packages()
-        })
+        poll_until(
+            client, session_id, &mut cipher, &mut state, identifier, cancel, &mut pending,
+            |s| s.has_round1_broadcast_packages(),
+        )
         .await?;
     }
 
@@ -293,9 +308,10 @@ async fn run_rounds<C: Ciphersuite + MaybeIntoEvenY + 'static>(
     }
     let _ = events.send(DkgEvent::Round2).await;
 
-    poll_until(client, session_id, &mut cipher, &mut state, identifier, cancel, |s| {
-        s.has_round2_packages()
-    })
+    poll_until(
+        client, session_id, &mut cipher, &mut state, identifier, cancel, &mut pending,
+        |s| s.has_round2_packages(),
+    )
     .await?;
 
     let _ = events.send(DkgEvent::Finalizing).await;
@@ -345,8 +361,15 @@ async fn run_rounds<C: Ciphersuite + MaybeIntoEvenY + 'static>(
     Ok(DkgOutput { group_id, group })
 }
 
-/// Poll `/receive`, decrypt and feed messages to the session state, until
-/// `done` returns true. Respects cancellation between polls.
+/// Poll `/receive`, decrypt and feed messages to the session state one at a
+/// time, until `done` returns true. Stops at the phase boundary: messages
+/// beyond the current phase stay in `pending` for the next phase's poll.
+///
+/// This matters because peers that are ahead of us can deliver packages for
+/// two phases in a single `/receive` batch (common on fast networks).
+/// Feeding them all into the state machine at once would advance it past
+/// the state the caller needs to read intermediate results from (e.g. the
+/// round 1 packages required by `dkg::part2`).
 async fn poll_until<C: Ciphersuite>(
     client: &FrostdClient,
     session_id: Uuid,
@@ -354,27 +377,50 @@ async fn poll_until<C: Ciphersuite>(
     state: &mut DKGSessionState<C>,
     identifier: Identifier<C>,
     cancel: &CancellationToken,
+    pending: &mut VecDeque<api::Msg>,
     done: impl Fn(&DKGSessionState<C>) -> bool,
 ) -> Result<(), CoreError> {
     loop {
+        // Feed buffered messages. A message that doesn't fit the current
+        // phase (a peer ahead of us, interleaved in the server's FIFO) is
+        // requeued for a later phase rather than failing the ceremony.
+        let mut requeued = VecDeque::new();
+        while let Some(msg) = pending.pop_front() {
+            match state.recv(msg.clone(), identifier) {
+                Ok(()) => {
+                    if done(state) {
+                        requeued.append(pending);
+                        *pending = requeued;
+                        return Ok(());
+                    }
+                }
+                Err(_) => requeued.push_back(msg),
+            }
+        }
+        *pending = requeued;
+        if done(state) {
+            return Ok(());
+        }
         let r = client
             .receive(&api::ReceiveArgs {
                 session_id,
                 as_coordinator: false,
             })
             .await?;
+        let got_new = !r.msgs.is_empty();
         for msg in r.msgs {
+            // Decrypt immediately (the Noise session is ordered) but defer
+            // state processing to the loop above.
             let msg = cipher
                 .decrypt(msg)
                 .map_err(|e| CoreError::Crypto(e.to_string()))?;
-            state.recv(msg, identifier).map_err(cerr)?;
+            pending.push_back(msg);
         }
-        if done(state) {
-            return Ok(());
-        }
-        tokio::select! {
-            _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+        if !got_new {
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(CoreError::Cancelled),
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            }
         }
     }
 }

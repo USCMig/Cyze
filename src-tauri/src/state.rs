@@ -55,6 +55,10 @@ impl AppState {
                     .expect("no local data dir on this platform")
                     .join("frost-app")
             });
+        Self::with_dir(data_dir)
+    }
+
+    pub fn with_dir(data_dir: PathBuf) -> Self {
         Self {
             data_dir,
             unlocked: RwLock::new(None),

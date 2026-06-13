@@ -33,6 +33,10 @@ postcard = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+
 [lib]
 name = "frost_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

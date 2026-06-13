@@ -49,8 +49,8 @@ pub struct CreateSigningSessionArgs {
 }
 
 #[tauri::command]
-pub async fn create_signing_session(
-    app: AppHandle,
+pub async fn create_signing_session<R: tauri::Runtime>(
+    app: AppHandle<R>,
     args: CreateSigningSessionArgs,
 ) -> AppResult<Uuid> {
     let state = app.state::<AppState>();
@@ -158,8 +158,8 @@ pub struct JoinSigningSessionArgs {
 }
 
 #[tauri::command]
-pub async fn join_signing_session(
-    app: AppHandle,
+pub async fn join_signing_session<R: tauri::Runtime>(
+    app: AppHandle<R>,
     args: JoinSigningSessionArgs,
 ) -> AppResult<Uuid> {
     let state = app.state::<AppState>();
