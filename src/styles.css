@@ -166,3 +166,64 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
   overflow-y: auto;
   white-space: pre-wrap;
 }
+
+/* Grouped sidebar navigation */
+.nav-section { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.nav-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  opacity: 0.7;
+  padding: 6px 12px 2px;
+}
+.sidebar a { display: flex; align-items: center; gap: 8px; }
+
+.nav-pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.6);
+  animation: nav-pulse 1.6s infinite;
+}
+@keyframes nav-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.6); }
+  70% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); }
+}
+
+/* Dashboard getting-started checklist */
+.checklist { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.checkstep {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+.checkstep.current {
+  border-color: var(--accent);
+  background: rgba(96, 165, 250, 0.06);
+}
+.checkstep-dot {
+  flex: 0 0 26px;
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.checkstep.done .checkstep-dot {
+  background: transparent;
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.checkstep.current .checkstep-dot {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.checkstep-body { flex: 1; }
+.checkstep-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.checkstep button { white-space: nowrap; }

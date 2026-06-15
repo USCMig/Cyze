@@ -45,6 +45,12 @@ export interface ConnectionTestResult {
   error: string | null;
 }
 
+export interface TunnelStatus {
+  running: boolean;
+  public_url: string | null;
+  port: number | null;
+}
+
 // Keystore
 export const keystoreStatus = () => invoke<KeystoreStatus>("keystore_status");
 export const createKeystore = (passphrase: string) =>
@@ -80,6 +86,9 @@ export const startSidecar = (port: number | null) =>
 export const stopSidecar = () => invoke<void>("stop_sidecar");
 export const sidecarStatus = () => invoke<SidecarStatus>("sidecar_status");
 export const exportSidecarCert = () => invoke<string>("export_sidecar_cert");
+export const startTunnel = () => invoke<TunnelStatus>("start_tunnel");
+export const stopTunnel = () => invoke<void>("stop_tunnel");
+export const tunnelStatus = () => invoke<TunnelStatus>("tunnel_status");
 
 // Ceremonies
 export type Ciphersuite = "ed25519" | "redpallas";

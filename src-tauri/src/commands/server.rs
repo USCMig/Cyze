@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::error::AppResult;
 use crate::sidecar::{self, SidecarStatus};
 use crate::state::{AppState, Settings};
+use crate::tunnel::{self, TunnelStatus};
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> AppResult<Settings> {
@@ -106,7 +107,40 @@ pub async fn start_sidecar(app: AppHandle, port: Option<u16>) -> AppResult<Sidec
 
 #[tauri::command]
 pub async fn stop_sidecar(state: State<'_, AppState>) -> AppResult<()> {
+    // The tunnel points at the embedded server; stopping the server makes it
+    // dead weight, so tear it down too.
+    let _ = tunnel::stop(&state).await;
     sidecar::stop(&state).await
+}
+
+/// Start a Cloudflare quick tunnel in front of the running embedded server,
+/// returning the public `https://*.trycloudflare.com` URL participants can use.
+#[tauri::command]
+pub async fn start_tunnel(app: AppHandle) -> AppResult<TunnelStatus> {
+    let state = app.state::<AppState>();
+    let port = {
+        let guard = state.sidecar.lock().await;
+        match guard.as_ref() {
+            Some(handle) => handle.port,
+            None => {
+                return Err(crate::error::AppError::new(
+                    "tunnel",
+                    "start the embedded server before opening a tunnel",
+                ))
+            }
+        }
+    };
+    tunnel::start(&app, port).await
+}
+
+#[tauri::command]
+pub async fn stop_tunnel(state: State<'_, AppState>) -> AppResult<()> {
+    tunnel::stop(&state).await
+}
+
+#[tauri::command]
+pub async fn tunnel_status(state: State<'_, AppState>) -> AppResult<TunnelStatus> {
+    Ok(tunnel::status(&state).await)
 }
 
 #[tauri::command]

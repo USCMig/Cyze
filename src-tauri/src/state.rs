@@ -44,6 +44,8 @@ pub struct AppState {
     pub unlocked: RwLock<Option<UnlockedState>>,
     pub ceremonies: Mutex<HashMap<Uuid, CeremonyHandle>>,
     pub sidecar: Mutex<Option<crate::sidecar::SidecarHandle>>,
+    /// Optional Cloudflare quick tunnel exposing the embedded server publicly.
+    pub tunnel: Mutex<Option<crate::tunnel::TunnelHandle>>,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             unlocked: RwLock::new(None),
             ceremonies: Mutex::new(HashMap::new()),
             sidecar: Mutex::new(None),
+            tunnel: Mutex::new(None),
         }
     }
 

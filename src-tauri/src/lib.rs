@@ -2,6 +2,7 @@ pub mod commands;
 pub mod error;
 pub mod sidecar;
 pub mod state;
+pub mod tunnel;
 
 use state::AppState;
 use tauri::Manager;
@@ -32,6 +33,9 @@ pub fn run() {
             commands::server::stop_sidecar,
             commands::server::sidecar_status,
             commands::server::export_sidecar_cert,
+            commands::server::start_tunnel,
+            commands::server::stop_tunnel,
+            commands::server::tunnel_status,
             commands::dkg::start_dkg,
             commands::dkg::cancel_ceremony,
             commands::signing::create_signing_session,
@@ -48,6 +52,11 @@ pub fn run() {
                     if let Ok(mut guard) = state.sidecar.try_lock() {
                         if let Some(handle) = guard.take() {
                             let _ = handle.child.kill();
+                        }
+                    }
+                    if let Ok(mut guard) = state.tunnel.try_lock() {
+                        if let Some(mut handle) = guard.take() {
+                            let _ = handle.child.start_kill();
                         }
                     }
                 }

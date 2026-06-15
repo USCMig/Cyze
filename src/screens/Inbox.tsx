@@ -7,8 +7,7 @@ import {
   respondToSigning,
   AppError,
 } from "../ipc/commands";
-import { useTauriEvent } from "../ipc/events";
-import { useCeremonies, CeremonyEventPayload } from "../stores/ceremonies";
+import { useCeremonies } from "../stores/ceremonies";
 
 function hexToUtf8(hex: string): string {
   try {
@@ -31,10 +30,8 @@ export default function Inbox() {
   const [joined, setJoined] = useState<Record<string, string>>({}); // session -> ceremony
   const [error, setError] = useState<string | null>(null);
 
-  const { ceremonies, onProgress, onComplete, onFailed } = useCeremonies();
-  useTauriEvent<CeremonyEventPayload>("signing:progress", (p) => onProgress("signing", p));
-  useTauriEvent<CeremonyEventPayload>("signing:complete", (p) => onComplete("signing", p));
-  useTauriEvent<CeremonyEventPayload>("signing:failed", (p) => onFailed("signing", p));
+  // Listeners are mounted globally in CeremonyListener; just read the store.
+  const { ceremonies } = useCeremonies();
 
   const join = async (sessionId: string, groupId: string) => {
     setError(null);

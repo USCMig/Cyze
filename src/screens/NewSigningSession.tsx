@@ -8,8 +8,7 @@ import {
   listGroups,
   AppError,
 } from "../ipc/commands";
-import { useTauriEvent } from "../ipc/events";
-import { useCeremonies, CeremonyEventPayload } from "../stores/ceremonies";
+import { useCeremonies } from "../stores/ceremonies";
 
 const PHASES: Record<string, string> = {
   connecting: "Connecting to server",
@@ -28,14 +27,13 @@ export default function NewSigningSession() {
   const [messageMode, setMessageMode] = useState<"text" | "hex">("text");
   const [message, setMessage] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [ceremonyId, setCeremonyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const { ceremonies, onProgress, onComplete, onFailed } = useCeremonies();
-  useTauriEvent<CeremonyEventPayload>("signing:progress", (p) => onProgress("signing", p));
-  useTauriEvent<CeremonyEventPayload>("signing:complete", (p) => onComplete("signing", p));
-  useTauriEvent<CeremonyEventPayload>("signing:failed", (p) => onFailed("signing", p));
+  // Active coordinator session lives in the global store (listeners are
+  // mounted globally in CeremonyListener), so it survives leaving the screen.
+  const { ceremonies, activeSigningId, setActiveSigning } = useCeremonies();
+  const ceremonyId = activeSigningId;
 
   const group = groups.data?.find((g) => g.id === groupId);
   const ceremony = ceremonyId ? ceremonies[ceremonyId] : undefined;
@@ -69,7 +67,7 @@ export default function NewSigningSession() {
         signers: [...selected],
         server_url: null,
       });
-      setCeremonyId(id);
+      setActiveSigning(id);
     } catch (e) {
       setError((e as AppError).message ?? String(e));
     }
@@ -101,7 +99,7 @@ export default function NewSigningSession() {
                 className="danger"
                 onClick={async () => {
                   if (ceremonyId) await cancelCeremony(ceremonyId);
-                  setCeremonyId(null);
+                  setActiveSigning(null);
                 }}
               >
                 Cancel session
@@ -123,7 +121,7 @@ export default function NewSigningSession() {
                 >
                   {copied ? "Copied!" : "Copy signature"}
                 </button>
-                <button className="secondary" onClick={() => setCeremonyId(null)}>
+                <button className="secondary" onClick={() => setActiveSigning(null)}>
                   New session
                 </button>
               </div>
@@ -132,7 +130,7 @@ export default function NewSigningSession() {
           {ceremony.failed && (
             <>
               <p className="error">{ceremony.error}</p>
-              <button className="secondary" onClick={() => setCeremonyId(null)}>
+              <button className="secondary" onClick={() => setActiveSigning(null)}>
                 Back
               </button>
             </>

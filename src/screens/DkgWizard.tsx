@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
   cancelCeremony,
@@ -10,8 +10,7 @@ import {
   AppError,
   Ciphersuite,
 } from "../ipc/commands";
-import { useTauriEvent } from "../ipc/events";
-import { useCeremonies, CeremonyEventPayload } from "../stores/ceremonies";
+import { useCeremonies } from "../stores/ceremonies";
 
 const DKG_PHASES: Record<string, string> = {
   connecting: "Connecting to server",
@@ -25,7 +24,6 @@ const DKG_PHASES: Record<string, string> = {
 };
 
 export default function DkgWizard() {
-  const queryClient = useQueryClient();
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
   const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
@@ -36,17 +34,13 @@ export default function DkgWizard() {
   const [threshold, setThreshold] = useState(2);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [serverUrl, setServerUrl] = useState<string | null>(null);
-  const [ceremonyId, setCeremonyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { ceremonies, onProgress, onComplete, onFailed } = useCeremonies();
-  useTauriEvent<CeremonyEventPayload>("dkg:progress", (p) => onProgress("dkg", p));
-  useTauriEvent<CeremonyEventPayload>("dkg:complete", (p) => {
-    onComplete("dkg", p);
-    queryClient.invalidateQueries({ queryKey: ["groups"] });
-  });
-  useTauriEvent<CeremonyEventPayload>("dkg:failed", (p) => onFailed("dkg", p));
-
+  // The active ceremony id lives in the global store, not local state, so it
+  // survives navigating away and back (and even a reload) while the backend
+  // ceremony keeps running. Listeners are mounted globally in CeremonyListener.
+  const { ceremonies, activeDkgId, setActiveDkg } = useCeremonies();
+  const ceremonyId = activeDkgId;
   const ceremony = ceremonyId ? ceremonies[ceremonyId] : undefined;
 
   const effectiveServer = useMemo(() => {
@@ -68,7 +62,7 @@ export default function DkgWizard() {
         server_url: effectiveServer || null,
         session_id: null,
       });
-      setCeremonyId(id);
+      setActiveDkg(id);
     } catch (e) {
       setError((e as AppError).message ?? String(e));
     }
@@ -110,18 +104,30 @@ export default function DkgWizard() {
           )}
           {ceremony.failed && <p className="error">{ceremony.error}</p>}
           {!ceremony.done && (
-            <button
-              className="danger"
-              onClick={async () => {
-                if (ceremonyId) await cancelCeremony(ceremonyId);
-                setCeremonyId(null);
-              }}
-            >
-              Cancel ceremony
-            </button>
+            <>
+              <p className="dim">
+                This ceremony runs in the background — you can leave this screen
+                and come back; it stays attached until it finishes.
+              </p>
+              <div className="row">
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    if (ceremonyId) await cancelCeremony(ceremonyId);
+                    setActiveDkg(null);
+                  }}
+                >
+                  Cancel ceremony
+                </button>
+              </div>
+            </>
           )}
           {ceremony.done && (
-            <button className="secondary" style={{ marginLeft: 8 }} onClick={() => setCeremonyId(null)}>
+            <button
+              className="secondary"
+              style={{ marginLeft: 8 }}
+              onClick={() => setActiveDkg(null)}
+            >
               New ceremony
             </button>
           )}

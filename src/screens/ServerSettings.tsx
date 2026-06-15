@@ -6,9 +6,12 @@ import {
   setServerUrl,
   sidecarStatus,
   startSidecar,
+  startTunnel,
   stopSidecar,
+  stopTunnel,
   testServerConnection,
   trustServerCert,
+  tunnelStatus,
   AppError,
 } from "../ipc/commands";
 import { useTauriEvent } from "../ipc/events";
@@ -17,6 +20,7 @@ export default function ServerSettings() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
+  const tunnel = useQuery({ queryKey: ["tunnel"], queryFn: tunnelStatus });
 
   const [url, setUrl] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -26,6 +30,7 @@ export default function ServerSettings() {
   const [exportedCert, setExportedCert] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [tunnelCopied, setTunnelCopied] = useState(false);
 
   useTauriEvent<string>("sidecar:log", (line) =>
     setLogs((prev) => [...prev.slice(-200), line])
@@ -33,6 +38,25 @@ export default function ServerSettings() {
   useTauriEvent<number | null>("sidecar:exited", () =>
     queryClient.invalidateQueries({ queryKey: ["sidecar"] })
   );
+  useTauriEvent<string>("tunnel:ready", () =>
+    queryClient.invalidateQueries({ queryKey: ["tunnel"] })
+  );
+  useTauriEvent<null>("tunnel:exited", () =>
+    queryClient.invalidateQueries({ queryKey: ["tunnel"] })
+  );
+
+  const openTunnel = useMutation({
+    mutationFn: startTunnel,
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["tunnel"] });
+    },
+    onError: (e) => setError((e as unknown as AppError).message),
+  });
+  const closeTunnel = useMutation({
+    mutationFn: stopTunnel,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tunnel"] }),
+  });
 
   const effectiveUrl = url ?? settings.data?.server_url ?? "";
 
@@ -47,7 +71,10 @@ export default function ServerSettings() {
 
   const stop = useMutation({
     mutationFn: stopSidecar,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sidecar"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sidecar"] });
+      queryClient.invalidateQueries({ queryKey: ["tunnel"] });
+    },
   });
 
   return (
@@ -122,6 +149,63 @@ export default function ServerSettings() {
             <label>Server log</label>
             <div className="log">{logs.join("")}</div>
           </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>Public access (Cloudflare tunnel)</h3>
+        {!sidecar.data?.running ? (
+          <p className="dim">
+            Start the embedded server first. A tunnel then makes it reachable
+            from the internet — no router port-forwarding required.
+          </p>
+        ) : tunnel.data?.running && tunnel.data.public_url ? (
+          <>
+            <p>
+              <span className="badge green">tunnel up</span>
+            </p>
+            <label>Public URL — share this with participants</label>
+            <div className="mono">{tunnel.data.public_url}</div>
+            <p className="dim" style={{ marginTop: 6 }}>
+              Cloudflare presents a valid certificate, so participants connect
+              with this URL as their server and <strong>do not</strong> need to
+              trust your self-signed certificate. Anyone with the URL can reach
+              your server, so only share it with intended participants.
+            </p>
+            <div className="row" style={{ marginTop: 10 }}>
+              <button
+                onClick={async () => {
+                  await navigator.clipboard.writeText(tunnel.data!.public_url!);
+                  setTunnelCopied(true);
+                  setTimeout(() => setTunnelCopied(false), 1500);
+                }}
+              >
+                {tunnelCopied ? "Copied!" : "Copy URL"}
+              </button>
+              <button
+                className="danger"
+                onClick={() => closeTunnel.mutate()}
+                disabled={closeTunnel.isPending}
+              >
+                Close tunnel
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="dim">
+              Open a public HTTPS endpoint in front of the embedded server so
+              participants on other networks can connect — no firewall changes
+              needed. Requires <span className="mono">cloudflared</span> to be
+              installed and on your PATH.
+            </p>
+            <button
+              onClick={() => openTunnel.mutate()}
+              disabled={openTunnel.isPending}
+            >
+              {openTunnel.isPending ? "Opening tunnel…" : "Open public tunnel"}
+            </button>
+          </>
         )}
       </div>
 
