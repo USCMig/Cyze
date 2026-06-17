@@ -4,11 +4,82 @@ import { useKeystore } from "../stores/keystore";
 import {
   createKeystore,
   importUpstreamConfig,
+  recoverKeystore,
   unlockKeystore,
   AppError,
 } from "../ipc/commands";
 
-type Mode = "unlock" | "create" | "import";
+type Mode = "unlock" | "create" | "import" | "recover";
+
+/** One-time display of the recovery phrase, with a serious acknowledgement
+ *  gate before the user can proceed into the app. */
+function RecoveryBackup({
+  phrase,
+  onContinue,
+}: {
+  phrase: string;
+  onContinue: () => void;
+}) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const words = phrase.split(/\s+/);
+
+  return (
+    <div className="unlock-wrap">
+      <div className="card unlock-card wide">
+        <h2>Save your recovery code</h2>
+        <div className="recovery-alert">
+          <strong>This is the only time these words will ever be shown.</strong>{" "}
+          They are the <em>only</em> way to regain access if you forget your
+          passphrase. Anyone who obtains them can decrypt your keys. We never
+          store them and cannot recover them for you.
+        </div>
+        <p className="dim">
+          Write them down on paper or save them in a password manager, in order.
+          Do not screenshot them or store them in plain text on this device.
+        </p>
+
+        <div className="mnemonic-grid">
+          {words.map((w, i) => (
+            <div className="mnemonic-word" key={i}>
+              <span className="mnemonic-index">{i + 1}</span>
+              {w}
+            </div>
+          ))}
+        </div>
+
+        <div className="row" style={{ marginTop: 12 }}>
+          <button
+            className="secondary"
+            onClick={async () => {
+              await navigator.clipboard.writeText(phrase);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? "Copied to clipboard" : "Copy recovery code"}
+          </button>
+        </div>
+
+        <label className="ack-checkbox">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(e) => setAcknowledged(e.target.checked)}
+          />
+          <span>
+            I have guaranteed that I have made a copy of my encryption code, and
+            I understand it cannot be recovered if lost.
+          </span>
+        </label>
+
+        <button disabled={!acknowledged} onClick={onContinue}>
+          I have saved my recovery code — continue
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Unlock() {
   const { exists, loaded, refresh, setUnlocked } = useKeystore();
@@ -16,32 +87,59 @@ export default function Unlock() {
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
   const [importPath, setImportPath] = useState("");
+  const [recoveryInput, setRecoveryInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingPhrase, setPendingPhrase] = useState<string | null>(null);
   const navigate = useNavigate();
 
   if (!loaded) return null;
   const effectiveMode: Mode = mode ?? (exists ? "unlock" : "create");
 
+  const enter = async () => {
+    setUnlocked(true);
+    await refresh();
+    navigate("/");
+  };
+
+  // After create/import, hold here until the recovery code is acknowledged.
+  if (pendingPhrase) {
+    return <RecoveryBackup phrase={pendingPhrase} onContinue={enter} />;
+  }
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (effectiveMode !== "unlock" && passphrase !== confirm) {
+    const settingNewPass =
+      effectiveMode === "create" ||
+      effectiveMode === "import" ||
+      effectiveMode === "recover";
+    if (settingNewPass && passphrase !== confirm) {
       setError("Passphrases do not match");
       return;
     }
-    if (effectiveMode !== "unlock" && passphrase.length < 8) {
+    if (settingNewPass && passphrase.length < 8) {
       setError("Use at least 8 characters");
       return;
     }
     setBusy(true);
     try {
-      if (effectiveMode === "unlock") await unlockKeystore(passphrase);
-      else if (effectiveMode === "create") await createKeystore(passphrase);
-      else await importUpstreamConfig(importPath.trim() || null, passphrase);
-      setUnlocked(true);
-      await refresh();
-      navigate("/");
+      if (effectiveMode === "unlock") {
+        await unlockKeystore(passphrase);
+        await enter();
+      } else if (effectiveMode === "recover") {
+        await recoverKeystore(recoveryInput.trim(), passphrase);
+        await enter();
+      } else if (effectiveMode === "create") {
+        const phrase = await createKeystore(passphrase);
+        setPendingPhrase(phrase); // show the backup gate before entering
+      } else {
+        const phrase = await importUpstreamConfig(
+          importPath.trim() || null,
+          passphrase
+        );
+        setPendingPhrase(phrase);
+      }
     } catch (err) {
       const e = err as AppError;
       setError(e.message ?? String(err));
@@ -50,27 +148,37 @@ export default function Unlock() {
     }
   };
 
+  const title =
+    effectiveMode === "unlock"
+      ? "Unlock keystore"
+      : effectiveMode === "create"
+        ? "Create keystore"
+        : effectiveMode === "recover"
+          ? "Recover with your code"
+          : "Import frost-client config";
+
   return (
     <div className="unlock-wrap">
       <div className="card unlock-card">
-        <h2>
-          {effectiveMode === "unlock"
-            ? "Unlock keystore"
-            : effectiveMode === "create"
-              ? "Create keystore"
-              : "Import frost-client config"}
-        </h2>
+        <h2>{title}</h2>
         {effectiveMode === "create" && (
           <p className="dim">
             A new communication keypair will be generated and stored in a
-            passphrase-encrypted keystore.
+            passphrase-encrypted keystore. You'll then be shown a one-time
+            recovery code to back up.
           </p>
         )}
         {effectiveMode === "import" && (
           <p className="dim">
-            Imports an existing plaintext frost-client credentials.toml
-            (leave the path empty for the default location) into an encrypted
-            keystore.
+            Imports an existing plaintext frost-client credentials.toml (leave
+            the path empty for the default location) into an encrypted keystore.
+            You'll then be shown a one-time recovery code to back up.
+          </p>
+        )}
+        {effectiveMode === "recover" && (
+          <p className="dim">
+            Enter your 12-word recovery code and choose a new passphrase. This
+            works only if you saved your recovery code when you set up the app.
           </p>
         )}
         <form onSubmit={submit}>
@@ -85,7 +193,20 @@ export default function Unlock() {
               />
             </>
           )}
-          <label>Passphrase</label>
+          {effectiveMode === "recover" && (
+            <>
+              <label>Recovery code (12 words)</label>
+              <textarea
+                rows={3}
+                placeholder="word1 word2 word3 …"
+                value={recoveryInput}
+                onChange={(e) => setRecoveryInput(e.target.value)}
+              />
+            </>
+          )}
+          <label>
+            {effectiveMode === "recover" ? "New passphrase" : "Passphrase"}
+          </label>
           <input
             type="password"
             autoFocus
@@ -104,23 +225,44 @@ export default function Unlock() {
           )}
           {error && <div className="error">{error}</div>}
           <div className="row">
-            <button type="submit" disabled={busy || !passphrase}>
+            <button
+              type="submit"
+              disabled={
+                busy ||
+                !passphrase ||
+                (effectiveMode === "recover" && !recoveryInput.trim())
+              }
+            >
               {busy
                 ? "Working…"
                 : effectiveMode === "unlock"
                   ? "Unlock"
                   : effectiveMode === "create"
                     ? "Create"
-                    : "Import"}
+                    : effectiveMode === "recover"
+                      ? "Recover"
+                      : "Import"}
             </button>
           </div>
         </form>
         <p className="dim" style={{ marginTop: 16 }}>
-          {exists && effectiveMode !== "unlock" && (
-            <a href="#" onClick={() => setMode("unlock")}>
-              Unlock existing keystore
+          {exists && effectiveMode === "unlock" && (
+            <a href="#" onClick={() => setMode("recover")}>
+              Forgot your passphrase? Recover with your code
             </a>
           )}
+          {exists && effectiveMode === "recover" && (
+            <a href="#" onClick={() => setMode("unlock")}>
+              Back to unlock
+            </a>
+          )}
+          {exists &&
+            effectiveMode !== "unlock" &&
+            effectiveMode !== "recover" && (
+              <a href="#" onClick={() => setMode("unlock")}>
+                Unlock existing keystore
+              </a>
+            )}
           {!exists && effectiveMode !== "import" && (
             <a href="#" onClick={() => setMode("import")}>
               Import existing frost-client config instead

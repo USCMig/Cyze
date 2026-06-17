@@ -30,7 +30,7 @@ export default function ServerSettings() {
   const [exportedCert, setExportedCert] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [tunnelCopied, setTunnelCopied] = useState(false);
+  const [tunnelCopied, setTunnelCopied] = useState<"app" | "cli" | null>(null);
 
   useTauriEvent<string>("sidecar:log", (line) =>
     setLogs((prev) => [...prev.slice(-200), line])
@@ -164,32 +164,57 @@ export default function ServerSettings() {
             <p>
               <span className="badge green">tunnel up</span>
             </p>
-            <label>Public URL — share this with participants</label>
-            <div className="mono">{tunnel.data.public_url}</div>
-            <p className="dim" style={{ marginTop: 6 }}>
-              Cloudflare presents a valid certificate, so participants connect
-              with this URL as their server and <strong>do not</strong> need to
-              trust your self-signed certificate. Anyone with the URL can reach
-              your server, so only share it with intended participants.
-            </p>
-            <div className="row" style={{ marginTop: 10 }}>
-              <button
-                onClick={async () => {
-                  await navigator.clipboard.writeText(tunnel.data!.public_url!);
-                  setTunnelCopied(true);
-                  setTimeout(() => setTunnelCopied(false), 1500);
-                }}
-              >
-                {tunnelCopied ? "Copied!" : "Copy URL"}
-              </button>
-              <button
-                className="danger"
-                onClick={() => closeTunnel.mutate()}
-                disabled={closeTunnel.isPending}
-              >
-                Close tunnel
-              </button>
-            </div>
+            {(() => {
+              const fullUrl = tunnel.data.public_url;
+              // The frost-client CLI prepends https:// itself and parses the
+              // host, so it needs the bare hostname (no scheme / trailing slash).
+              const bareHost = fullUrl
+                .replace(/^https?:\/\//, "")
+                .replace(/\/+$/, "");
+              const copy = async (which: "app" | "cli", value: string) => {
+                await navigator.clipboard.writeText(value);
+                setTunnelCopied(which);
+                setTimeout(() => setTunnelCopied(null), 1500);
+              };
+              return (
+                <>
+                  <label>For this app (paste as the participant's server)</label>
+                  <div className="mono">{fullUrl}</div>
+                  <label style={{ marginTop: 10 }}>
+                    For the frost-client CLI (<span className="mono">-s</span>{" "}
+                    value — no <span className="mono">https://</span>)
+                  </label>
+                  <div className="mono">{bareHost}</div>
+                  <p className="dim" style={{ marginTop: 6 }}>
+                    Cloudflare presents a valid certificate, so participants
+                    connect to this server and <strong>do not</strong> need to
+                    trust your self-signed certificate. Anyone with the URL can
+                    reach your server, so only share it with intended
+                    participants.
+                  </p>
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <button onClick={() => copy("app", fullUrl)}>
+                      {tunnelCopied === "app" ? "Copied!" : "Copy for app"}
+                    </button>
+                    <button
+                      className="secondary"
+                      onClick={() => copy("cli", bareHost)}
+                    >
+                      {tunnelCopied === "cli"
+                        ? "Copied!"
+                        : "Copy for frost-client CLI"}
+                    </button>
+                    <button
+                      className="danger"
+                      onClick={() => closeTunnel.mutate()}
+                      disabled={closeTunnel.isPending}
+                    >
+                      Close tunnel
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </>
         ) : (
           <>

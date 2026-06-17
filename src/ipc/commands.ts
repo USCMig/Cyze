@@ -8,6 +8,7 @@ export interface AppError {
 export interface KeystoreStatus {
   exists: boolean;
   unlocked: boolean;
+  recovery_enabled: boolean;
 }
 
 export interface ContactDto {
@@ -53,15 +54,23 @@ export interface TunnelStatus {
 
 // Keystore
 export const keystoreStatus = () => invoke<KeystoreStatus>("keystore_status");
+/** Returns the one-time 12-word recovery phrase to back up. */
 export const createKeystore = (passphrase: string) =>
-  invoke<void>("create_keystore", { passphrase });
+  invoke<string>("create_keystore", { passphrase });
+/** Returns the one-time 12-word recovery phrase to back up. */
 export const importUpstreamConfig = (path: string | null, passphrase: string) =>
-  invoke<void>("import_upstream_config", { path, passphrase });
+  invoke<string>("import_upstream_config", { path, passphrase });
 export const unlockKeystore = (passphrase: string) =>
   invoke<void>("unlock_keystore", { passphrase });
+/** Forgotten-passphrase recovery: unlock with the recovery phrase and set a new passphrase. */
+export const recoverKeystore = (recoveryPhrase: string, newPassphrase: string) =>
+  invoke<void>("recover_keystore", { recoveryPhrase, newPassphrase });
 export const lockKeystore = () => invoke<void>("lock_keystore");
 export const changePassphrase = (oldPassphrase: string, newPassphrase: string) =>
   invoke<void>("change_passphrase", { oldPassphrase, newPassphrase });
+/** Generate a recovery code for a keystore that lacks one. Returns the phrase. */
+export const generateRecoveryCode = () =>
+  invoke<string>("generate_recovery_code");
 
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");

@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::error::{AppError, AppResult};
 
@@ -24,11 +23,13 @@ pub struct Settings {
     pub trusted_certs: HashMap<String, String>,
 }
 
-/// Keystore contents held in memory while unlocked. The passphrase is kept
-/// (zeroized on lock) so config mutations can be re-encrypted transparently.
+/// Keystore contents held in memory while unlocked. The unlocked
+/// [`KeystoreFile`] carries the data-encryption key and key slots, so config
+/// mutations re-encrypt transparently without rotating the DEK or invalidating
+/// the recovery slot.
 pub struct UnlockedState {
     pub config: Config,
-    pub passphrase: Zeroizing<String>,
+    pub file: frost_app_core::keystore::KeystoreFile,
 }
 
 /// Handle to a running ceremony task (DKG or signing).
@@ -106,7 +107,7 @@ impl AppState {
         let toml = frost_app_core::config::serialize_config(&unlocked.config)
             .map_err(AppError::from)?;
         self.keystore()
-            .save(toml.as_bytes(), &unlocked.passphrase)
+            .save_file(&unlocked.file, toml.as_bytes())
             .map_err(AppError::from)?;
         Ok(result)
     }
