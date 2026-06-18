@@ -105,9 +105,17 @@ export default function DkgWizard() {
           {ceremony.done && !ceremony.failed && (
             <>
               <p className="ok">Group created successfully.</p>
-              <Link to="/groups">
-                <button>View groups</button>
-              </Link>
+              {ceremony.groupId && (
+                <>
+                  <label>Group public verifying key</label>
+                  <div className="mono">{ceremony.groupId}</div>
+                  <Link to={`/groups/${ceremony.groupId}`}>
+                    <button style={{ marginTop: 8 }}>
+                      Open group — keys &amp; addresses
+                    </button>
+                  </Link>
+                </>
+              )}
             </>
           )}
           {ceremony.failed && <p className="error">{ceremony.error}</p>}

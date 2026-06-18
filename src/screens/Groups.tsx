@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   getIdentity,
   listContacts,
@@ -11,6 +11,64 @@ import {
   Identity,
 } from "../ipc/commands";
 import { resolveParticipant } from "../lib/participants";
+
+function isOrchard(group: GroupSummary): boolean {
+  return group.ciphersuite.includes("Pallas");
+}
+
+/** Copyable labelled key/address row. */
+function KeyRow({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <label>{label}</label>
+      <div className="mono">{value}</div>
+      <button
+        className="secondary"
+        style={{ marginTop: 6 }}
+        onClick={async () => {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? "Copied!" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
+/** The group's public key material and any derivable addresses. */
+export function GroupKeys({ group }: { group: GroupSummary }) {
+  const orchard = isOrchard(group);
+  return (
+    <div style={{ marginTop: 10 }}>
+      <KeyRow
+        label={
+          orchard
+            ? "Orchard spend validating key (ak) — public"
+            : "Group public verifying key"
+        }
+        value={group.id}
+      />
+      {orchard && (
+        <div className="callout" style={{ marginTop: 10 }}>
+          <span>
+            This is the public key the group controls — the Orchard spend
+            authority (<span className="code-inline">ak</span>), shown here as a
+            full Orchard viewing key would expose it. A complete shielded{" "}
+            <strong>Orchard address</strong> additionally needs the nullifier key
+            (<span className="code-inline">nk</span>) and commitment-randomness
+            key (<span className="code-inline">rivk</span>), which a standard
+            FROST DKG does not produce. Those — and the resulting unified address
+            — arrive with the wallet/transaction features, so no spendable
+            address is derivable from the ceremony output alone yet.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Guided, accurate explanation of FROST's repairable-share recovery, shown in
  *  the group flow so a member knows what to do if they lose their share. */
@@ -41,7 +99,7 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
           <ul className="step-body" style={{ marginTop: 4, paddingLeft: 18 }}>
             <li>
               <strong>Forgot your passphrase</strong> but still have this device:
-              use your 12-word <Link to="/">recovery code</Link> to set a new one.
+              use your 12-word recovery code to set a new one.
             </li>
             <li>
               <strong>Device failure</strong>, but you kept an encrypted keystore
@@ -127,7 +185,7 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
   );
 }
 
-function GroupCard({
+export function GroupCard({
   group,
   identity,
   contacts,
@@ -147,9 +205,10 @@ function GroupCard({
       <p>
         {group.threshold}-of-{group.num_participants} threshold
       </p>
-      <label>Group verifying key</label>
-      <div className="mono">{group.id}</div>
-      <div style={{ marginTop: 10 }}>
+
+      <GroupKeys group={group} />
+
+      <div style={{ marginTop: 12 }}>
         <label>Participants</label>
         <table className="participants">
           <tbody>
@@ -189,7 +248,8 @@ function GroupCard({
   );
 }
 
-export default function Groups() {
+/** Shared data + remove mutation used by both the index and detail screens. */
+function useGroupData() {
   const queryClient = useQueryClient();
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
@@ -198,23 +258,36 @@ export default function Groups() {
     mutationFn: removeGroup,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["groups"] }),
   });
+  return { groups, contacts, identity, remove };
+}
+
+/** `/groups` — pick a group (also reachable from the sidebar dropdown). */
+export default function Groups() {
+  const { groups } = useGroupData();
 
   return (
     <div>
       <h2>Groups</h2>
       <p className="dim">
-        Threshold signing groups this keystore holds a share for. Each group
-        includes recovery instructions in case a share is ever lost.
+        Threshold signing groups this keystore holds a share for. Choose one from
+        the sidebar or below to see its keys, participants, and recovery options.
       </p>
       {groups.data?.length ? (
         groups.data.map((g) => (
-          <GroupCard
+          <Link
             key={g.id}
-            group={g}
-            identity={identity.data}
-            contacts={contacts.data}
-            onRemove={(id) => remove.mutate(id)}
-          />
+            to={`/groups/${g.id}`}
+            className="card group-pick"
+            style={{ display: "block", textDecoration: "none", color: "inherit" }}
+          >
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <h3 style={{ margin: 0 }}>{g.description || "(unnamed group)"}</h3>
+              <span className="badge blue">{g.ciphersuite}</span>
+            </div>
+            <p className="dim" style={{ margin: "6px 0 0" }}>
+              {g.threshold}-of-{g.num_participants} threshold · {g.id.slice(0, 16)}…
+            </p>
+          </Link>
         ))
       ) : (
         <div className="card">
@@ -224,6 +297,48 @@ export default function Groups() {
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/** `/groups/:id` — a single group's full detail. */
+export function GroupDetail() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { groups, contacts, identity, remove } = useGroupData();
+  const group = groups.data?.find((g) => g.id === id);
+
+  if (groups.isLoading) {
+    return <p className="dim">Loading…</p>;
+  }
+  if (!group) {
+    return (
+      <div>
+        <h2>Group not found</h2>
+        <p className="dim">
+          This group isn't in your keystore. <Link to="/groups">Back to groups</Link>.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+        <h2 style={{ marginBottom: 0 }}>{group.description || "(unnamed group)"}</h2>
+        <Link to="/sign" className="dim">
+          Start a signing session →
+        </Link>
+      </div>
+      <GroupCard
+        group={group}
+        identity={identity.data}
+        contacts={contacts.data}
+        onRemove={(gid) => {
+          remove.mutate(gid);
+          navigate("/groups");
+        }}
+      />
     </div>
   );
 }

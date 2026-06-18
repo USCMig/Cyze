@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   createBrowserRouter,
   RouterProvider,
@@ -6,18 +6,51 @@ import {
   NavLink,
   Navigate,
 } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
-import { lockKeystore } from "./ipc/commands";
+import { lockKeystore, listGroups } from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
 import Unlock from "./screens/Unlock";
 import Dashboard from "./screens/Dashboard";
 import Contacts from "./screens/Contacts";
-import Groups from "./screens/Groups";
+import Groups, { GroupDetail } from "./screens/Groups";
 import ServerSettings from "./screens/ServerSettings";
 import DkgWizard from "./screens/DkgWizard";
 import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
+
+/** Expandable Groups nav entry: a dropdown listing every group the keystore
+ *  can access, each linking to its own detail page. */
+function GroupsNavItem() {
+  const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
+  const [open, setOpen] = useState(true);
+  const hasGroups = !!groups.data?.length;
+  return (
+    <div className="nav-expandable">
+      <div className="nav-row">
+        <NavLink to="/groups" end>
+          Groups
+        </NavLink>
+        {hasGroups && (
+          <button
+            className="nav-caret"
+            onClick={() => setOpen((o) => !o)}
+            aria-label={open ? "Collapse groups" : "Expand groups"}
+          >
+            {open ? "▾" : "▸"}
+          </button>
+        )}
+      </div>
+      {open &&
+        groups.data?.map((g) => (
+          <NavLink key={g.id} to={`/groups/${g.id}`} className="nav-subitem">
+            {g.description || `${g.id.slice(0, 10)}…`}
+          </NavLink>
+        ))}
+    </div>
+  );
+}
 
 /** Nav grouped in the order a first-time user moves through the tool:
  *  set up a server and contacts, create or join a group, then sign. */
@@ -58,14 +91,18 @@ function Layout() {
         {NAV_SECTIONS.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>
-            {section.links.map((link) => (
-              <NavLink key={link.to} to={link.to} end={link.to === "/"}>
-                {link.label}
-                {link.to === "/dkg" && dkgInProgress && (
-                  <span className="nav-pulse" title="A DKG ceremony is running" />
-                )}
-              </NavLink>
-            ))}
+            {section.links.map((link) =>
+              link.to === "/groups" ? (
+                <GroupsNavItem key={link.to} />
+              ) : (
+                <NavLink key={link.to} to={link.to} end={link.to === "/"}>
+                  {link.label}
+                  {link.to === "/dkg" && dkgInProgress && (
+                    <span className="nav-pulse" title="A DKG ceremony is running" />
+                  )}
+                </NavLink>
+              )
+            )}
           </div>
         ))}
         <div className="spacer" />
@@ -96,6 +133,7 @@ const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: "contacts", element: <Contacts /> },
       { path: "groups", element: <Groups /> },
+      { path: "groups/:id", element: <GroupDetail /> },
       { path: "dkg", element: <DkgWizard /> },
       { path: "sign", element: <NewSigningSession /> },
       { path: "inbox", element: <Inbox /> },
