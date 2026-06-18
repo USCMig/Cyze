@@ -5,6 +5,7 @@ import {
   createKeystore,
   importUpstreamConfig,
   recoverKeystore,
+  setUsername,
   unlockKeystore,
   AppError,
 } from "../ipc/commands";
@@ -86,6 +87,7 @@ export default function Unlock() {
   const [mode, setMode] = useState<Mode | null>(null);
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [importPath, setImportPath] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -132,12 +134,14 @@ export default function Unlock() {
         await enter();
       } else if (effectiveMode === "create") {
         const phrase = await createKeystore(passphrase);
+        if (displayName.trim()) await setUsername(displayName.trim());
         setPendingPhrase(phrase); // show the backup gate before entering
       } else {
         const phrase = await importUpstreamConfig(
           importPath.trim() || null,
           passphrase
         );
+        if (displayName.trim()) await setUsername(displayName.trim());
         setPendingPhrase(phrase);
       }
     } catch (err) {
@@ -201,6 +205,17 @@ export default function Unlock() {
                 placeholder="word1 word2 word3 …"
                 value={recoveryInput}
                 onChange={(e) => setRecoveryInput(e.target.value)}
+              />
+            </>
+          )}
+          {(effectiveMode === "create" || effectiveMode === "import") && (
+            <>
+              <label>Display name</label>
+              <input
+                type="text"
+                placeholder="e.g. Alice — shown to you in groups and signer lists"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
               />
             </>
           )}

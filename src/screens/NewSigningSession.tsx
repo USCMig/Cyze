@@ -4,10 +4,12 @@ import { Link } from "react-router-dom";
 import {
   cancelCeremony,
   createSigningSession,
+  getIdentity,
   listContacts,
   listGroups,
   AppError,
 } from "../ipc/commands";
+import { resolveParticipant } from "../lib/participants";
 import { useCeremonies } from "../stores/ceremonies";
 
 const PHASES: Record<string, string> = {
@@ -22,6 +24,7 @@ const PHASES: Record<string, string> = {
 export default function NewSigningSession() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity });
 
   const [groupId, setGroupId] = useState("");
   const [messageMode, setMessageMode] = useState<"text" | "hex">("text");
@@ -40,14 +43,11 @@ export default function NewSigningSession() {
 
   const participantsWithNames = useMemo(() => {
     if (!group) return [];
-    return Object.entries(group.participants).map(([ident, pubkey]) => ({
-      ident,
-      pubkey,
-      name:
-        contacts.data?.find((c) => c.pubkey === pubkey)?.name ??
-        `${pubkey.slice(0, 12)}…`,
-    }));
-  }, [group, contacts.data]);
+    return Object.values(group.participants).map((pubkey) => {
+      const r = resolveParticipant(pubkey, identity.data, contacts.data);
+      return { pubkey, name: r.label, shortPubkey: r.shortPubkey };
+    });
+  }, [group, contacts.data, identity.data]);
 
   const messageHex = useMemo(() => {
     if (messageMode === "hex") return message.trim().toLowerCase();
@@ -180,6 +180,7 @@ export default function NewSigningSession() {
                   }}
                 />
                 <span>{p.name}</span>
+                <span className="dim code-inline">{p.shortPubkey}</span>
               </div>
             ))}
 

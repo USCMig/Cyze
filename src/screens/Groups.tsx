@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { listGroups, removeGroup, GroupSummary } from "../ipc/commands";
+import {
+  getIdentity,
+  listContacts,
+  listGroups,
+  removeGroup,
+  ContactDto,
+  GroupSummary,
+  Identity,
+} from "../ipc/commands";
+import { resolveParticipant } from "../lib/participants";
 
 /** Guided, accurate explanation of FROST's repairable-share recovery, shown in
  *  the group flow so a member knows what to do if they lose their share. */
@@ -107,7 +116,7 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
 
           <p className="dim" style={{ marginTop: 12 }}>
             This screen documents the protocol (FROST's repairable threshold
-            scheme, implemented in <span className="mono">frost-core</span>). A
+            scheme, implemented in <span className="code-inline">frost-core</span>). A
             guided in-app repair ceremony — like the DKG wizard — is the planned
             next step; until then, the safest habit is to keep your recovery code
             and an encrypted keystore backup so you rarely need a full repair.
@@ -118,7 +127,17 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
   );
 }
 
-function GroupCard({ group, onRemove }: { group: GroupSummary; onRemove: (id: string) => void }) {
+function GroupCard({
+  group,
+  identity,
+  contacts,
+  onRemove,
+}: {
+  group: GroupSummary;
+  identity: Identity | undefined;
+  contacts: ContactDto[] | undefined;
+  onRemove: (id: string) => void;
+}) {
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: "space-between" }}>
@@ -127,17 +146,24 @@ function GroupCard({ group, onRemove }: { group: GroupSummary; onRemove: (id: st
       </div>
       <p>
         {group.threshold}-of-{group.num_participants} threshold
-        {group.server_url && <span className="dim"> · server {group.server_url}</span>}
       </p>
       <label>Group verifying key</label>
       <div className="mono">{group.id}</div>
       <div style={{ marginTop: 10 }}>
         <label>Participants</label>
-        {Object.entries(group.participants).map(([ident, pubkey]) => (
-          <div key={ident} className="dim" style={{ fontFamily: "monospace", fontSize: 12 }}>
-            {ident.slice(0, 8)}… → {pubkey.slice(0, 16)}…
-          </div>
-        ))}
+        <table className="participants">
+          <tbody>
+            {Object.values(group.participants).map((pubkey) => {
+              const p = resolveParticipant(pubkey, identity, contacts);
+              return (
+                <tr key={pubkey}>
+                  <td className={p.isSelf ? "ok" : undefined}>{p.label}</td>
+                  <td className="dim mono-cell">{p.pubkey}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
 
       <ShareRepairGuide group={group} />
@@ -166,6 +192,8 @@ function GroupCard({ group, onRemove }: { group: GroupSummary; onRemove: (id: st
 export default function Groups() {
   const queryClient = useQueryClient();
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
+  const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity });
   const remove = useMutation({
     mutationFn: removeGroup,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["groups"] }),
@@ -180,7 +208,13 @@ export default function Groups() {
       </p>
       {groups.data?.length ? (
         groups.data.map((g) => (
-          <GroupCard key={g.id} group={g} onRemove={(id) => remove.mutate(id)} />
+          <GroupCard
+            key={g.id}
+            group={g}
+            identity={identity.data}
+            contacts={contacts.data}
+            onRemove={(id) => remove.mutate(id)}
+          />
         ))
       ) : (
         <div className="card">

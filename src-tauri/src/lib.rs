@@ -20,6 +20,8 @@ pub fn run() {
             commands::keystore::lock_keystore,
             commands::keystore::change_passphrase,
             commands::keystore::generate_recovery_code,
+            commands::keystore::get_identity,
+            commands::keystore::set_username,
             commands::contacts::list_contacts,
             commands::contacts::add_contact,
             commands::contacts::remove_contact,

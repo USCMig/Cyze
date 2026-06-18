@@ -72,6 +72,14 @@ export const changePassphrase = (oldPassphrase: string, newPassphrase: string) =
 export const generateRecoveryCode = () =>
   invoke<string>("generate_recovery_code");
 
+export interface Identity {
+  username: string | null;
+  pubkey: string | null;
+}
+export const getIdentity = () => invoke<Identity>("get_identity");
+export const setUsername = (username: string) =>
+  invoke<void>("set_username", { username });
+
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");
 export const addContact = (text: string) => invoke<ContactDto>("add_contact", { text });

@@ -14,6 +14,10 @@ use crate::error::{AppError, AppResult};
 /// before the keystore is unlocked.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
+    /// Display name for the local user, shown wherever this identity appears
+    /// (own participant entries in groups, signer lists, etc.).
+    #[serde(default)]
+    pub username: Option<String>,
     /// Last external server the user connected to, `host:port`.
     pub server_url: Option<String>,
     /// Port for the embedded frostd sidecar.

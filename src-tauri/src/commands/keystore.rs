@@ -124,6 +124,42 @@ pub async fn change_passphrase(
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct Identity {
+    /// Chosen display name, if set.
+    pub username: Option<String>,
+    /// Hex-encoded communication public key of the local user.
+    pub pubkey: Option<String>,
+}
+
+/// The local user's identity: their display name and own communication pubkey,
+/// used to label themselves in groups and signer lists.
+#[tauri::command]
+pub async fn get_identity(state: State<'_, AppState>) -> AppResult<Identity> {
+    let username = state.load_settings().username;
+    let pubkey = state
+        .unlocked
+        .read()
+        .await
+        .as_ref()
+        .and_then(|u| u.config.communication_key.as_ref())
+        .map(|k| hex::encode(&k.pubkey.0));
+    Ok(Identity { username, pubkey })
+}
+
+/// Set (or change) the local user's display name.
+#[tauri::command]
+pub async fn set_username(state: State<'_, AppState>, username: String) -> AppResult<()> {
+    let trimmed = username.trim();
+    let mut settings = state.load_settings();
+    settings.username = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+    state.save_settings(&settings)
+}
+
 /// Generate a recovery code for a keystore that doesn't have one yet (e.g. a
 /// migrated legacy keystore). Returns the one-time phrase to back up.
 #[tauri::command]

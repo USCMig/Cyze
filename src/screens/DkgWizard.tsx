@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -42,6 +42,14 @@ export default function DkgWizard() {
   const { ceremonies, activeDkgId, setActiveDkg } = useCeremonies();
   const ceremonyId = activeDkgId;
   const ceremony = ceremonyId ? ceremonies[ceremonyId] : undefined;
+
+  // If the last ceremony already finished, reset to the form when the user
+  // comes back to this page wanting to start a new DKG. (A still-running
+  // ceremony stays attached.)
+  useEffect(() => {
+    if (activeDkgId && ceremonies[activeDkgId]?.done) setActiveDkg(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const effectiveServer = useMemo(() => {
     if (serverUrl !== null) return serverUrl;
@@ -128,7 +136,7 @@ export default function DkgWizard() {
               style={{ marginLeft: 8 }}
               onClick={() => setActiveDkg(null)}
             >
-              New ceremony
+              Start another DKG
             </button>
           )}
         </div>

@@ -113,12 +113,37 @@ button.danger { background: transparent; border: 1px solid var(--danger); color:
 .dim { color: var(--text-dim); font-size: 13px; }
 
 .mono {
+  display: block;
   font-family: ui-monospace, monospace;
   font-size: 12px;
   word-break: break-all;
   background: var(--bg-input);
   padding: 8px 10px;
   border-radius: 8px;
+}
+
+/* Inline code inside running text: snug padding that never overlaps adjacent
+   lines (em-based vertical padding + clone so wraps stay tidy). */
+.code-inline {
+  font-family: ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.08em 0.4em;
+  white-space: nowrap;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Participant table: name + full address per row */
+table.participants { width: 100%; border-collapse: collapse; }
+table.participants td { border-top: none; padding: 3px 0; vertical-align: top; }
+table.participants td:first-child { font-size: 13px; padding-right: 14px; white-space: nowrap; }
+td.mono-cell {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  word-break: break-all;
 }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }

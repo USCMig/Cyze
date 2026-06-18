@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -17,6 +18,7 @@ interface Step {
 }
 
 export default function Dashboard() {
+  const [copied, setCopied] = useState<"app" | "cli" | null>(null);
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
@@ -144,10 +146,34 @@ export default function Dashboard() {
               <span className="dim">{sidecar.data.url}</span>
             </p>
             {tunnel.data?.running && tunnel.data.public_url && (
-              <p className="dim">
-                Public tunnel:{" "}
-                <span className="mono">{tunnel.data.public_url}</span>
-              </p>
+              <div style={{ marginTop: 8 }}>
+                <label>Public tunnel — share with participants</label>
+                <div className="mono">{tunnel.data.public_url}</div>
+                {(() => {
+                  const fullUrl = tunnel.data.public_url;
+                  const bareHost = fullUrl
+                    .replace(/^https?:\/\//, "")
+                    .replace(/\/+$/, "");
+                  const copy = async (which: "app" | "cli", value: string) => {
+                    await navigator.clipboard.writeText(value);
+                    setCopied(which);
+                    setTimeout(() => setCopied(null), 1500);
+                  };
+                  return (
+                    <div className="row" style={{ marginTop: 8 }}>
+                      <button onClick={() => copy("app", fullUrl)}>
+                        {copied === "app" ? "Copied!" : "Copy for app users"}
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => copy("cli", bareHost)}
+                      >
+                        {copied === "cli" ? "Copied!" : "Copy for CLI users"}
+                      </button>
+                    </div>
+                  );
+                })()}
+              </div>
             )}
           </>
         ) : settings.data?.server_url ? (

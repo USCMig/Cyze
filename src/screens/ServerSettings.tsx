@@ -181,8 +181,8 @@ export default function ServerSettings() {
                   <label>For this app (paste as the participant's server)</label>
                   <div className="mono">{fullUrl}</div>
                   <label style={{ marginTop: 10 }}>
-                    For the frost-client CLI (<span className="mono">-s</span>{" "}
-                    value — no <span className="mono">https://</span>)
+                    For the frost-client CLI (<span className="code-inline">-s</span>{" "}
+                    value — no <span className="code-inline">https://</span>)
                   </label>
                   <div className="mono">{bareHost}</div>
                   <p className="dim" style={{ marginTop: 6 }}>
@@ -221,7 +221,7 @@ export default function ServerSettings() {
             <p className="dim">
               Open a public HTTPS endpoint in front of the embedded server so
               participants on other networks can connect — no firewall changes
-              needed. Requires <span className="mono">cloudflared</span> to be
+              needed. Requires <span className="code-inline">cloudflared</span> to be
               installed and on your PATH.
             </p>
             <button
