@@ -16,6 +16,36 @@ import {
 } from "../ipc/commands";
 import { useTauriEvent } from "../ipc/events";
 
+function Collapsible({
+  title,
+  subtitle,
+  open,
+  onToggle,
+  badge,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  open: boolean;
+  onToggle: () => void;
+  badge?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="card collapsible">
+      <button className="collapsible-head" onClick={onToggle}>
+        <span className="collapsible-caret">{open ? "▾" : "▸"}</span>
+        <span className="collapsible-titles">
+          <span className="collapsible-title">{title}</span>
+          <span className="collapsible-sub">{subtitle}</span>
+        </span>
+        {badge && <span className="badge green">{badge}</span>}
+      </button>
+      {open && <div className="collapsible-body">{children}</div>}
+    </div>
+  );
+}
+
 export default function ServerSettings() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
@@ -31,6 +61,8 @@ export default function ServerSettings() {
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tunnelCopied, setTunnelCopied] = useState<"app" | "cli" | null>(null);
+  const [hostOpen, setHostOpen] = useState(true);
+  const [extOpen, setExtOpen] = useState(false);
 
   useTauriEvent<string>("sidecar:log", (line) =>
     setLogs((prev) => [...prev.slice(-200), line])
@@ -81,8 +113,26 @@ export default function ServerSettings() {
     <div>
       <h2>Server</h2>
 
-      <div className="card">
-        <h3>Embedded server (frostd)</h3>
+      <div className="callout" style={{ marginBottom: 16 }}>
+        <span>
+          FROST participants coordinate through a{" "}
+          <span className="code-inline">frostd</span> server, and you only need{" "}
+          <strong>one</strong>. If you're organizing the ceremony,{" "}
+          <strong>host a server here</strong> and share its address. If you're
+          joining someone else's ceremony,{" "}
+          <strong>connect to their server</strong> using the URL (and, for a
+          self-signed server, the certificate) they give you.
+        </span>
+      </div>
+
+      <Collapsible
+        title="Host a server here"
+        subtitle="Run the built-in frostd for participants to join"
+        open={hostOpen}
+        onToggle={() => setHostOpen((o) => !o)}
+        badge={sidecar.data?.running ? "running" : undefined}
+      >
+        <h3 style={{ marginTop: 0 }}>Embedded server (frostd)</h3>
         {sidecar.data?.running ? (
           <>
             <p>
@@ -150,10 +200,10 @@ export default function ServerSettings() {
             <div className="log">{logs.join("")}</div>
           </div>
         )}
-      </div>
 
-      <div className="card">
-        <h3>Public access (Cloudflare tunnel)</h3>
+        <h3 style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+          Public access (Cloudflare tunnel)
+        </h3>
         {!sidecar.data?.running ? (
           <p className="dim">
             Start the embedded server first. A tunnel then makes it reachable
@@ -232,10 +282,19 @@ export default function ServerSettings() {
             </button>
           </>
         )}
-      </div>
+      </Collapsible>
 
-      <div className="card">
-        <h3>External server</h3>
+      <Collapsible
+        title="Connect to an external server"
+        subtitle="Join a server someone else is hosting, by URL or certificate"
+        open={extOpen}
+        onToggle={() => setExtOpen((o) => !o)}
+      >
+        <h3 style={{ marginTop: 0 }}>Server URL</h3>
+        <p className="dim" style={{ marginTop: 0 }}>
+          Enter the <span className="code-inline">host:port</span> the
+          coordinator gave you, then Test and Save.
+        </p>
         <label>Server (host:port)</label>
         <div className="row">
           <input
@@ -274,14 +333,15 @@ export default function ServerSettings() {
         {testResult && (
           <div className={testOk ? "ok" : "error"}>{testResult}</div>
         )}
-      </div>
 
-      <div className="card">
-        <h3>Trust a server certificate</h3>
+        <h3 style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+          Trust a server certificate
+        </h3>
         <p className="dim">
-          For servers using a self-signed certificate (like another user's
-          embedded server), paste the PEM they shared. Verify the fingerprint
-          with them over a separate channel before trusting it.
+          Only needed for a server with a self-signed certificate (like another
+          user's embedded server — a Cloudflare tunnel URL does not need this).
+          Paste the PEM they shared and verify the fingerprint with them over a
+          separate channel before trusting it.
         </p>
         <textarea
           rows={5}
@@ -304,7 +364,7 @@ export default function ServerSettings() {
           Trust certificate for this server
         </button>
         {trustMsg && <div className="ok">{trustMsg}</div>}
-      </div>
+      </Collapsible>
     </div>
   );
 }

@@ -76,6 +76,10 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
   const [open, setOpen] = useState(false);
   const t = group.threshold;
   const n = group.num_participants;
+  // Repairing one member's share needs `t` *other* members to help. There are
+  // only n-1 others, so it is possible only when t <= n-1, i.e. t < n. An
+  // m-of-m group (t === n) therefore cannot repair a lost share.
+  const repairable = t < n;
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
@@ -85,18 +89,34 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
 
       {open && (
         <div style={{ marginTop: 12 }}>
-          <div className="callout">
-            <span>
-              Because this is a <strong>{t}-of-{n}</strong> group, a lost or
-              corrupted share is not fatal. Any <strong>{t}</strong> of the
-              other members can help you regenerate <em>your</em> share — without
-              ever revealing it and without anyone reconstructing the full group
-              key. This is FROST's <em>repairable threshold</em> scheme.
-            </span>
-          </div>
+          {repairable ? (
+            <div className="callout">
+              <span>
+                Because this is a <strong>{t}-of-{n}</strong> group, a lost or
+                corrupted share is not fatal. Any <strong>{t}</strong> of the
+                other {n - 1} members can help you regenerate <em>your</em> share
+                — without ever revealing it and without anyone reconstructing the
+                full group key. This is FROST's <em>repairable threshold</em>{" "}
+                scheme.
+              </span>
+            </div>
+          ) : (
+            <div className="callout warn">
+              <span>
+                This is an <strong>{t}-of-{n}</strong> group — every member is
+                required to sign. Repairing one member's share itself needs{" "}
+                <strong>{t}</strong> other members to help, but only {n - 1}{" "}
+                exist, so <strong>a lost share in this group cannot be repaired</strong>.
+                Your only protection against losing a share is your recovery code
+                and an encrypted keystore backup (below). If a member permanently
+                loses their share, the group must run a new DKG to form a fresh
+                group.
+              </span>
+            </div>
+          )}
 
           <h3 style={{ marginTop: 16 }}>How your recovery options fit together</h3>
-          <ul className="step-body" style={{ marginTop: 4, paddingLeft: 18 }}>
+          <ul className="guide-list">
             <li>
               <strong>Forgot your passphrase</strong> but still have this device:
               use your 12-word recovery code to set a new one.
@@ -106,71 +126,84 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
               backup: restore the backup and unlock as normal.
             </li>
             <li>
-              <strong>Lost the share entirely</strong> (no device, no backup):
-              repair it with help from the group, using the steps below.
+              <strong>Lost the share entirely</strong> (no device, no backup):{" "}
+              {repairable ? (
+                "repair it with help from the group, using the steps below."
+              ) : (
+                <>
+                  this {t}-of-{n} group cannot repair a share — the group would
+                  need to form a new one with a fresh DKG.
+                </>
+              )}
             </li>
           </ul>
 
-          <h3 style={{ marginTop: 16 }}>Before you start</h3>
-          <div className="callout">
-            <span>
-              You'll need: a working install of this app holding this group's
-              public data (already stored here), at least <strong>{t}</strong>{" "}
-              other participants online and willing to help, and agreement on the
-              identifier of the member being repaired.
-            </span>
-          </div>
+          {repairable && (
+            <>
+              <h3 style={{ marginTop: 16 }}>Before you start</h3>
+              <div className="callout">
+                <span>
+                  You'll need: a working install of this app holding this group's
+                  public data (already stored here), at least <strong>{t}</strong>{" "}
+                  other participants online and willing to help, and agreement on
+                  the identifier of the member being repaired.
+                </span>
+              </div>
 
-          <h3 style={{ marginTop: 16 }}>The repair, step by step</h3>
-          <ol className="steps">
-            <li>
-              <div className="step-title">Choose your helpers</div>
-              <div className="step-body">
-                Pick any {t} participants who still have their shares. They are
-                the “helpers.” Fewer than {t} cannot repair a share — that is the
-                security threshold working as intended.
-              </div>
-            </li>
-            <li>
-              <div className="step-title">Round 1 — helpers compute repair deltas</div>
-              <div className="step-body">
-                Each helper uses their own share to compute a random blinding
-                value (a “delta”) for every other helper and sends it to them over
-                an encrypted channel. No delta reveals anything about a share.
-              </div>
-            </li>
-            <li>
-              <div className="step-title">Round 2 — helpers combine into a “sigma”</div>
-              <div className="step-body">
-                Each helper sums the deltas they received into a single value
-                (their “sigma”) and sends it privately to you, the member being
-                repaired.
-              </div>
-            </li>
-            <li>
-              <div className="step-title">Round 3 — you reconstruct your share</div>
-              <div className="step-body">
-                Your device combines the {t} sigmas with your identifier and the
-                group's public commitments to rebuild your secret share and key
-                package — entirely locally.
-              </div>
-            </li>
-            <li>
-              <div className="step-title">Verify</div>
-              <div className="step-body">
-                Run a <Link to="/sign">test signing session</Link> with the group
-                to confirm your repaired share produces valid signatures.
-              </div>
-            </li>
-          </ol>
+              <h3 style={{ marginTop: 16 }}>The repair, step by step</h3>
+              <ol className="steps">
+                <li>
+                  <div className="step-title">Choose your helpers</div>
+                  <div className="step-body">
+                    Pick any {t} of the other {n - 1} participants who still have
+                    their shares. They are the “helpers.” Fewer than {t} cannot
+                    repair a share — that is the security threshold working as
+                    intended.
+                  </div>
+                </li>
+                <li>
+                  <div className="step-title">Round 1 — helpers compute repair deltas</div>
+                  <div className="step-body">
+                    Each helper uses their own share to compute a random blinding
+                    value (a “delta”) for every other helper and sends it to them
+                    over an encrypted channel. No delta reveals anything about a
+                    share.
+                  </div>
+                </li>
+                <li>
+                  <div className="step-title">Round 2 — helpers combine into a “sigma”</div>
+                  <div className="step-body">
+                    Each helper sums the deltas they received into a single value
+                    (their “sigma”) and sends it privately to you, the member
+                    being repaired.
+                  </div>
+                </li>
+                <li>
+                  <div className="step-title">Round 3 — you reconstruct your share</div>
+                  <div className="step-body">
+                    Your device combines the {t} sigmas with your identifier and
+                    the group's public commitments to rebuild your secret share
+                    and key package — entirely locally.
+                  </div>
+                </li>
+                <li>
+                  <div className="step-title">Verify</div>
+                  <div className="step-body">
+                    Run a <Link to="/sign">test signing session</Link> with the
+                    group to confirm your repaired share produces valid signatures.
+                  </div>
+                </li>
+              </ol>
 
-          <div className="callout warn" style={{ marginTop: 14 }}>
-            <span>
-              <strong>Privacy guarantee:</strong> at no point does any helper
-              learn your share, and the full group secret is never reconstructed.
-              Helpers only ever exchange random blinding values.
-            </span>
-          </div>
+              <div className="callout warn" style={{ marginTop: 14 }}>
+                <span>
+                  <strong>Privacy guarantee:</strong> at no point does any helper
+                  learn your share, and the full group secret is never
+                  reconstructed. Helpers only ever exchange random blinding values.
+                </span>
+              </div>
+            </>
+          )}
 
           <p className="dim" style={{ marginTop: 12 }}>
             This screen documents the protocol (FROST's repairable threshold

@@ -27,8 +27,16 @@ async fn group_context(
                 .ok_or_else(|| AppError::new("config", "group not found"))
         })
         .await?;
+    // If the local sidecar is running and no explicit per-group URL was set,
+    // connect to it directly instead of routing through the Cloudflare tunnel
+    // URL that may be saved in settings for external participants to use.
+    let local_sidecar_url = {
+        let guard = state.sidecar.lock().await;
+        guard.as_ref().map(|h| format!("127.0.0.1:{}", h.port))
+    };
     let server_url = server_override
         .or_else(|| group.server_url.clone())
+        .or(local_sidecar_url)
         .or_else(|| state.load_settings().server_url)
         .ok_or_else(|| AppError::new("config", "no server configured for this group"))?;
     let server_url = server_url

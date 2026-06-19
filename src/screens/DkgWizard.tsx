@@ -185,9 +185,19 @@ export default function DkgWizard() {
 
             <label>Ciphersuite</label>
             <select value={suite} onChange={(e) => setSuite(e.target.value as Ciphersuite)}>
-              <option value="redpallas">RedPallas (Zcash Orchard)</option>
-              <option value="ed25519">Ed25519 (generic)</option>
+              <option value="redpallas">
+                RedPallas — Zcash Orchard spend authority (Pallas, BLAKE2b-512)
+              </option>
+              <option value="ed25519">
+                Ed25519 — general-purpose Schnorr signatures (SHA-512)
+              </option>
             </select>
+            <p className="dim" style={{ marginTop: -4, marginBottom: 12 }}>
+              These are the two ciphersuites the FROST tooling supports, so
+              groups stay compatible with the <span className="code-inline">frost-client</span>{" "}
+              CLI. Pick RedPallas for Zcash; Ed25519 for general signing. All
+              participants must choose the same one.
+            </p>
 
             <label>Participants (besides you)</label>
             {contacts.data?.length ? (
@@ -234,8 +244,12 @@ export default function DkgWizard() {
             </p>
             <label>Ciphersuite (must match the initiator)</label>
             <select value={suite} onChange={(e) => setSuite(e.target.value as Ciphersuite)}>
-              <option value="redpallas">RedPallas (Zcash Orchard)</option>
-              <option value="ed25519">Ed25519 (generic)</option>
+              <option value="redpallas">
+                RedPallas — Zcash Orchard spend authority (Pallas, BLAKE2b-512)
+              </option>
+              <option value="ed25519">
+                Ed25519 — general-purpose Schnorr signatures (SHA-512)
+              </option>
             </select>
             <label>Threshold (as chosen by the initiator)</label>
             <input
