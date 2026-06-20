@@ -1,4 +1,12 @@
-# FROST Companion
+  e88'Y88 Y88b Y8P  8P d8P 888'Y88 
+ d888  'Y  Y88b Y   P d8P  888 ,'Y 
+C8888       Y88b     d8P d 888C8   
+ Y888  ,d    888    d8P d8 888 ",d 
+  "88,d88    888   d8P d88 888,d88 
+                                   
+Coordinate Your ZCash Easily
+
+**A FROST signing companion for Zcash** ❄️
 
 A desktop GUI for [ZF FROST](https://frost.zfnd.org/) threshold signatures,
 built on the Zcash Foundation's [frost-tools](https://github.com/ZcashFoundation/frost-tools)
