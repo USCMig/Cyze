@@ -108,6 +108,9 @@ pub async fn create_signing_session<R: tauri::Runtime>(
         public_key_package: group.public_key_package.clone(),
         message,
         signers,
+        // The local user's own share, used only if they are among the signers
+        // so the coordinator can contribute its commitment/share locally.
+        self_key_package: group.key_package.clone(),
     };
 
     let ceremony_id = Uuid::new_v4();

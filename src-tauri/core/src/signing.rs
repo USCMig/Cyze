@@ -45,8 +45,13 @@ pub struct CoordinatorParams {
     /// sighash here).
     pub message: Vec<u8>,
     /// Selected signers: comm pubkey -> serialized FROST identifier, both
-    /// taken from the group config.
+    /// taken from the group config. May include the coordinator itself.
     pub signers: Vec<(PublicKey, Vec<u8>)>,
+    /// Postcard-encoded `KeyPackage` for the coordinator's own share. Used
+    /// only when the coordinator is itself one of the selected signers, so it
+    /// can contribute its commitment and signature share locally instead of
+    /// waiting for them over the network (which would never arrive).
+    pub self_key_package: Vec<u8>,
 }
 
 pub struct SigningOutput {
@@ -87,10 +92,28 @@ async fn run_coordinator_generic<C: RandomizedCiphersuite + 'static>(
             ))
         })
         .collect::<Result<_, CoreError>>()?;
-    let num_signers = signers.len();
-    if num_signers == 0 {
+    if signers.is_empty() {
         return Err(CoreError::Ceremony("no signers selected".into()));
     }
+
+    // Split the selected signers into the coordinator itself (if chosen) and
+    // the external signers who participate over the network. The coordinator
+    // contributes its own commitment/share locally, so it is excluded from the
+    // session's participant set and the network rounds.
+    let self_signer: Option<(Identifier<C>, KeyPackage<C>)> =
+        match signers.get(&params.comm_pubkey).copied() {
+            Some(id) => {
+                let kp: KeyPackage<C> = postcard::from_bytes(&params.self_key_package)
+                    .map_err(|e| CoreError::Config(format!("bad self key package: {e}")))?;
+                Some((id, kp))
+            }
+            None => None,
+        };
+    let external: HashMap<PublicKey, Identifier<C>> = signers
+        .iter()
+        .filter(|(pubkey, _)| **pubkey != params.comm_pubkey)
+        .map(|(pubkey, id)| (pubkey.clone(), *id))
+        .collect();
 
     let mut client = FrostdClient::new(format!("https://{}", params.server_url), &params.trust)?;
     let _ = events.send(CoordinatorEvent::Connecting).await;
@@ -98,7 +121,7 @@ async fn run_coordinator_generic<C: RandomizedCiphersuite + 'static>(
 
     let session_id = client
         .create_new_session(&api::CreateNewSessionArgs {
-            pubkeys: signers.keys().cloned().collect(),
+            pubkeys: external.keys().cloned().collect(),
             message_count: 1,
         })
         .await?
@@ -112,8 +135,8 @@ async fn run_coordinator_generic<C: RandomizedCiphersuite + 'static>(
         session_id,
         &params,
         &public_key_package,
-        signers,
-        num_signers,
+        external,
+        self_signer,
         &events,
         &cancel,
     )
@@ -133,22 +156,26 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
     session_id: Uuid,
     params: &CoordinatorParams,
     public_key_package: &PublicKeyPackage<C>,
-    signers: HashMap<PublicKey, Identifier<C>>,
-    num_signers: usize,
+    external: HashMap<PublicKey, Identifier<C>>,
+    self_signer: Option<(Identifier<C>, KeyPackage<C>)>,
     events: &mpsc::Sender<CoordinatorEvent>,
     cancel: &CancellationToken,
 ) -> Result<SigningOutput, CoreError> {
-    let mut cipher = Cipher::new(
-        params.comm_privkey.clone(),
-        signers.keys().cloned().collect(),
-    )
-    .map_err(|e| CoreError::Crypto(e.to_string()))?;
+    let num_external = external.len();
+    let mut cipher = Cipher::new(params.comm_privkey.clone(), external.keys().cloned().collect())
+        .map_err(|e| CoreError::Crypto(e.to_string()))?;
 
-    let mut state = CoordinatorSessionState::<C>::new(1, num_signers, signers);
+    let mut state = CoordinatorSessionState::<C>::new(1, num_external, external);
 
-    // Round 1: collect commitments from all selected signers.
+    // The coordinator's own round-1 commitment, held locally (never sent over
+    // the wire — it is folded directly into the signing package).
+    let self_round1 = self_signer
+        .as_ref()
+        .map(|(_, kp)| frost::round1::commit(kp.signing_share(), &mut OsRng));
+
+    // Round 1: collect commitments from the external signers.
     let _ = events.send(CoordinatorEvent::WaitingForCommitments).await;
-    loop {
+    while num_external > 0 && !state.has_commitments() {
         let r = client
             .receive(&api::ReceiveArgs {
                 session_id,
@@ -169,11 +196,21 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
         }
     }
-    let (commitments, pubkeys) = state.commitments().map_err(cerr)?;
+
+    // Merge external commitments with the coordinator's own.
+    let (mut commitments_map, recipients) = if num_external > 0 {
+        let (commitments, pubkeys) = state.commitments().map_err(cerr)?;
+        (commitments[0].clone(), pubkeys.keys().cloned().collect::<Vec<_>>())
+    } else {
+        (std::collections::BTreeMap::new(), Vec::new())
+    };
+    if let (Some((id, _)), Some((_, commitment))) = (&self_signer, &self_round1) {
+        commitments_map.insert(*id, *commitment);
+    }
 
     // Build the signing package; RedPallas additionally needs a randomizer
     // (re-randomized FROST), generated here and distributed to participants.
-    let signing_package = SigningPackage::<C>::new(commitments[0].clone(), &params.message);
+    let signing_package = SigningPackage::<C>::new(commitments_map, &params.message);
     let randomizer = if C::ID == PallasBlake2b512::ID {
         Some(
             Randomizer::<C>::new(OsRng, &signing_package)
@@ -189,7 +226,6 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
         randomizer: randomizer.map(|r| vec![r]).unwrap_or_default(),
     };
     // Encrypted separately per recipient (the Noise sessions are pairwise).
-    let recipients: Vec<PublicKey> = pubkeys.keys().cloned().collect();
     for recipient in recipients {
         let msg = cipher
             .encrypt(
@@ -207,9 +243,21 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
     }
     let _ = events.send(CoordinatorEvent::SigningPackageSent).await;
 
-    // Round 2: collect signature shares.
+    // The coordinator's own round-2 signature share, produced locally.
+    let self_share = match (&self_signer, &self_round1) {
+        (Some((_, kp)), Some((nonces, _))) => Some(if !send_args.randomizer.is_empty() {
+            frost_rerandomized::sign::<C>(&signing_package, nonces, kp, send_args.randomizer[0])
+                .map_err(|e| CoreError::Ceremony(e.to_string()))?
+        } else {
+            frost::round2::sign(&signing_package, nonces, kp)
+                .map_err(|e| CoreError::Ceremony(e.to_string()))?
+        }),
+        _ => None,
+    };
+
+    // Round 2: collect signature shares from external signers.
     let _ = events.send(CoordinatorEvent::WaitingForShares).await;
-    loop {
+    while num_external > 0 && !state.has_signature_shares() {
         let r = client
             .receive(&api::ReceiveArgs {
                 session_id,
@@ -231,7 +279,16 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
         }
     }
     let _ = events.send(CoordinatorEvent::Aggregating).await;
-    let shares = state.signature_shares().map_err(cerr)?;
+
+    // Merge external shares with the coordinator's own.
+    let mut shares_map = if num_external > 0 {
+        state.signature_shares().map_err(cerr)?[0].clone()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    if let (Some((id, _)), Some(share)) = (&self_signer, self_share) {
+        shares_map.insert(*id, share);
+    }
 
     // Aggregate (rerandomized for RedPallas); aggregation verifies the
     // result against the (randomized) group verifying key internally.
@@ -242,13 +299,13 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
         );
         frost_rerandomized::aggregate(
             &signing_package,
-            &shares[0],
+            &shares_map,
             public_key_package,
             &randomizer_params,
         )
         .map_err(|e| CoreError::Ceremony(e.to_string()))?
     } else {
-        frost::aggregate::<C>(&signing_package, &shares[0], public_key_package)
+        frost::aggregate::<C>(&signing_package, &shares_map, public_key_package)
             .map_err(|e| CoreError::Ceremony(e.to_string()))?
     };
 

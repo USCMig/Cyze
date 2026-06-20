@@ -295,27 +295,26 @@ async fn full_user_journey() {
         assert!(seen, "bob must see the signing session in his inbox");
     }
 
-    // Both participants join and approve (the approval oneshot is buffered,
-    // so approving immediately after join is valid).
-    for user in [&alice, &bob] {
-        let ceremony_id = commands::signing::join_signing_session(
-            user.app.handle().clone(),
-            commands::signing::JoinSigningSessionArgs {
-                group_id: group_id.clone(),
-                session_id,
-                server_url: Some(server_url.clone()),
-            },
-        )
-        .await
-        .expect("join signing session");
-        commands::signing::respond_to_signing(
-            user.app.state::<AppState>().clone(),
-            ceremony_id,
-            true,
-        )
-        .await
-        .expect("approve");
-    }
+    // Alice is the coordinator and also a selected signer, so she contributes
+    // her share locally — only Bob joins over the network. Bob approves (the
+    // approval oneshot is buffered, so approving right after join is valid).
+    let bob_ceremony = commands::signing::join_signing_session(
+        bob.app.handle().clone(),
+        commands::signing::JoinSigningSessionArgs {
+            group_id: group_id.clone(),
+            session_id,
+            server_url: Some(server_url.clone()),
+        },
+    )
+    .await
+    .expect("join signing session");
+    commands::signing::respond_to_signing(
+        bob.app.state::<AppState>().clone(),
+        bob_ceremony,
+        true,
+    )
+    .await
+    .expect("approve");
 
     // The coordinator must emit the final signature.
     let signature_hex = tokio::task::spawn_blocking(move || {

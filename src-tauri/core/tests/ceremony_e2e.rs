@@ -175,6 +175,7 @@ async fn dkg_and_sign(suite: Suite) {
         public_key_package: outputs[0].group.public_key_package.clone(),
         message: message.clone(),
         signers,
+        self_key_package: outputs[0].group.key_package.clone(),
     };
     let (coord_tx, mut coord_rx) = mpsc::channel(32);
     let coord_cancel = CancellationToken::new();
@@ -315,6 +316,7 @@ async fn participant_rejection_aborts() {
         public_key_package: outputs[0].group.public_key_package.clone(),
         message: b"should never be signed".to_vec(),
         signers,
+        self_key_package: outputs[0].group.key_package.clone(),
     };
     let (coord_tx, mut coord_rx) = mpsc::channel(32);
     let coord_cancel = CancellationToken::new();
@@ -333,10 +335,10 @@ async fn participant_rejection_aborts() {
     };
     tokio::spawn(async move { while coord_rx.recv().await.is_some() {} });
 
-    // User 0 also participates (2-of-2: coordinator signs too) and approves...
-    // actually here user 0 is only coordinating; user 1 rejects, so the
-    // ceremony can never complete. We give user 1 a rejection and expect
-    // their task to fail fast; then cancel the coordinator.
+    // User 0 (the coordinator) is among the signers and contributes its share
+    // locally. User 1 is the only external signer, and rejects — so the
+    // ceremony can never complete. We expect user 1's task to fail fast, then
+    // cancel the coordinator.
     let params = ParticipantParams {
         server_url: server_url.clone(),
         trust: trust.clone(),
@@ -362,43 +364,6 @@ async fn participant_rejection_aborts() {
         }
     });
 
-    // Participant 0 (the coordinator's own share) approves, so the signing
-    // package gets built and participant 1 reaches the approval gate.
-    let params0 = ParticipantParams {
-        server_url: server_url.clone(),
-        trust: trust.clone(),
-        comm_privkey: users[0].privkey.clone(),
-        comm_pubkey: users[0].pubkey.clone(),
-        key_package: outputs[0].group.key_package.clone(),
-        session_id,
-        group_pubkeys: all_pubkeys.clone(),
-    };
-    let (tx0, mut rx0) = mpsc::channel(32);
-    let (approve_tx0, approve_rx0) = oneshot::channel();
-    tokio::spawn(async move {
-        let mut approve_tx = Some(approve_tx0);
-        while let Some(event) = rx0.recv().await {
-            if matches!(
-                event,
-                frost_app_core::events::ParticipantEvent::AwaitingApproval { .. }
-            ) {
-                if let Some(tx) = approve_tx.take() {
-                    let _ = tx.send(true);
-                }
-            }
-        }
-    });
-    let p0 = tokio::spawn(async move {
-        run_participant(
-            Suite::Ed25519,
-            params0,
-            approve_rx0,
-            tx0,
-            CancellationToken::new(),
-        )
-        .await
-    });
-
     let rejected = run_participant(
         Suite::Ed25519,
         params,
@@ -413,5 +378,4 @@ async fn participant_rejection_aborts() {
     coord_cancel2.cancel();
     let r = coordinator.await.unwrap();
     assert!(r.is_err(), "coordinator must not produce a signature");
-    let _ = p0.await;
 }
