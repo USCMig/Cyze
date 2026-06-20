@@ -25,6 +25,9 @@ pub struct Settings {
     /// PEM certs trusted for specific external servers, keyed by `host:port`.
     #[serde(default)]
     pub trusted_certs: HashMap<String, String>,
+    /// Local nicknames/aliases for contacts, keyed by hex comm pubkey.
+    #[serde(default)]
+    pub contact_aliases: HashMap<String, String>,
 }
 
 /// Keystore contents held in memory while unlocked. The unlocked

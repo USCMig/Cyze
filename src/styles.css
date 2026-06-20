@@ -295,8 +295,8 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .checkstep {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px;
+  gap: 22px;
+  padding: 14px 16px;
   border-radius: 10px;
   border: 1px solid transparent;
 }
@@ -323,8 +323,8 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
   border-color: var(--accent);
   color: var(--accent);
 }
-.checkstep-body { flex: 1; }
-.checkstep-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.checkstep-body { flex: 1; padding-right: 8px; }
+.checkstep-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
 .checkstep button { white-space: nowrap; }
 
 /* Recovery code backup */
@@ -445,6 +445,85 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
   filter: drop-shadow(0 0 7px rgba(244, 183, 40, 0.4))
     drop-shadow(0 0 2px rgba(244, 183, 40, 0.55));
 }
+
+/* In-content links: brand gold, never the default purple */
+.content a,
+.content a:visited,
+.unlock-card a,
+.unlock-card a:visited {
+  color: var(--gold-dim);
+  text-decoration-color: rgba(244, 183, 40, 0.45);
+}
+.content a:hover,
+.unlock-card a:hover { color: var(--accent); }
+
+/* Multi-select dropdown (DKG participants) */
+.multiselect { position: relative; margin-bottom: 12px; }
+.multiselect-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.multiselect-panel {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+  cursor: pointer;
+}
+.multiselect-option:hover { background: var(--bg-elevated); }
+.multiselect-option input { width: auto; margin: 0; }
+
+/* Selected-participant chips */
+.chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 6px 4px 11px;
+  font-size: 12px;
+}
+.chip button {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  font-weight: 400;
+}
+.chip button:hover { color: var(--danger); filter: none; }
+
+/* Small icon button (e.g. edit alias) */
+.icon-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.icon-btn:hover { color: var(--accent); border-color: var(--border-hi); filter: none; }
 
 .sidebar-brand {
   margin: 4px 8px 18px;

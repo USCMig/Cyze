@@ -160,10 +160,10 @@ async fn full_user_journey() {
     let bob_contact = commands::contacts::export_my_contact(bob_state.clone(), "bob".into())
         .await
         .unwrap();
-    commands::contacts::add_contact(alice_state.clone(), bob_contact.text.clone())
+    commands::contacts::add_contact(alice_state.clone(), bob_contact.text.clone(), None)
         .await
         .expect("alice imports bob");
-    commands::contacts::add_contact(bob_state.clone(), alice_contact.text.clone())
+    commands::contacts::add_contact(bob_state.clone(), alice_contact.text.clone(), None)
         .await
         .expect("bob imports alice");
     assert_eq!(

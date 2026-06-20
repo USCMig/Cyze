@@ -9,22 +9,27 @@ use crate::state::AppState;
 pub struct ContactDto {
     pub name: String,
     pub pubkey: String,
+    /// Local nickname for this contact, if set.
+    pub alias: Option<String>,
     /// The shareable `zffrost1...` string.
     pub text: String,
 }
 
 #[tauri::command]
 pub async fn list_contacts(state: State<'_, AppState>) -> AppResult<Vec<ContactDto>> {
+    let aliases = state.load_settings().contact_aliases;
     state
         .with_config(|config| {
             config
                 .contact
                 .values()
                 .map(|c| {
+                    let pubkey = hex::encode(&c.pubkey.0);
                     Ok(ContactDto {
                         name: c.name.clone(),
-                        pubkey: hex::encode(&c.pubkey.0),
+                        alias: aliases.get(&pubkey).cloned(),
                         text: frost_app_core::config::contact_to_text(&c.name, &c.pubkey)?,
+                        pubkey,
                     })
                 })
                 .collect::<AppResult<Vec<_>>>()
@@ -32,8 +37,29 @@ pub async fn list_contacts(state: State<'_, AppState>) -> AppResult<Vec<ContactD
         .await
 }
 
+/// Set or clear the local alias for a contact (empty string clears it).
 #[tauri::command]
-pub async fn add_contact(state: State<'_, AppState>, text: String) -> AppResult<ContactDto> {
+pub async fn set_contact_alias(
+    state: State<'_, AppState>,
+    pubkey: String,
+    alias: String,
+) -> AppResult<()> {
+    let mut settings = state.load_settings();
+    let trimmed = alias.trim();
+    if trimmed.is_empty() {
+        settings.contact_aliases.remove(&pubkey);
+    } else {
+        settings.contact_aliases.insert(pubkey, trimmed.to_string());
+    }
+    state.save_settings(&settings)
+}
+
+#[tauri::command]
+pub async fn add_contact(
+    state: State<'_, AppState>,
+    text: String,
+    alias: Option<String>,
+) -> AppResult<ContactDto> {
     let mut contact = frost_app_core::config::contact_from_text(&text)?;
     state
         .mutate_config(|config| {
@@ -55,9 +81,22 @@ pub async fn add_contact(state: State<'_, AppState>, text: String) -> AppResult<
             Ok(())
         })
         .await?;
+
+    let pubkey = hex::encode(&contact.pubkey.0);
+    // Persist the local alias, if one was provided at import.
+    let alias = alias.and_then(|a| {
+        let a = a.trim().to_string();
+        (!a.is_empty()).then_some(a)
+    });
+    if let Some(alias) = &alias {
+        let mut settings = state.load_settings();
+        settings.contact_aliases.insert(pubkey.clone(), alias.clone());
+        state.save_settings(&settings)?;
+    }
     Ok(ContactDto {
         name: contact.name.clone(),
-        pubkey: hex::encode(&contact.pubkey.0),
+        alias,
+        pubkey,
         text,
     })
 }
@@ -74,7 +113,13 @@ pub async fn remove_contact(state: State<'_, AppState>, pubkey: String) -> AppRe
             config.contact.remove(&name);
             Ok(())
         })
-        .await
+        .await?;
+    // Drop any alias for the removed contact.
+    let mut settings = state.load_settings();
+    if settings.contact_aliases.remove(&pubkey).is_some() {
+        state.save_settings(&settings)?;
+    }
+    Ok(())
 }
 
 /// Export the user's own contact string for sharing with peers.
@@ -94,6 +139,7 @@ pub async fn export_my_contact(state: State<'_, AppState>, name: String) -> AppR
             };
             Ok(ContactDto {
                 name,
+                alias: None,
                 pubkey: hex::encode(&pubkey.0),
                 text: contact
                     .as_text()

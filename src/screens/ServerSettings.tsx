@@ -61,7 +61,9 @@ export default function ServerSettings() {
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tunnelCopied, setTunnelCopied] = useState<"app" | "cli" | null>(null);
-  const [hostOpen, setHostOpen] = useState(true);
+  // Both collapsed on every launch, so the user makes an explicit choice
+  // between hosting a server and connecting to an external one.
+  const [hostOpen, setHostOpen] = useState(false);
   const [extOpen, setExtOpen] = useState(false);
 
   useTauriEvent<string>("sidecar:log", (line) =>

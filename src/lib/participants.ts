@@ -28,7 +28,7 @@ export function resolveParticipant(
   }
   const contact = contacts?.find((c) => c.pubkey === pubkey);
   return {
-    label: contact?.name ?? shortPubkey,
+    label: contact?.alias || contact?.name || shortPubkey,
     pubkey,
     shortPubkey,
     isSelf: false,

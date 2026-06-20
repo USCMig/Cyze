@@ -25,6 +25,7 @@ pub fn run() {
             commands::contacts::list_contacts,
             commands::contacts::add_contact,
             commands::contacts::remove_contact,
+            commands::contacts::set_contact_alias,
             commands::contacts::export_my_contact,
             commands::groups::list_groups,
             commands::groups::remove_group,

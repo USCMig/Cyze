@@ -14,6 +14,7 @@ export interface KeystoreStatus {
 export interface ContactDto {
   name: string;
   pubkey: string;
+  alias: string | null;
   text: string;
 }
 
@@ -82,8 +83,11 @@ export const setUsername = (username: string) =>
 
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");
-export const addContact = (text: string) => invoke<ContactDto>("add_contact", { text });
+export const addContact = (text: string, alias?: string) =>
+  invoke<ContactDto>("add_contact", { text, alias: alias ?? null });
 export const removeContact = (pubkey: string) => invoke<void>("remove_contact", { pubkey });
+export const setContactAlias = (pubkey: string, alias: string) =>
+  invoke<void>("set_contact_alias", { pubkey, alias });
 export const exportMyContact = (name: string) =>
   invoke<ContactDto>("export_my_contact", { name });
 

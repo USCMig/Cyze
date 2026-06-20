@@ -33,8 +33,22 @@ export default function DkgWizard() {
   const [description, setDescription] = useState("");
   const [threshold, setThreshold] = useState(2);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const toggleSigner = (pubkey: string, on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(pubkey);
+      else next.delete(pubkey);
+      return next;
+    });
+  };
+  const contactLabel = (pubkey: string) => {
+    const c = contacts.data?.find((x) => x.pubkey === pubkey);
+    return c ? c.alias || c.name : `${pubkey.slice(0, 10)}…`;
+  };
 
   // The active ceremony id lives in the global store, not local state, so it
   // survives navigating away and back (and even a reload) while the backend
@@ -201,22 +215,53 @@ export default function DkgWizard() {
 
             <label>Participants (besides you)</label>
             {contacts.data?.length ? (
-              contacts.data.map((c) => (
-                <div key={c.pubkey} className="row" style={{ marginBottom: 6 }}>
-                  <input
-                    type="checkbox"
-                    style={{ width: "auto" }}
-                    checked={selected.has(c.pubkey)}
-                    onChange={(e) => {
-                      const next = new Set(selected);
-                      if (e.target.checked) next.add(c.pubkey);
-                      else next.delete(c.pubkey);
-                      setSelected(next);
-                    }}
-                  />
-                  <span>{c.name}</span>
+              <>
+                <div className="multiselect">
+                  <button
+                    type="button"
+                    className="secondary multiselect-toggle"
+                    onClick={() => setPickerOpen((o) => !o)}
+                  >
+                    <span>
+                      {selected.size
+                        ? `${selected.size} participant${selected.size === 1 ? "" : "s"} selected`
+                        : "Select participants…"}
+                    </span>
+                    <span className="dim">{pickerOpen ? "▾" : "▸"}</span>
+                  </button>
+                  {pickerOpen && (
+                    <div className="multiselect-panel">
+                      {contacts.data.map((c) => (
+                        <label key={c.pubkey} className="multiselect-option">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(c.pubkey)}
+                            onChange={(e) => toggleSigner(c.pubkey, e.target.checked)}
+                          />
+                          <span>{c.alias || c.name}</span>
+                          {c.alias && <span className="dim"> ({c.name})</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ))
+                {selected.size > 0 && (
+                  <div className="chips">
+                    {[...selected].map((pk) => (
+                      <span className="chip" key={pk}>
+                        {contactLabel(pk)}
+                        <button
+                          type="button"
+                          aria-label="Remove"
+                          onClick={() => toggleSigner(pk, false)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
               <p className="dim">
                 No contacts — <Link to="/contacts">import contacts</Link> first.
@@ -262,12 +307,28 @@ export default function DkgWizard() {
         )}
 
         <label>Server (host:port)</label>
-        <input
-          type="text"
-          value={effectiveServer}
-          onChange={(e) => setServerUrl(e.target.value)}
-          placeholder="127.0.0.1:2744"
-        />
+        {sidecar.data?.running ? (
+          <>
+            <input
+              type="text"
+              value={`127.0.0.1:${sidecar.data.port}`}
+              disabled
+              title="Using your embedded server — manage it on the Server page"
+            />
+            <p className="dim" style={{ marginTop: -4 }}>
+              Using your embedded server. Participants on other machines connect
+              via the LAN address or tunnel URL shown on the{" "}
+              <Link to="/server">Server</Link> page.
+            </p>
+          </>
+        ) : (
+          <input
+            type="text"
+            value={effectiveServer}
+            onChange={(e) => setServerUrl(e.target.value)}
+            placeholder="127.0.0.1:2744"
+          />
+        )}
 
         {error && <div className="error">{error}</div>}
         <button
