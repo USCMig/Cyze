@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cyze — Brand Exploration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #0c1118;
+  --bg-1:      #111a22;
+  --bg-2:      #1a2536;
+  --border:    #253142;
+  --border-hi: #364a61;
+  --gold:      #F4B728;
+  --gold-2:    #c8981f;
+  --gold-3:    #7a5d13;
+  --text:      #ddd6be;
+  --text-2:    #6e8099;
+  --text-3:    #3a4d61;
+  --mono:      'JetBrains Mono', 'Courier New', monospace;
+  --r:         6px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 48px 52px 96px;
+  text-wrap: pretty;
+}
+
+/* ── Page header ─────────────────────────────────────── */
+.ph {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+  margin-bottom: 40px;
+}
+.ph-title {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.ph-title em { font-style: normal; color: var(--gold); }
+.ph-meta { font-size: 11px; color: var(--text-3); }
+
+/* ── Brief ───────────────────────────────────────────── */
+.brief {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--gold-3);
+  border-radius: var(--r);
+  padding: 18px 24px;
+  margin-bottom: 52px;
+}
+.brief-lbl {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--gold-2);
+  margin-bottom: 3px;
+}
+.brief-val { font-size: 12px; color: var(--text); }
+
+/* ── Section heading ─────────────────────────────────── */
+.sh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-bottom: 22px;
+}
+.sh::before { content: '//'; color: var(--gold); font-size: 12px; font-weight: 600; }
+.sh::after  { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ── Concept cards ───────────────────────────────────── */
+.concepts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 60px;
+}
+.cc {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.cc-top {
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  padding: 36px 20px 28px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  min-height: 196px;
+}
+.cc-top::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px, transparent 2px,
+    rgba(0,0,0,0.07) 2px, rgba(0,0,0,0.07) 3px
+  );
+  pointer-events: none;
+}
+.cc-badge   { position: absolute; top: 11px; left: 14px; font-size: 9px; color: var(--text-3); letter-spacing: 0.1em; }
+.cc-nametag { position: absolute; top: 11px; right: 14px; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold); }
+
+.cc-body {
+  padding: 18px 20px 22px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cc-title { font-size: 15px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+.cc-desc  { font-size: 11px; color: var(--text-2); line-height: 1.6; }
+
+.lp-mini {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 4px;
+}
+.lp-mini .lp-name    { font-size: 19px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text); line-height: 1; }
+.lp-mini .lp-tagline { font-size: 9px; color: var(--text-2); letter-spacing: 0.04em; margin-top: 3px; }
+
+/* crystal glow */
+.glow { filter: drop-shadow(0 0 9px rgba(244,183,40,0.4)) drop-shadow(0 0 2px rgba(244,183,40,0.55)); }
+
+/* ── Lockup variations ───────────────────────────────── */
+.lockups {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 60px;
+}
+.lv {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 22px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.lv-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 96px;
+}
+.lv-label { font-size: 9.5px; color: var(--text-3); letter-spacing: 0.12em; text-transform: uppercase; text-align: center; }
+
+/* ── Color palette ───────────────────────────────────── */
+.palette {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 10px;
+  margin-bottom: 60px;
+}
+.sw-chip { height: 44px; border-radius: 4px; margin-bottom: 7px; border: 1px solid rgba(255,255,255,0.04); }
+.sw-name { font-size: 9.5px; color: var(--text-2); margin-bottom: 1px; }
+.sw-hex  { font-size: 9px; color: var(--text-3); }
+
+/* ── Type scale ──────────────────────────────────────── */
+.tscale { margin-bottom: 52px; }
+.tr {
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.tr:first-child { border-top: 1px solid var(--border); }
+.tr-meta { flex-shrink: 0; width: 100px; font-size: 9.5px; color: var(--text-3); line-height: 1.5; }
+.tr-sample { flex: 1; }
+
+/* ── Tagline treatments ──────────────────────────────── */
+.taglines {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 60px;
+}
+.tl {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 13px 16px;
+}
+.tl-text { font-size: 12px; color: var(--text); }
+.tl-pfx  { color: var(--gold-2); }
+.tl-lbl  { font-size: 9px; color: var(--text-3); margin-top: 6px; }
+
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
+.cursor { display:inline-block; color:var(--gold); animation: blink 1s step-end infinite; }
+
+/* ── Wordmark options ────────────────────────────────── */
+.wordmarks {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.wm {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 18px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.wm-sample { display: flex; align-items: center; min-height: 44px; }
+.wm-lbl    { font-size: 9px; color: var(--text-3); letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* ─── Inline SVG helpers ─────────────────────────────── */
+/* Crystal arm macro via CSS not possible — all inline */
+</style>
+</head>
+<body>
+
+<!-- ════ PAGE HEADER ════ -->
+<header class="ph">
+  <div class="ph-title"><em>CYZE</em> &nbsp;/&nbsp; Brand Exploration &nbsp;·&nbsp; v1</div>
+  <div class="ph-meta">June 2026</div>
+</header>
+
+<!-- ════ BRIEF ════ -->
+<div class="brief">
+  <div>
+    <div class="brief-lbl">Product</div>
+    <div class="brief-val">Cyze — Coordinate Your ZCash Easily</div>
+  </div>
+  <div>
+    <div class="brief-lbl">Tagline</div>
+    <div class="brief-val">Coordinate your Size in Cyze</div>
+  </div>
+  <div>
+    <div class="brief-lbl">Direction</div>
+    <div class="brief-val">Dark terminal · Monospace · ZCash gold · Crystal mark</div>
+  </div>
+</div>
+
+<!-- ════ LOGO CONCEPTS ════ -->
+<div class="sh">Logo Concepts — 3 Directions</div>
+<div class="concepts">
+
+  <!-- 01 CRYSTAL -->
+  <div class="cc">
+    <div class="cc-top">
+      <span class="cc-badge">01</span>
+      <span class="cc-nametag">CRYSTAL</span>
+      <svg class="glow" width="144" height="144" viewBox="0 0 100 100" fill="none">
+        <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+          <g transform="rotate(0)">
+            <line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/>
+            <line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/>
+            <line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/>
+            <circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/>
+          </g>
+          <g transform="rotate(60)">
+            <line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/>
+            <line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/>
+            <line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/>
+            <circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/>
+          </g>
+          <g transform="rotate(120)">
+            <line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/>
+            <line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/>
+            <line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/>
+            <circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/>
+          </g>
+          <g transform="rotate(180)">
+            <line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/>
+            <line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/>
+            <line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/>
+            <circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/>
+          </g>
+          <g transform="rotate(240)">
+            <line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/>
+            <line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/>
+            <line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/>
+            <circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/>
+          </g>
+          <g transform="rotate(300)">
+            <line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/>
+            <line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/>
+            <line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/>
+            <circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/>
+          </g>
+          <circle cx="0" cy="0" r="4.5" fill="#F4B728" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+    <div class="cc-body">
+      <div class="cc-title">Crystal</div>
+      <div class="cc-desc">Six-arm lattice drawn from FROST itself — the protocol named for ice. Scientific precision meets organic symmetry. References the signing primitive directly.</div>
+      <div class="lp-mini">
+        <svg width="24" height="24" viewBox="0 0 100 100" fill="none">
+          <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+            <g transform="rotate(0)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.4"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.5"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.5"/><circle cx="38" cy="0" r="3" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(60)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.4"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.5"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.5"/><circle cx="38" cy="0" r="3" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(120)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.4"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.5"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.5"/><circle cx="38" cy="0" r="3" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(180)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.4"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.5"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.5"/><circle cx="38" cy="0" r="3" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(240)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.4"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.5"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.5"/><circle cx="38" cy="0" r="3" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(300)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.4"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.5"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.5"/><circle cx="38" cy="0" r="3" fill="#F4B728" stroke="none"/></g>
+            <circle cx="0" cy="0" r="6" fill="#F4B728" stroke="none"/>
+          </g>
+        </svg>
+        <div>
+          <div class="lp-name">CYZE</div>
+          <div class="lp-tagline">// coordinate your size in cyze</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 02 GEM -->
+  <div class="cc">
+    <div class="cc-top">
+      <span class="cc-badge">02</span>
+      <span class="cc-nametag">GEM</span>
+      <svg width="144" height="144" viewBox="0 0 100 100" fill="none">
+        <g transform="translate(50,50)" fill="none" stroke="#F4B728" stroke-linecap="round">
+          <!-- outer hex flat-top r=38 -->
+          <polygon points="38,0 19,32.9 -19,32.9 -38,0 -19,-32.9 19,-32.9" stroke-width="1.8"/>
+          <!-- inner hex pointy-top r=17 -->
+          <polygon points="14.7,8.5 0,17 -14.7,8.5 -14.7,-8.5 0,-17 14.7,-8.5" stroke-width="1.2"/>
+          <!-- bezel facets -->
+          <line x1="38" y1="0" x2="14.7" y2="8.5" stroke-width="0.9"/>
+          <line x1="38" y1="0" x2="14.7" y2="-8.5" stroke-width="0.9"/>
+          <line x1="19" y1="32.9" x2="14.7" y2="8.5" stroke-width="0.9"/>
+          <line x1="19" y1="32.9" x2="0" y2="17" stroke-width="0.9"/>
+          <line x1="-19" y1="32.9" x2="0" y2="17" stroke-width="0.9"/>
+          <line x1="-19" y1="32.9" x2="-14.7" y2="8.5" stroke-width="0.9"/>
+          <line x1="-38" y1="0" x2="-14.7" y2="8.5" stroke-width="0.9"/>
+          <line x1="-38" y1="0" x2="-14.7" y2="-8.5" stroke-width="0.9"/>
+          <line x1="-19" y1="-32.9" x2="-14.7" y2="-8.5" stroke-width="0.9"/>
+          <line x1="-19" y1="-32.9" x2="0" y2="-17" stroke-width="0.9"/>
+          <line x1="19" y1="-32.9" x2="0" y2="-17" stroke-width="0.9"/>
+          <line x1="19" y1="-32.9" x2="14.7" y2="-8.5" stroke-width="0.9"/>
+          <!-- crown facets -->
+          <line x1="14.7" y1="8.5" x2="0" y2="0" stroke-width="0.9"/>
+          <line x1="0" y1="17" x2="0" y2="0" stroke-width="0.9"/>
+          <line x1="-14.7" y1="8.5" x2="0" y2="0" stroke-width="0.9"/>
+          <line x1="-14.7" y1="-8.5" x2="0" y2="0" stroke-width="0.9"/>
+          <line x1="0" y1="-17" x2="0" y2="0" stroke-width="0.9"/>
+          <line x1="14.7" y1="-8.5" x2="0" y2="0" stroke-width="0.9"/>
+          <circle cx="0" cy="0" r="2.8" fill="#F4B728" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+    <div class="cc-body">
+      <div class="cc-title">Gem</div>
+      <div class="cc-desc">Hexagonal cut diamond, top-down. A gem schematic for a tool about value, precision, and knowing your size. The cut is everything.</div>
+      <div class="lp-mini">
+        <svg width="24" height="24" viewBox="0 0 100 100" fill="none">
+          <g transform="translate(50,50)" fill="none" stroke="#F4B728" stroke-linecap="round">
+            <polygon points="38,0 19,32.9 -19,32.9 -38,0 -19,-32.9 19,-32.9" stroke-width="2.2"/>
+            <polygon points="14.7,8.5 0,17 -14.7,8.5 -14.7,-8.5 0,-17 14.7,-8.5" stroke-width="1.5"/>
+            <line x1="38" y1="0" x2="14.7" y2="8.5" stroke-width="1.1"/><line x1="38" y1="0" x2="14.7" y2="-8.5" stroke-width="1.1"/>
+            <line x1="19" y1="32.9" x2="14.7" y2="8.5" stroke-width="1.1"/><line x1="19" y1="32.9" x2="0" y2="17" stroke-width="1.1"/>
+            <line x1="-19" y1="32.9" x2="0" y2="17" stroke-width="1.1"/><line x1="-19" y1="32.9" x2="-14.7" y2="8.5" stroke-width="1.1"/>
+            <line x1="-38" y1="0" x2="-14.7" y2="8.5" stroke-width="1.1"/><line x1="-38" y1="0" x2="-14.7" y2="-8.5" stroke-width="1.1"/>
+            <line x1="-19" y1="-32.9" x2="-14.7" y2="-8.5" stroke-width="1.1"/><line x1="-19" y1="-32.9" x2="0" y2="-17" stroke-width="1.1"/>
+            <line x1="19" y1="-32.9" x2="0" y2="-17" stroke-width="1.1"/><line x1="19" y1="-32.9" x2="14.7" y2="-8.5" stroke-width="1.1"/>
+            <line x1="14.7" y1="8.5" x2="0" y2="0" stroke-width="1.1"/><line x1="0" y1="17" x2="0" y2="0" stroke-width="1.1"/>
+            <line x1="-14.7" y1="8.5" x2="0" y2="0" stroke-width="1.1"/><line x1="-14.7" y1="-8.5" x2="0" y2="0" stroke-width="1.1"/>
+            <line x1="0" y1="-17" x2="0" y2="0" stroke-width="1.1"/><line x1="14.7" y1="-8.5" x2="0" y2="0" stroke-width="1.1"/>
+            <circle cx="0" cy="0" r="3.5" fill="#F4B728" stroke="none"/>
+          </g>
+        </svg>
+        <div>
+          <div class="lp-name">CYZE</div>
+          <div class="lp-tagline">// coordinate your size in cyze</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 03 NODE -->
+  <div class="cc">
+    <div class="cc-top">
+      <span class="cc-badge">03</span>
+      <span class="cc-nametag">NODE</span>
+      <svg width="144" height="144" viewBox="0 0 100 100" fill="none">
+        <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+          <!-- outer ring -->
+          <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7" fill="none" stroke-width="1.2"/>
+          <!-- spokes (truncated away from center dot) -->
+          <line x1="6.5" y1="0" x2="27.5" y2="0" stroke-width="1.3"/>
+          <line x1="3.25" y1="5.63" x2="13.75" y2="23.8" stroke-width="1.3"/>
+          <line x1="-3.25" y1="5.63" x2="-13.75" y2="23.8" stroke-width="1.3"/>
+          <line x1="-6.5" y1="0" x2="-27.5" y2="0" stroke-width="1.3"/>
+          <line x1="-3.25" y1="-5.63" x2="-13.75" y2="-23.8" stroke-width="1.3"/>
+          <line x1="3.25" y1="-5.63" x2="13.75" y2="-23.8" stroke-width="1.3"/>
+          <!-- outer nodes -->
+          <circle cx="32" cy="0" r="4.5" fill="#1a2536" stroke-width="1.5"/>
+          <circle cx="16" cy="27.7" r="4.5" fill="#1a2536" stroke-width="1.5"/>
+          <circle cx="-16" cy="27.7" r="4.5" fill="#1a2536" stroke-width="1.5"/>
+          <circle cx="-32" cy="0" r="4.5" fill="#1a2536" stroke-width="1.5"/>
+          <circle cx="-16" cy="-27.7" r="4.5" fill="#1a2536" stroke-width="1.5"/>
+          <circle cx="16" cy="-27.7" r="4.5" fill="#1a2536" stroke-width="1.5"/>
+          <!-- center (gold) -->
+          <circle cx="0" cy="0" r="6" fill="#F4B728" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+    <div class="cc-body">
+      <div class="cc-title">Node</div>
+      <div class="cc-desc">Hub-and-spoke threshold graph. n-of-m parties converge to a single gold center. The coordination itself is the mark.</div>
+      <div class="lp-mini">
+        <svg width="24" height="24" viewBox="0 0 100 100" fill="none">
+          <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+            <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7" fill="none" stroke-width="1.5"/>
+            <line x1="6.5" y1="0" x2="27.5" y2="0" stroke-width="1.6"/><line x1="3.25" y1="5.63" x2="13.75" y2="23.8" stroke-width="1.6"/>
+            <line x1="-3.25" y1="5.63" x2="-13.75" y2="23.8" stroke-width="1.6"/><line x1="-6.5" y1="0" x2="-27.5" y2="0" stroke-width="1.6"/>
+            <line x1="-3.25" y1="-5.63" x2="-13.75" y2="-23.8" stroke-width="1.6"/><line x1="3.25" y1="-5.63" x2="13.75" y2="-23.8" stroke-width="1.6"/>
+            <circle cx="32" cy="0" r="5" fill="#0c1118" stroke-width="1.8"/>
+            <circle cx="16" cy="27.7" r="5" fill="#0c1118" stroke-width="1.8"/>
+            <circle cx="-16" cy="27.7" r="5" fill="#0c1118" stroke-width="1.8"/>
+            <circle cx="-32" cy="0" r="5" fill="#0c1118" stroke-width="1.8"/>
+            <circle cx="-16" cy="-27.7" r="5" fill="#0c1118" stroke-width="1.8"/>
+            <circle cx="16" cy="-27.7" r="5" fill="#0c1118" stroke-width="1.8"/>
+            <circle cx="0" cy="0" r="7.5" fill="#F4B728" stroke="none"/>
+          </g>
+        </svg>
+        <div>
+          <div class="lp-name">CYZE</div>
+          <div class="lp-tagline">// coordinate your size in cyze</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════ LOCKUP VARIATIONS ════ -->
+<div class="sh">Lockup Variations — Crystal Mark</div>
+<div class="lockups">
+
+  <!-- Mark only -->
+  <div class="lv">
+    <div class="lv-content">
+      <svg class="glow" width="84" height="84" viewBox="0 0 100 100" fill="none">
+        <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+          <g transform="rotate(0)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/><circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/></g>
+          <g transform="rotate(60)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/><circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/></g>
+          <g transform="rotate(120)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/><circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/></g>
+          <g transform="rotate(180)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/><circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/></g>
+          <g transform="rotate(240)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/><circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/></g>
+          <g transform="rotate(300)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="1.8"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.1"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.1"/><circle cx="38" cy="0" r="2.2" fill="#F4B728" stroke="none"/></g>
+          <circle cx="0" cy="0" r="4.5" fill="#F4B728" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+    <div class="lv-label">Mark Solo</div>
+  </div>
+
+  <!-- Horizontal -->
+  <div class="lv">
+    <div class="lv-content">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <svg width="40" height="40" viewBox="0 0 100 100" fill="none">
+          <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+            <g transform="rotate(0)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(60)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(120)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(180)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(240)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(300)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <circle cx="0" cy="0" r="5" fill="#F4B728" stroke="none"/>
+          </g>
+        </svg>
+        <span style="font-size:26px;font-weight:600;letter-spacing:0.22em;color:#ddd6be;line-height:1;">CYZE</span>
+      </div>
+    </div>
+    <div class="lv-label">Horizontal</div>
+  </div>
+
+  <!-- Stacked -->
+  <div class="lv">
+    <div class="lv-content">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+        <svg width="46" height="46" viewBox="0 0 100 100" fill="none">
+          <g transform="translate(50,50)" stroke="#F4B728" stroke-linecap="round">
+            <g transform="rotate(0)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(60)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(120)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(180)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(240)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <g transform="rotate(300)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.3"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.3"/><circle cx="38" cy="0" r="2.5" fill="#F4B728" stroke="none"/></g>
+            <circle cx="0" cy="0" r="5" fill="#F4B728" stroke="none"/>
+          </g>
+        </svg>
+        <div style="text-align:center;">
+          <div style="font-size:20px;font-weight:600;letter-spacing:0.22em;color:#ddd6be;line-height:1;">CYZE</div>
+          <div style="font-size:9px;color:#6e8099;letter-spacing:0.05em;margin-top:5px;">// coordinate your size in cyze</div>
+        </div>
+      </div>
+    </div>
+    <div class="lv-label">Stacked</div>
+  </div>
+
+  <!-- Light mode -->
+  <div class="lv">
+    <div class="lv-content">
+      <div style="background:#f0ead8;border-radius:6px;padding:14px 18px;display:flex;align-items:center;gap:13px;width:100%;">
+        <svg width="34" height="34" viewBox="0 0 100 100" fill="none">
+          <g transform="translate(50,50)" stroke="#b88a18" stroke-linecap="round">
+            <g transform="rotate(0)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.4"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.4"/><circle cx="38" cy="0" r="2.8" fill="#b88a18" stroke="none"/></g>
+            <g transform="rotate(60)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.4"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.4"/><circle cx="38" cy="0" r="2.8" fill="#b88a18" stroke="none"/></g>
+            <g transform="rotate(120)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.4"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.4"/><circle cx="38" cy="0" r="2.8" fill="#b88a18" stroke="none"/></g>
+            <g transform="rotate(180)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.4"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.4"/><circle cx="38" cy="0" r="2.8" fill="#b88a18" stroke="none"/></g>
+            <g transform="rotate(240)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.4"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.4"/><circle cx="38" cy="0" r="2.8" fill="#b88a18" stroke="none"/></g>
+            <g transform="rotate(300)"><line x1="0" y1="0" x2="38" y2="0" stroke-width="2.2"/><line x1="20" y1="0" x2="26" y2="-9.5" stroke-width="1.4"/><line x1="20" y1="0" x2="26" y2="9.5" stroke-width="1.4"/><circle cx="38" cy="0" r="2.8" fill="#b88a18" stroke="none"/></g>
+            <circle cx="0" cy="0" r="5" fill="#b88a18" stroke="none"/>
+          </g>
+        </svg>
+        <div>
+          <div style="font-size:20px;font-weight:600;letter-spacing:0.2em;color:#1a1208;line-height:1;">CYZE</div>
+          <div style="font-size:9px;color:#6b5e3a;letter-spacing:0.05em;margin-top:3px;">// coordinate your size in cyze</div>
+        </div>
+      </div>
+    </div>
+    <div class="lv-label">Light Mode</div>
+  </div>
+
+</div>
+
+<!-- ════ COLOR SYSTEM ════ -->
+<div class="sh">Color System</div>
+<div class="palette">
+  <div><div class="sw-chip" style="background:#0c1118;border:1px solid #253142;"></div><div class="sw-name">bg.deep</div><div class="sw-hex">#0c1118</div></div>
+  <div><div class="sw-chip" style="background:#111a22;"></div><div class="sw-name">bg.surface</div><div class="sw-hex">#111a22</div></div>
+  <div><div class="sw-chip" style="background:#1a2536;"></div><div class="sw-name">bg.elevated</div><div class="sw-hex">#1a2536</div></div>
+  <div><div class="sw-chip" style="background:#253142;"></div><div class="sw-name">bg.border</div><div class="sw-hex">#253142</div></div>
+  <div><div class="sw-chip" style="background:#F4B728;"></div><div class="sw-name">gold.primary</div><div class="sw-hex">#F4B728</div></div>
+  <div><div class="sw-chip" style="background:#c8981f;"></div><div class="sw-name">gold.dim</div><div class="sw-hex">#c8981f</div></div>
+  <div><div class="sw-chip" style="background:#7a5d13;"></div><div class="sw-name">gold.faint</div><div class="sw-hex">#7a5d13</div></div>
+  <div><div class="sw-chip" style="background:#ddd6be;"></div><div class="sw-name">text.primary</div><div class="sw-hex">#ddd6be</div></div>
+  <div><div class="sw-chip" style="background:#6e8099;"></div><div class="sw-name">text.secondary</div><div class="sw-hex">#6e8099</div></div>
+  <div><div class="sw-chip" style="background:#3a4d61;"></div><div class="sw-name">text.ghost</div><div class="sw-hex">#3a4d61</div></div>
+</div>
+
+<!-- ════ TYPE SCALE ════ -->
+<div class="sh">Type Scale — JetBrains Mono</div>
+<div class="tscale">
+  <div class="tr">
+    <div class="tr-meta">Display<br>48 · 300</div>
+    <div class="tr-sample" style="font-size:48px;font-weight:300;letter-spacing:0.18em;color:#ddd6be;line-height:1;">CYZE</div>
+  </div>
+  <div class="tr">
+    <div class="tr-meta">Heading XL<br>28 · 600</div>
+    <div class="tr-sample" style="font-size:28px;font-weight:600;letter-spacing:0.1em;line-height:1.1;">FROST Signing Session</div>
+  </div>
+  <div class="tr">
+    <div class="tr-meta">Heading<br>18 · 600</div>
+    <div class="tr-sample" style="font-size:18px;font-weight:600;letter-spacing:0.06em;">Select Participants</div>
+  </div>
+  <div class="tr">
+    <div class="tr-meta">Subhead<br>13 · 500</div>
+    <div class="tr-sample" style="font-size:13px;font-weight:500;letter-spacing:0.04em;color:#F4B728;">3-of-5 Threshold &nbsp;·&nbsp; ZEC Transaction</div>
+  </div>
+  <div class="tr">
+    <div class="tr-meta">Body<br>13 · 400</div>
+    <div class="tr-sample" style="font-size:13px;font-weight:400;color:#ddd6be;">Coordinate your ZCash signing with FROST threshold signatures. No single point of failure.</div>
+  </div>
+  <div class="tr">
+    <div class="tr-meta">Caption<br>11 · 400</div>
+    <div class="tr-sample" style="font-size:11px;font-weight:400;color:#6e8099;">Round 1 of 2 completed &nbsp;·&nbsp; 2 participants remaining</div>
+  </div>
+  <div class="tr">
+    <div class="tr-meta">Hash / Code<br>11 · 400</div>
+    <div class="tr-sample" style="font-size:11px;font-weight:400;color:#F4B728;">zs1qkpw3v...f8a2n &nbsp;<span style="color:#3a4d61;">← ZCash shielded addr</span></div>
+  </div>
+</div>
+
+<!-- ════ TAGLINE TREATMENTS ════ -->
+<div class="sh">Tagline Treatments</div>
+<div class="taglines">
+  <div class="tl">
+    <div class="tl-text"><span class="tl-pfx">// </span>coordinate your size in cyze</div>
+    <div class="tl-lbl">Code comment — primary</div>
+  </div>
+  <div class="tl">
+    <div class="tl-text"><span class="tl-pfx">&gt; </span>coordinate your size in cyze</div>
+    <div class="tl-lbl">Shell prompt</div>
+  </div>
+  <div class="tl">
+    <div class="tl-text">coordinate your size in cyze<span class="cursor">_</span></div>
+    <div class="tl-lbl">Terminal cursor</div>
+  </div>
+  <div class="tl">
+    <div class="tl-text" style="color:#6e8099;">coordinate your size in <span style="color:#F4B728;">cyze</span></div>
+    <div class="tl-lbl">Brand emphasis</div>
+  </div>
+</div>
+
+<!-- ════ WORDMARK OPTIONS ════ -->
+<div class="sh">Wordmark Options</div>
+<div class="wordmarks">
+  <div class="wm">
+    <div class="wm-sample">
+      <span style="font-size:28px;font-weight:600;letter-spacing:0.22em;color:#ddd6be;">CYZE</span>
+    </div>
+    <div class="wm-lbl">Standard · 600 · wide</div>
+  </div>
+  <div class="wm">
+    <div class="wm-sample">
+      <span style="font-size:28px;font-weight:200;letter-spacing:0.3em;color:#ddd6be;">CYZE</span>
+    </div>
+    <div class="wm-lbl">Thin · 200 · wider</div>
+  </div>
+  <div class="wm">
+    <div class="wm-sample">
+      <span style="font-size:24px;font-weight:600;letter-spacing:0.1em;color:#ddd6be;">CY<span style="color:#F4B728;">·</span>ZE</span>
+    </div>
+    <div class="wm-lbl">Split · gold separator</div>
+  </div>
+  <div class="wm">
+    <div class="wm-sample">
+      <span style="font-size:26px;font-weight:300;letter-spacing:0.18em;color:#6e8099;">CY</span><span style="font-size:26px;font-weight:700;letter-spacing:0.18em;color:#ddd6be;">ZE</span>
+    </div>
+    <div class="wm-lbl">Weight contrast</div>
+  </div>
+</div>
+
+</body>
+</html>

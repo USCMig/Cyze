@@ -11,6 +11,7 @@ import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
 import { lockKeystore, listGroups } from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
+import { Logo } from "./components/Logo";
 import Unlock from "./screens/Unlock";
 import Dashboard from "./screens/Dashboard";
 import Contacts from "./screens/Contacts";
@@ -87,7 +88,9 @@ function Layout() {
     <div className="layout">
       <CeremonyListener />
       <nav className="sidebar">
-        <h1>FROST Companion</h1>
+        <div className="sidebar-brand">
+          <Logo markSize={24} showTagline />
+        </div>
         {NAV_SECTIONS.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>

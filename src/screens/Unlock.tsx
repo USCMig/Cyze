@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Logo } from "../components/Logo";
 import { useKeystore } from "../stores/keystore";
 import {
   createKeystore,
@@ -164,6 +165,9 @@ export default function Unlock() {
   return (
     <div className="unlock-wrap">
       <div className="card unlock-card">
+        <div className="unlock-brand">
+          <Logo markSize={32} showTagline />
+        </div>
         <h2>{title}</h2>
         {effectiveMode === "create" && (
           <p className="dim">

@@ -1,15 +1,22 @@
 :root {
-  --bg: #0f172a;
-  --bg-card: #1e293b;
-  --bg-input: #0b1220;
-  --border: #334155;
-  --text: #e2e8f0;
-  --text-dim: #94a3b8;
-  --accent: #60a5fa;
-  --accent-strong: #3b82f6;
+  /* Cyze brand — dark terminal, ZCash gold, crystal mark */
+  --bg: #0c1118;
+  --bg-card: #111a22;
+  --bg-elevated: #1a2536;
+  --bg-input: #0c1118;
+  --border: #253142;
+  --border-hi: #364a61;
+  --text: #ddd6be;
+  --text-dim: #6e8099;
+  --text-ghost: #3a4d61;
+  --accent: #f4b728;
+  --accent-strong: #f4b728;
+  --gold-dim: #c8981f;
+  --gold-faint: #7a5d13;
   --danger: #f87171;
   --ok: #4ade80;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'Courier New', monospace;
+  font-family: var(--mono);
   color-scheme: dark;
 }
 
@@ -72,6 +79,7 @@ h3 { font-size: 15px; color: var(--text-dim); }
 label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
 
 input[type="text"], input[type="password"], input[type="number"], textarea, select {
+  font-family: inherit;
   width: 100%;
   background: var(--bg-input);
   color: var(--text);
@@ -82,28 +90,39 @@ input[type="text"], input[type="password"], input[type="number"], textarea, sele
   margin-bottom: 12px;
 }
 
-textarea { font-family: ui-monospace, monospace; font-size: 12px; }
+textarea { font-family: var(--mono); font-size: 12px; }
 
 button {
-  background: var(--accent-strong);
-  color: white;
+  background: var(--accent);
+  color: #0c1118;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 9px 16px;
+  font-family: inherit;
   font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   cursor: pointer;
 }
 
-button:hover { filter: brightness(1.1); }
-button:disabled { opacity: 0.5; cursor: default; }
+button:hover { filter: brightness(1.08); }
+button:disabled { opacity: 0.45; cursor: default; }
 
 button.secondary {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text);
+  font-weight: 400;
 }
+button.secondary:hover { filter: none; border-color: var(--border-hi); }
 
-button.danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+button.danger {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-weight: 400;
+}
+button.danger:hover { filter: none; background: rgba(248, 113, 113, 0.08); }
 
 .row { display: flex; gap: 10px; align-items: center; }
 .row > * { margin-bottom: 0; }
@@ -114,7 +133,7 @@ button.danger { background: transparent; border: 1px solid var(--danger); color:
 
 .mono {
   display: block;
-  font-family: ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   word-break: break-all;
   background: var(--bg-input);
@@ -125,7 +144,7 @@ button.danger { background: transparent; border: 1px solid var(--danger); color:
 /* Inline code inside running text: snug padding that never overlaps adjacent
    lines (em-based vertical padding + clone so wraps stay tidy). */
 .code-inline {
-  font-family: ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: 0.88em;
   background: var(--bg-input);
   border: 1px solid var(--border);
@@ -141,7 +160,7 @@ table.participants { width: 100%; border-collapse: collapse; }
 table.participants td { border-top: none; padding: 3px 0; vertical-align: top; }
 table.participants td:first-child { font-size: 13px; padding-right: 14px; white-space: nowrap; }
 td.mono-cell {
-  font-family: ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: 11px;
   word-break: break-all;
 }
@@ -182,7 +201,7 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .step.failed .dot { background: var(--danger); }
 
 .log {
-  font-family: ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: 11px;
   background: var(--bg-input);
   border-radius: 8px;
@@ -207,7 +226,7 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .nav-pulse {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.6);
+  box-shadow: 0 0 0 0 rgba(244, 183, 40, 0.6);
   animation: nav-pulse 1.6s infinite;
 }
 
@@ -266,9 +285,9 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .collapsible-sub { font-size: 12px; color: var(--text-dim); }
 .collapsible-body { padding: 0 18px 18px; border-top: 1px solid var(--border); margin-top: -1px; padding-top: 16px; }
 @keyframes nav-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.6); }
-  70% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(244, 183, 40, 0.6); }
+  70% { box-shadow: 0 0 0 6px rgba(244, 183, 40, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(244, 183, 40, 0); }
 }
 
 /* Dashboard getting-started checklist */
@@ -283,7 +302,7 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 }
 .checkstep.current {
   border-color: var(--accent);
-  background: rgba(96, 165, 250, 0.06);
+  background: rgba(244, 183, 40, 0.06);
 }
 .checkstep-dot {
   flex: 0 0 26px;
@@ -334,7 +353,7 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: 13px;
 }
 .mnemonic-index {
@@ -404,3 +423,42 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
   line-height: 1.5;
 }
 .callout.warn { border-color: var(--danger); background: rgba(248,113,113,0.06); }
+
+/* ── Cyze brand lockup ─────────────────────────────────── */
+.brand-lockup { display: flex; align-items: center; gap: 11px; }
+.brand-wordmark {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text);
+  line-height: 1;
+}
+.brand-tagline {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  margin-top: 4px;
+}
+/* crystal mark glow, per the brand spec */
+.glow {
+  filter: drop-shadow(0 0 7px rgba(244, 183, 40, 0.4))
+    drop-shadow(0 0 2px rgba(244, 183, 40, 0.55));
+}
+
+.sidebar-brand {
+  margin: 4px 8px 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.unlock-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+.unlock-brand .brand-wordmark { font-size: 24px; }
+
+/* Terminal-flavoured headings: gold "//" prefix on section labels */
+.nav-section-title::before { content: "// "; color: var(--accent); opacity: 0.9; }
+h2 { letter-spacing: 0.02em; }
+h2::before { content: "// "; color: var(--accent); font-weight: 600; }
