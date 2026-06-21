@@ -14,5 +14,7 @@ pub mod keystore;
 pub mod signing;
 pub mod tls;
 pub mod transport;
+#[cfg(feature = "zcash")]
+pub mod zcash;
 
 pub use error::CoreError;

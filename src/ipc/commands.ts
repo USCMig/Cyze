@@ -92,7 +92,13 @@ export const exportMyContact = (name: string) =>
   invoke<ContactDto>("export_my_contact", { name });
 
 // Groups
+export interface OrchardKeys {
+  address: string;
+  ufvk: string;
+}
 export const listGroups = () => invoke<GroupSummary[]>("list_groups");
+export const groupOrchardKeys = (id: string) =>
+  invoke<OrchardKeys | null>("group_orchard_keys", { id });
 export const removeGroup = (id: string) => invoke<void>("remove_group", { id });
 
 // Server / sidecar

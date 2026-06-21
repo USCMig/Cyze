@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   getIdentity,
+  groupOrchardKeys,
   listContacts,
   listGroups,
   removeGroup,
@@ -38,9 +39,17 @@ function KeyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** The group's public key material and any derivable addresses. */
+/** The group's public key material and, for Orchard groups, its derived
+ *  unified address and full viewing key. */
 export function GroupKeys({ group }: { group: GroupSummary }) {
   const orchard = isOrchard(group);
+  const keys = useQuery({
+    queryKey: ["orchard-keys", group.id],
+    queryFn: () => groupOrchardKeys(group.id),
+    enabled: orchard,
+    staleTime: Infinity,
+  });
+
   return (
     <div style={{ marginTop: 10 }}>
       <KeyRow
@@ -51,19 +60,28 @@ export function GroupKeys({ group }: { group: GroupSummary }) {
         }
         value={group.id}
       />
-      {orchard && (
-        <div className="callout" style={{ marginTop: 10 }}>
-          <span>
-            This is the public key the group controls — the Orchard spend
-            authority (<span className="code-inline">ak</span>), shown here as a
-            full Orchard viewing key would expose it. A complete shielded{" "}
-            <strong>Orchard address</strong> additionally needs the nullifier key
-            (<span className="code-inline">nk</span>) and commitment-randomness
-            key (<span className="code-inline">rivk</span>), which a standard
-            FROST DKG does not produce. Those — and the resulting unified address
-            — arrive with the wallet/transaction features, so no spendable
-            address is derivable from the ceremony output alone yet.
-          </span>
+      {orchard && keys.data && (
+        <>
+          <KeyRow label="Orchard unified address" value={keys.data.address} />
+          <KeyRow
+            label="Unified full viewing key (UFVK)"
+            value={keys.data.ufvk}
+          />
+          <div className="callout" style={{ marginTop: 10 }}>
+            <span>
+              The viewing key (<span className="code-inline">nk</span>,{" "}
+              <span className="code-inline">rivk</span>) is derived
+              deterministically from the group's <span className="code-inline">ak</span>,
+              so every member computes this same address. Funds sent here are
+              spendable only by a threshold of the group. The UFVK grants{" "}
+              <em>viewing</em> access — share it only within the group.
+            </span>
+          </div>
+        </>
+      )}
+      {orchard && keys.isError && (
+        <div className="error">
+          Could not derive the Orchard address for this group.
         </div>
       )}
     </div>
