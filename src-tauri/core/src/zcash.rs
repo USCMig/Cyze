@@ -21,7 +21,7 @@ use ff::{FromUniformBytes, PrimeField};
 use pasta_curves::pallas;
 use sha2::{Digest, Sha512};
 use zcash_address::unified::{Address, Encoding, Fvk, Receiver, Ufvk};
-use zcash_address::Network;
+use zcash_protocol::consensus::NetworkType;
 
 use crate::error::CoreError;
 
@@ -71,10 +71,10 @@ pub fn derive_orchard_keys(ak: &[u8; 32]) -> Result<OrchardKeys, CoreError> {
 
     let address = Address::try_from_items(vec![Receiver::Orchard(receiver)])
         .map_err(|e| CoreError::Crypto(format!("unified address: {e:?}")))?
-        .encode(&Network::Main);
+        .encode(&NetworkType::Main);
     let ufvk = Ufvk::try_from_items(vec![Fvk::Orchard(fvk_bytes)])
         .map_err(|e| CoreError::Crypto(format!("ufvk: {e:?}")))?
-        .encode(&Network::Main);
+        .encode(&NetworkType::Main);
 
     Ok(OrchardKeys { address, ufvk })
 }
