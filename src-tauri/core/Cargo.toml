@@ -35,5 +35,14 @@ base64 = { workspace = true }
 # which breaks against xeddsa 1.1 (rand_core trait changes).
 xeddsa = "=1.0.2"
 
+# Optional Zcash key/address derivation (spike). Behind a feature so the heavy
+# orchard/halo2 dependency tree stays out of the default build.
+orchard = { version = "0.14", optional = true }
+zcash_address = { version = "0.6", optional = true }
+
+[features]
+# Orchard FVK / unified-address derivation from group key material.
+zcash = ["dep:orchard", "dep:zcash_address"]
+
 [dev-dependencies]
 tempfile = "3"
