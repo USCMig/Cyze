@@ -82,6 +82,13 @@ impl Default for KdfParams {
     }
 }
 
+/// Build the AEAD cipher from a 32-byte key. Explicit `Key::from_slice`
+/// typing avoids an `AsRef`/`Into` inference ambiguity that appears when other
+/// crypto crates (e.g. the Zcash wallet stack) are also in the dependency tree.
+fn xchacha(key: &[u8]) -> XChaCha20Poly1305 {
+    XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key))
+}
+
 fn derive_key(
     secret: &str,
     salt: &[u8],
@@ -154,7 +161,7 @@ fn wrap_dek(dek: &[u8; DEK_LEN], secret: &str, params: &KdfParams, kind: u8) -> 
 
     let kek = derive_key(secret, &salt, params)?;
     let descriptor = slot_descriptor(kind, params, &salt, &wrap_nonce);
-    let cipher = XChaCha20Poly1305::new(kek.as_ref().into());
+    let cipher = xchacha(kek.as_ref());
     let wrapped_dek = cipher
         .encrypt(
             XNonce::from_slice(&wrap_nonce),
@@ -177,7 +184,7 @@ fn wrap_dek(dek: &[u8; DEK_LEN], secret: &str, params: &KdfParams, kind: u8) -> 
 fn try_unwrap(slot: &Slot, secret: &str) -> Option<Zeroizing<[u8; DEK_LEN]>> {
     let kek = derive_key(secret, &slot.salt, &slot.params).ok()?;
     let descriptor = slot_descriptor(slot.kind, &slot.params, &slot.salt, &slot.wrap_nonce);
-    let cipher = XChaCha20Poly1305::new(kek.as_ref().into());
+    let cipher = xchacha(kek.as_ref());
     let dek = cipher
         .decrypt(
             XNonce::from_slice(&slot.wrap_nonce),
@@ -285,7 +292,7 @@ impl KeystoreFile {
         let mut body_nonce = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut body_nonce);
         let header = serialize_header(&self.slots, &body_nonce);
-        let cipher = XChaCha20Poly1305::new(self.dek.as_ref().into());
+        let cipher = xchacha(self.dek.as_ref());
         let ciphertext = cipher
             .encrypt(
                 XNonce::from_slice(&body_nonce),
@@ -351,7 +358,7 @@ fn open_v2(
 
     for slot in slots.iter().filter(|s| s.kind == want_kind) {
         if let Some(dek) = try_unwrap(slot, secret) {
-            let cipher = XChaCha20Poly1305::new(dek.as_ref().into());
+            let cipher = xchacha(dek.as_ref());
             let plaintext = cipher
                 .decrypt(
                     XNonce::from_slice(&body_nonce),
@@ -393,7 +400,7 @@ pub fn seal(plaintext: &[u8], passphrase: &str, params: &KdfParams) -> Result<Ve
     header.extend_from_slice(&nonce);
 
     let key = derive_key(passphrase, &salt, params)?;
-    let cipher = XChaCha20Poly1305::new(key.as_ref().into());
+    let cipher = xchacha(key.as_ref());
     let ciphertext = cipher
         .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad: &header })
         .map_err(|e| CoreError::Crypto(e.to_string()))?;
@@ -426,7 +433,7 @@ pub fn open(data: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>, CoreErr
     let ciphertext = &data[V1_HEADER_LEN..];
 
     let key = derive_key(passphrase, salt, &params)?;
-    let cipher = XChaCha20Poly1305::new(key.as_ref().into());
+    let cipher = xchacha(key.as_ref());
     let plaintext = cipher
         .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad: header })
         .map_err(|_| CoreError::InvalidPassphrase)?;

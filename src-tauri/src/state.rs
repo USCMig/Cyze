@@ -28,6 +28,12 @@ pub struct Settings {
     /// Local nicknames/aliases for contacts, keyed by hex comm pubkey.
     #[serde(default)]
     pub contact_aliases: HashMap<String, String>,
+    /// Zcash network for wallet features: "test" (default) or "main".
+    #[serde(default)]
+    pub wallet_network: Option<String>,
+    /// lightwalletd endpoint for the selected network.
+    #[serde(default)]
+    pub lightwalletd_url: Option<String>,
 }
 
 /// Keystore contents held in memory while unlocked. The unlocked

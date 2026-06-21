@@ -16,5 +16,7 @@ pub mod tls;
 pub mod transport;
 #[cfg(feature = "zcash")]
 pub mod zcash;
+#[cfg(feature = "wallet")]
+pub mod wallet;
 
 pub use error::CoreError;

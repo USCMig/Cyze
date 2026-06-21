@@ -81,6 +81,24 @@ export const getIdentity = () => invoke<Identity>("get_identity");
 export const setUsername = (username: string) =>
   invoke<void>("set_username", { username });
 
+// Zcash wallet (light-client)
+export interface WalletConfig {
+  network: string; // "test" | "main"
+  lightwalletd_url: string;
+}
+export interface LightwalletdInfo {
+  chain_name: string;
+  block_height: number;
+  estimated_height: number;
+  vendor: string;
+  version: string;
+}
+export const getWalletConfig = () => invoke<WalletConfig>("get_wallet_config");
+export const setWalletConfig = (network: string, lightwalletdUrl: string) =>
+  invoke<WalletConfig>("set_wallet_config", { network, lightwalletdUrl });
+export const lightwalletdInfo = (url: string | null) =>
+  invoke<LightwalletdInfo>("lightwalletd_info", { url });
+
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");
 export const addContact = (text: string, alias?: string) =>

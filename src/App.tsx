@@ -20,6 +20,7 @@ import ServerSettings from "./screens/ServerSettings";
 import DkgWizard from "./screens/DkgWizard";
 import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
+import Wallet from "./screens/Wallet";
 
 /** Expandable Groups nav entry: a dropdown listing every group the keystore
  *  can access, each linking to its own detail page. */
@@ -77,6 +78,10 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
       { to: "/sign", label: "Sign" },
       { to: "/inbox", label: "Inbox" },
     ],
+  },
+  {
+    title: "4 · Zcash",
+    links: [{ to: "/wallet", label: "Wallet" }],
   },
 ];
 
@@ -140,6 +145,7 @@ const router = createBrowserRouter([
       { path: "dkg", element: <DkgWizard /> },
       { path: "sign", element: <NewSigningSession /> },
       { path: "inbox", element: <Inbox /> },
+      { path: "wallet", element: <Wallet /> },
       { path: "server", element: <ServerSettings /> },
     ],
   },

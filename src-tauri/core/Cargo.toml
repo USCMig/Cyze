@@ -48,12 +48,14 @@ zcash_client_backend = { version = "0.23", optional = true, default-features = f
     "orchard",
     "sync",
     "lightwalletd-tonic",
+    "lightwalletd-tonic-transport",
     "lightwalletd-tonic-tls-webpki-roots",
     "pczt",
 ] }
 zcash_client_sqlite = { version = "0.21", optional = true, features = ["orchard", "transparent-inputs"] }
 zcash_keys = { version = "0.14", optional = true, features = ["orchard"] }
 zcash_protocol = { version = "0.9", optional = true }
+tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-webpki-roots"] }
 
 [features]
 # Orchard FVK / unified-address derivation from group key material.
@@ -65,6 +67,7 @@ wallet = [
     "dep:zcash_client_sqlite",
     "dep:zcash_keys",
     "dep:zcash_protocol",
+    "dep:tonic",
 ]
 
 [dev-dependencies]
