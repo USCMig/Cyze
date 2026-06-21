@@ -52,6 +52,12 @@ pub struct CoordinatorParams {
     /// can contribute its commitment and signature share locally instead of
     /// waiting for them over the network (which would never arrive).
     pub self_key_package: Vec<u8>,
+    /// Externally-supplied re-randomization value (α), serialized. For a real
+    /// Zcash Orchard spend the randomizer is dictated by the transaction (so
+    /// the signature verifies against the on-chain `rk = ak + [α]·G`); supply
+    /// it here. When `None`, a fresh random α is generated for RedPallas (the
+    /// default for standalone signing).
+    pub randomizer: Option<Vec<u8>>,
 }
 
 pub struct SigningOutput {
@@ -209,15 +215,20 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
     }
 
     // Build the signing package; RedPallas additionally needs a randomizer
-    // (re-randomized FROST), generated here and distributed to participants.
+    // (re-randomized FROST). Use the externally-supplied α when present (e.g.
+    // the randomizer of the Orchard spend being signed); otherwise generate a
+    // fresh one for RedPallas, and none for plain ciphersuites.
     let signing_package = SigningPackage::<C>::new(commitments_map, &params.message);
-    let randomizer = if C::ID == PallasBlake2b512::ID {
-        Some(
+    let randomizer = match &params.randomizer {
+        Some(bytes) => Some(
+            Randomizer::<C>::deserialize(bytes)
+                .map_err(|e| CoreError::Ceremony(format!("invalid randomizer: {e}")))?,
+        ),
+        None if C::ID == PallasBlake2b512::ID => Some(
             Randomizer::<C>::new(OsRng, &signing_package)
                 .map_err(|e| CoreError::Ceremony(e.to_string()))?,
-        )
-    } else {
-        None
+        ),
+        None => None,
     };
 
     let send_args = SendSigningPackageArgs::<C> {
@@ -473,4 +484,105 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
     let _ = events.send(ParticipantEvent::ShareSent).await;
     let _ = client.logout().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Crypto-level test of the re-randomization (α) injection that Phase 4
+    //! adds: a coordinator-chosen randomizer round-trips through
+    //! serialize/deserialize and produces a group signature valid under the
+    //! randomized key `rk = ak + [α]·G` — exactly what an Orchard spend needs —
+    //! and a signature is bound to its specific α. No frostd server required.
+
+    use std::collections::BTreeMap;
+
+    use frost_core::keys::{generate_with_dealer, IdentifierList, KeyPackage, PublicKeyPackage};
+    use frost_core::round2::SignatureShare;
+    use frost_core::{Identifier, SigningPackage};
+    use frost_rerandomized::{Randomizer, RandomizedParams};
+    use rand::rngs::OsRng;
+    use reddsa::frost::redpallas::PallasBlake2b512 as C;
+
+    const MSG: &[u8] = b"orchard sighash";
+
+    /// A fresh 2-of-3 RedPallas group plus the two signers' round-1 state.
+    fn setup() -> (
+        PublicKeyPackage<C>,
+        BTreeMap<Identifier<C>, KeyPackage<C>>,
+        Vec<Identifier<C>>,
+        BTreeMap<Identifier<C>, frost_core::round1::SigningNonces<C>>,
+        SigningPackage<C>,
+    ) {
+        let (shares, pubkeys) =
+            generate_with_dealer::<C, _>(3, 2, IdentifierList::Default, &mut OsRng).unwrap();
+        let key_packages: BTreeMap<_, _> = shares
+            .into_iter()
+            .map(|(id, s)| (id, KeyPackage::try_from(s).unwrap()))
+            .collect();
+        let signers: Vec<_> = key_packages.keys().take(2).cloned().collect();
+
+        let mut nonces = BTreeMap::new();
+        let mut commitments = BTreeMap::new();
+        for id in &signers {
+            let (n, c) = frost_core::round1::commit(key_packages[id].signing_share(), &mut OsRng);
+            nonces.insert(*id, n);
+            commitments.insert(*id, c);
+        }
+        let signing_package = SigningPackage::new(commitments, MSG);
+        (pubkeys, key_packages, signers, nonces, signing_package)
+    }
+
+    fn sign_shares(
+        pkg: &SigningPackage<C>,
+        kps: &BTreeMap<Identifier<C>, KeyPackage<C>>,
+        signers: &[Identifier<C>],
+        nonces: &BTreeMap<Identifier<C>, frost_core::round1::SigningNonces<C>>,
+        randomizer: Randomizer<C>,
+    ) -> BTreeMap<Identifier<C>, SignatureShare<C>> {
+        signers
+            .iter()
+            .map(|id| {
+                let share =
+                    frost_rerandomized::sign(pkg, &nonces[id], &kps[id], randomizer).unwrap();
+                (*id, share)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn injected_randomizer_roundtrips_and_signs() {
+        let (pubkeys, kps, signers, nonces, pkg) = setup();
+
+        // Coordinator chooses α, serializes it (as it would travel via
+        // CoordinatorParams.randomizer / SendSigningPackageArgs), then it is
+        // recovered by deserialize before use.
+        let chosen = Randomizer::<C>::new(OsRng, &pkg).unwrap();
+        let alpha = Randomizer::<C>::deserialize(&chosen.serialize()).expect("round-trip α");
+
+        let params = RandomizedParams::from_randomizer(pubkeys.verifying_key(), alpha);
+        let shares = sign_shares(&pkg, &kps, &signers, &nonces, alpha);
+
+        // aggregate() verifies the final signature against rk internally.
+        let sig = frost_rerandomized::aggregate(&pkg, &shares, &pubkeys, &params);
+        assert!(sig.is_ok(), "must verify under the randomized key rk = ak + [α]·G");
+    }
+
+    #[test]
+    fn signature_is_bound_to_its_randomizer() {
+        let (pubkeys, kps, signers, nonces, pkg) = setup();
+
+        let alpha1 = Randomizer::<C>::new(OsRng, &pkg).unwrap();
+        let alpha2 = Randomizer::<C>::new(OsRng, &pkg).unwrap();
+
+        // Shares produced under α1, but aggregated under α2 → must fail.
+        let shares = sign_shares(&pkg, &kps, &signers, &nonces, alpha1);
+        let params2 = RandomizedParams::from_randomizer(pubkeys.verifying_key(), alpha2);
+        let bad = frost_rerandomized::aggregate(&pkg, &shares, &pubkeys, &params2);
+        assert!(bad.is_err(), "a signature must not verify under a different α");
+    }
+
+    #[test]
+    fn deserialize_rejects_malformed_randomizer() {
+        assert!(Randomizer::<C>::deserialize(&[0u8; 8]).is_err());
+    }
 }

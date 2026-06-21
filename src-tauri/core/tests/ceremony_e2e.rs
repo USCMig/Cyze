@@ -176,6 +176,7 @@ async fn dkg_and_sign(suite: Suite) {
         message: message.clone(),
         signers,
         self_key_package: outputs[0].group.key_package.clone(),
+        randomizer: None,
     };
     let (coord_tx, mut coord_rx) = mpsc::channel(32);
     let coord_cancel = CancellationToken::new();
@@ -317,6 +318,7 @@ async fn participant_rejection_aborts() {
         message: b"should never be signed".to_vec(),
         signers,
         self_key_package: outputs[0].group.key_package.clone(),
+        randomizer: None,
     };
     let (coord_tx, mut coord_rx) = mpsc::channel(32);
     let coord_cancel = CancellationToken::new();

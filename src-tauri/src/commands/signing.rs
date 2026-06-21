@@ -111,6 +111,9 @@ pub async fn create_signing_session<R: tauri::Runtime>(
         // The local user's own share, used only if they are among the signers
         // so the coordinator can contribute its commitment/share locally.
         self_key_package: group.key_package.clone(),
+        // Standalone signing generates a fresh randomizer; the Orchard
+        // transaction flow (phase 5) supplies the spend's α here instead.
+        randomizer: None,
     };
 
     let ceremony_id = Uuid::new_v4();
