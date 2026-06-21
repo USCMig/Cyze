@@ -28,6 +28,7 @@ pub fn run() {
             commands::contacts::set_contact_alias,
             commands::contacts::export_my_contact,
             commands::groups::list_groups,
+            commands::groups::group_orchard_keys,
             commands::groups::remove_group,
             commands::server::get_settings,
             commands::server::set_server_url,
