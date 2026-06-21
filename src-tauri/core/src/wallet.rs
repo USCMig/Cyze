@@ -26,11 +26,26 @@ pub enum WalletNetwork {
 }
 
 impl WalletNetwork {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "main" => WalletNetwork::Main,
+            _ => WalletNetwork::Test,
+        }
+    }
+
     /// The consensus parameters for this network (used by sync/address logic).
     pub fn params(self) -> Network {
         match self {
             WalletNetwork::Test => Network::TestNetwork,
             WalletNetwork::Main => Network::MainNetwork,
+        }
+    }
+
+    /// The address/key encoding network type.
+    pub fn network_type(self) -> zcash_protocol::consensus::NetworkType {
+        match self {
+            WalletNetwork::Test => zcash_protocol::consensus::NetworkType::Test,
+            WalletNetwork::Main => zcash_protocol::consensus::NetworkType::Main,
         }
     }
 
@@ -87,6 +102,19 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
     })
 }
 
+/// The receiving unified address for a UFVK string, encoded for `network`.
+/// This is what the wallet's account would expose for receiving funds.
+pub fn ufvk_default_address(network: WalletNetwork, ufvk: &str) -> Result<String, CoreError> {
+    use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey};
+    let params = network.params();
+    let ufvk = UnifiedFullViewingKey::decode(&params, ufvk)
+        .map_err(|e| CoreError::Crypto(format!("invalid UFVK: {e}")))?;
+    let (address, _) = ufvk
+        .default_address(UnifiedAddressRequest::AllAvailableKeys)
+        .map_err(|e| CoreError::Crypto(format!("address generation: {e}")))?;
+    Ok(address.encode(&params))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +125,22 @@ mod tests {
         assert_eq!(WalletNetwork::Main.params(), Network::MainNetwork);
         assert!(WalletNetwork::Test.default_lightwalletd().starts_with("https://"));
         assert!(WalletNetwork::Main.default_lightwalletd().starts_with("https://"));
+    }
+
+    /// The receive address the wallet's key crate (`zcash_keys`) derives from
+    /// our group UFVK must equal the address our derivation produced — proving
+    /// our deterministically-derived keys are standard, wallet-usable Orchard
+    /// keys, on both networks.
+    #[test]
+    fn ufvk_round_trips_to_our_address() {
+        use orchard::keys::{FullViewingKey, SpendingKey};
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
+        let ak: [u8; 32] = FullViewingKey::from(&sk).to_bytes()[..32].try_into().unwrap();
+
+        for net in [WalletNetwork::Test, WalletNetwork::Main] {
+            let keys = crate::zcash::derive_orchard_keys(&ak, net.network_type()).unwrap();
+            let addr = ufvk_default_address(net, &keys.ufvk).unwrap();
+            assert_eq!(addr, keys.address, "zcash_keys must agree on {net:?}");
+        }
     }
 }

@@ -59,8 +59,9 @@ pub fn orchard_fvk_bytes(ak: &[u8; 32]) -> [u8; 96] {
     out
 }
 
-/// Derive the unified address and UFVK (mainnet) for a group's `ak`.
-pub fn derive_orchard_keys(ak: &[u8; 32]) -> Result<OrchardKeys, CoreError> {
+/// Derive the unified address and UFVK for a group's `ak`, encoded for the
+/// given network (mainnet `u1…` / testnet `utest1…`).
+pub fn derive_orchard_keys(ak: &[u8; 32], network: NetworkType) -> Result<OrchardKeys, CoreError> {
     let fvk_bytes = orchard_fvk_bytes(ak);
     let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
         .ok_or_else(|| CoreError::Crypto("invalid Orchard ak (not a valid spend key)".into()))?;
@@ -71,22 +72,22 @@ pub fn derive_orchard_keys(ak: &[u8; 32]) -> Result<OrchardKeys, CoreError> {
 
     let address = Address::try_from_items(vec![Receiver::Orchard(receiver)])
         .map_err(|e| CoreError::Crypto(format!("unified address: {e:?}")))?
-        .encode(&NetworkType::Main);
+        .encode(&network);
     let ufvk = Ufvk::try_from_items(vec![Fvk::Orchard(fvk_bytes)])
         .map_err(|e| CoreError::Crypto(format!("ufvk: {e:?}")))?
-        .encode(&NetworkType::Main);
+        .encode(&network);
 
     Ok(OrchardKeys { address, ufvk })
 }
 
 /// Convenience: derive from a hex-encoded `ak` (the group's verifying key id).
-pub fn derive_orchard_keys_hex(ak_hex: &str) -> Result<OrchardKeys, CoreError> {
+pub fn derive_orchard_keys_hex(ak_hex: &str, network: NetworkType) -> Result<OrchardKeys, CoreError> {
     let bytes = hex::decode(ak_hex.trim())
         .map_err(|e| CoreError::Crypto(format!("bad ak hex: {e}")))?;
     let ak: [u8; 32] = bytes
         .try_into()
         .map_err(|_| CoreError::Crypto("ak must be 32 bytes".into()))?;
-    derive_orchard_keys(&ak)
+    derive_orchard_keys(&ak, network)
 }
 
 #[cfg(test)]
@@ -104,13 +105,19 @@ mod tests {
     #[test]
     fn derives_stable_address_and_ufvk() {
         let ak = sample_ak();
-        let a = derive_orchard_keys(&ak).unwrap();
-        let b = derive_orchard_keys(&ak).unwrap();
+        let a = derive_orchard_keys(&ak, NetworkType::Main).unwrap();
+        let b = derive_orchard_keys(&ak, NetworkType::Main).unwrap();
         // Deterministic: same ak -> same keys, every member, every run.
         assert_eq!(a.address, b.address);
         assert_eq!(a.ufvk, b.ufvk);
         assert!(a.address.starts_with("u1"), "got {}", a.address);
         assert!(a.ufvk.starts_with("uview1"), "got {}", a.ufvk);
+
+        // Testnet encodes the same key material under testnet HRPs.
+        let t = derive_orchard_keys(&ak, NetworkType::Test).unwrap();
+        assert!(t.address.starts_with("utest1"), "got {}", t.address);
+        assert!(t.ufvk.starts_with("uviewtest1"), "got {}", t.ufvk);
+        assert_ne!(t.address, a.address);
     }
 
     #[test]

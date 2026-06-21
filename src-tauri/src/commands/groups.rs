@@ -38,7 +38,14 @@ pub async fn group_orchard_keys(
     if !ciphersuite.contains("Pallas") {
         return Ok(None);
     }
-    Ok(Some(frost_app_core::zcash::derive_orchard_keys_hex(&id)?))
+    // Encode for the configured network (testnet during testing).
+    let network = frost_app_core::wallet::WalletNetwork::from_str(
+        state.load_settings().wallet_network.as_deref().unwrap_or("test"),
+    );
+    Ok(Some(frost_app_core::zcash::derive_orchard_keys_hex(
+        &id,
+        network.network_type(),
+    )?))
 }
 
 #[tauri::command]

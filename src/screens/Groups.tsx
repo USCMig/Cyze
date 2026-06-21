@@ -74,7 +74,9 @@ export function GroupKeys({ group }: { group: GroupSummary }) {
               deterministically from the group's <span className="code-inline">ak</span>,
               so every member computes this same address. Funds sent here are
               spendable only by a threshold of the group. The UFVK grants{" "}
-              <em>viewing</em> access — share it only within the group.
+              <em>viewing</em> access — share it only within the group. The
+              address is encoded for the network selected on the{" "}
+              <Link to="/wallet">Wallet</Link> page (testnet by default).
             </span>
           </div>
         </>
