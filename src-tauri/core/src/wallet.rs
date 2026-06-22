@@ -409,7 +409,9 @@ pub async fn sync_group(
         .map_err(|e| CoreError::Crypto(format!("init block cache: {e}")))?;
     let cache = FsCache {
         inner: std::sync::Mutex::new(inner),
-        blocks_dir: blocks_dir.clone(),
+        // FsBlockDb stores its compact-block files in `<root>/blocks`, so the
+        // cache must read/write there (not the root we passed to `for_path`).
+        blocks_dir: blocks_dir.join("blocks"),
     };
 
     let mut client = connect(lightwalletd_url).await?;
