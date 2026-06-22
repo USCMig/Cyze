@@ -52,7 +52,7 @@ impl WalletNetwork {
     /// A sensible default public lightwalletd endpoint for this network.
     pub fn default_lightwalletd(self) -> &'static str {
         match self {
-            WalletNetwork::Test => "https://lightwalletd.testnet.electriccoin.co:9067",
+            WalletNetwork::Test => "https://testnet.zec.rocks:443",
             WalletNetwork::Main => "https://zec.rocks:443",
         }
     }
@@ -68,9 +68,21 @@ pub struct LightwalletdInfo {
     pub version: String,
 }
 
+/// Normalize an endpoint: a bare `host:port` (e.g. `tz.ombie.cash:443`) is
+/// assumed to be TLS and gets an `https://` scheme.
+fn normalize_endpoint(url: &str) -> String {
+    let url = url.trim();
+    if url.contains("://") {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    }
+}
+
 /// Connect a gRPC client to a lightwalletd endpoint (TLS for `https://`).
 async fn connect(url: &str) -> Result<CompactTxStreamerClient<Channel>, CoreError> {
-    let mut endpoint = Channel::from_shared(url.to_string())
+    let url = normalize_endpoint(url);
+    let mut endpoint = Channel::from_shared(url.clone())
         .map_err(|e| CoreError::Connection(format!("invalid lightwalletd URL: {e}")))?;
     if url.starts_with("https://") {
         endpoint = endpoint

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -40,23 +40,37 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onError: (e) => setErr((e as unknown as AppError).message),
   });
 
+  // Auto-initialize the view-only account once, using the configured endpoint,
+  // so the user doesn't need a separate step. Only retried manually on error.
+  const autoTried = useRef(false);
+  useEffect(() => {
+    if (
+      status.data &&
+      !status.data.initialized &&
+      !autoTried.current &&
+      !init.isPending
+    ) {
+      autoTried.current = true;
+      init.mutate();
+    }
+  }, [status.data, init]);
+
   if (!group.ciphersuite.includes("Pallas")) return null;
   const s = status.data;
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
       <h3 style={{ marginTop: 0 }}>Wallet (Zcash Orchard)</h3>
-      {!s ? (
-        <p className="dim">Loading wallet status…</p>
+      {!s || (!s.initialized && (init.isPending || !err)) ? (
+        <p className="dim">Setting up the group's view-only wallet…</p>
       ) : !s.initialized ? (
         <>
           <p className="dim">
-            Set up a view-only wallet for this group to track received funds. It
-            imports the group's viewing key and watches the chain from now on —
-            spending stays under the group's threshold signature.
+            Couldn't set up the wallet — check the lightwalletd endpoint on the{" "}
+            <Link to="/wallet">Wallet</Link> page, then retry.
           </p>
           <button onClick={() => init.mutate()} disabled={init.isPending}>
-            {init.isPending ? "Initializing…" : "Initialize wallet"}
+            {init.isPending ? "Setting up…" : "Retry"}
           </button>
         </>
       ) : (

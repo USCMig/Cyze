@@ -8,6 +8,16 @@ import {
   LightwalletdInfo,
 } from "../ipc/commands";
 
+/** Known public lightwalletd endpoints per network (user can also type their own). */
+const PRESETS: Record<string, { label: string; url: string }[]> = {
+  test: [
+    { label: "zec.rocks — testnet", url: "https://testnet.zec.rocks:443" },
+    { label: "tz.ombie.cash", url: "https://tz.ombie.cash:443" },
+    { label: "tl.ombie.cash", url: "https://tl.ombie.cash:443" },
+  ],
+  main: [{ label: "zec.rocks", url: "https://zec.rocks:443" }],
+};
+
 export default function Wallet() {
   const queryClient = useQueryClient();
   const config = useQuery({ queryKey: ["wallet-config"], queryFn: getWalletConfig });
@@ -83,19 +93,32 @@ export default function Wallet() {
           </span>
         </div>
 
-        <label>
-          lightwalletd endpoint (leave blank to use the {net === "main" ? "mainnet" : "testnet"} default)
-        </label>
+        <label>lightwalletd endpoint</label>
+        <select
+          value={
+            PRESETS[net]?.some((p) => p.url === effectiveUrl) ? effectiveUrl : "custom"
+          }
+          onChange={(e) => {
+            if (e.target.value !== "custom") setUrl(e.target.value);
+          }}
+        >
+          {PRESETS[net]?.map((p) => (
+            <option key={p.url} value={p.url}>
+              {p.label} — {p.url}
+            </option>
+          ))}
+          <option value="custom">Custom…</option>
+        </select>
         <input
           type="text"
-          placeholder={
-            net === "main"
-              ? "https://zec.rocks:443"
-              : "https://lightwalletd.testnet.electriccoin.co:9067"
-          }
+          placeholder={net === "main" ? "https://zec.rocks:443" : "https://testnet.zec.rocks:443"}
           value={effectiveUrl}
           onChange={(e) => setUrl(e.target.value)}
         />
+        <p className="dim" style={{ marginTop: -6 }}>
+          Pick a server above or type your own (a bare <span className="code-inline">host:443</span>{" "}
+          works too).
+        </p>
 
         <div className="row" style={{ marginTop: 4 }}>
           <button onClick={() => save.mutate()} disabled={save.isPending}>
