@@ -52,7 +52,8 @@ zcash_client_backend = { version = "0.23", optional = true, default-features = f
     "lightwalletd-tonic-tls-webpki-roots",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.21", optional = true, features = ["orchard", "transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "0.21", optional = true, features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+pczt = { version = "0.7", optional = true, features = ["signer"] }
 zcash_keys = { version = "0.14", optional = true, features = ["orchard"] }
 zcash_protocol = { version = "0.9", optional = true }
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-webpki-roots"] }
@@ -76,6 +77,7 @@ wallet = [
     "dep:prost",
     "dep:async-trait",
     "dep:zcash_primitives",
+    "dep:pczt",
 ]
 
 [dev-dependencies]

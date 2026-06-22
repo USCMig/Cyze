@@ -114,6 +114,24 @@ export const walletInitAccount = (groupId: string) =>
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
 
+export interface DraftTransaction {
+  pczt_hex: string;
+  sighash_hex: string;
+  fee_zatoshis: number;
+  amount_zatoshis: number;
+  recipient: string;
+}
+export const walletPrepareSend = (
+  groupId: string,
+  recipient: string,
+  amountZatoshis: number
+) =>
+  invoke<DraftTransaction>("wallet_prepare_send", {
+    groupId,
+    recipient,
+    amountZatoshis,
+  });
+
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");
 export const addContact = (text: string, alias?: string) =>

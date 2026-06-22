@@ -10,7 +10,9 @@ import {
   walletGroupStatus,
   walletInitAccount,
   walletSync,
+  walletPrepareSend,
   AppError,
+  DraftTransaction,
   ContactDto,
   GroupSummary,
   Identity,
@@ -46,6 +48,19 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onSuccess: (s) => {
       setErr(null);
       queryClient.setQueryData(["wallet-status", group.id], s);
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  const [recipient, setRecipient] = useState("");
+  const [amountZec, setAmountZec] = useState("");
+  const [draft, setDraft] = useState<DraftTransaction | null>(null);
+  const prepare = useMutation({
+    mutationFn: () =>
+      walletPrepareSend(group.id, recipient.trim(), Math.round(Number(amountZec) * 1e8)),
+    onSuccess: (d) => {
+      setErr(null);
+      setDraft(d);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
   });
@@ -106,6 +121,44 @@ function GroupWallet({ group }: { group: GroupSummary }) {
             Sync downloads and scans compact blocks locally with the group's
             viewing key. Send testnet ZEC to the address above, then sync to see
             it appear.
+          </p>
+
+          <h3 style={{ marginTop: 18 }}>Send</h3>
+          <label>Recipient unified address</label>
+          <input
+            type="text"
+            placeholder="utest1… (testnet) / u1… (mainnet)"
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+          />
+          <label>Amount (ZEC)</label>
+          <input
+            type="text"
+            placeholder="0.001"
+            value={amountZec}
+            onChange={(e) => setAmountZec(e.target.value)}
+          />
+          <button
+            onClick={() => prepare.mutate()}
+            disabled={prepare.isPending || !recipient.trim() || !(Number(amountZec) > 0)}
+          >
+            {prepare.isPending ? "Building…" : "Prepare draft transaction"}
+          </button>
+          {draft && (
+            <div className="callout" style={{ marginTop: 12 }}>
+              <span>
+                Draft built — sending <strong>{zec(draft.amount_zatoshis)} ZEC</strong> to{" "}
+                <span className="code-inline">{draft.recipient.slice(0, 16)}…</span>, fee{" "}
+                {zec(draft.fee_zatoshis)} ZEC. The group must FROST-sign sighash{" "}
+                <span className="code-inline">{draft.sighash_hex.slice(0, 16)}…</span>.
+                <br />
+                <em>No funds moved.</em> Threshold signing &amp; broadcast land next.
+              </span>
+            </div>
+          )}
+          <p className="dim" style={{ marginTop: 8 }}>
+            Building a draft constructs the transaction and computes what the
+            group needs to sign — it does not move funds or broadcast yet.
           </p>
         </>
       )}

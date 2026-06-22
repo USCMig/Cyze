@@ -131,3 +131,22 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
     wallet::sync_group(&state.data_dir, &group_id, network, &url).await?;
     Ok(wallet::group_status(&state.data_dir, &group_id, network, &ufvk)?)
 }
+
+/// Build (but do not sign or broadcast) an Orchard transfer, returning the
+/// draft PCZT and the sighash the group must FROST-sign. Moves no funds.
+#[tauri::command]
+pub async fn wallet_prepare_send(
+    state: State<'_, AppState>,
+    group_id: String,
+    recipient: String,
+    amount_zatoshis: u64,
+) -> AppResult<wallet::DraftTransaction> {
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    Ok(wallet::prepare_send(
+        &state.data_dir,
+        &group_id,
+        network,
+        &recipient,
+        amount_zatoshis,
+    )?)
+}

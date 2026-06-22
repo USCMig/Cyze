@@ -131,8 +131,12 @@ use prost::Message;
 use zcash_client_backend::data_api::chain::error::Error as ChainError;
 use zcash_client_backend::data_api::chain::{BlockCache, BlockSource};
 use zcash_client_backend::data_api::scanning::ScanRange;
-use zcash_client_backend::data_api::wallet::ConfirmationsPolicy;
+use zcash_client_backend::data_api::wallet::{
+    create_pczt_from_proposal, propose_standard_transfer_to_address, ConfirmationsPolicy,
+};
 use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
+use zcash_client_backend::fees::StandardFeeRule;
+use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_client_backend::proto::service::{BlockId, ChainSpec};
 use zcash_client_sqlite::chain::init::init_blockmeta_db;
@@ -419,6 +423,88 @@ pub async fn sync_group(
         .await
         .map_err(|e| CoreError::Connection(format!("sync: {e}")))?;
     Ok(())
+}
+
+/// A draft transaction: a built, unsigned PCZT plus the data the FROST signing
+/// step needs (the shielded sighash to sign). Building moves no funds.
+#[derive(Debug, Clone, Serialize)]
+pub struct DraftTransaction {
+    /// Hex of the serialized PCZT, carried into the signing/broadcast step.
+    pub pczt_hex: String,
+    /// The shielded sighash the group must FROST-sign (hex).
+    pub sighash_hex: String,
+    pub fee_zatoshis: u64,
+    pub amount_zatoshis: u64,
+    pub recipient: String,
+}
+
+/// Build an unsigned Orchard transfer as a PCZT and return its sighash. Uses
+/// the standard ZIP-317 fee and greedy input selection. No signing, no
+/// broadcast — this only constructs the transaction.
+pub fn prepare_send(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    recipient: &str,
+    amount_zatoshis: u64,
+) -> Result<DraftTransaction, CoreError> {
+    use zcash_keys::address::Address;
+    use zcash_protocol::value::Zatoshis;
+    use zcash_protocol::ShieldedProtocol;
+
+    let params = network.params();
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let mut db = open_db(&db_path, network)?;
+
+    let account_id = *db
+        .get_account_ids()
+        .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?
+        .first()
+        .ok_or_else(|| CoreError::Crypto("wallet not initialized".into()))?;
+
+    let to = Address::decode(&params, recipient.trim())
+        .ok_or_else(|| CoreError::Crypto("invalid recipient address".into()))?;
+    let amount =
+        Zatoshis::from_u64(amount_zatoshis).map_err(|e| CoreError::Crypto(format!("amount: {e}")))?;
+
+    let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
+        &mut db,
+        &params,
+        StandardFeeRule::Zip317,
+        account_id,
+        ConfirmationsPolicy::default(),
+        &to,
+        amount,
+        None, // memo
+        None, // change memo
+        ShieldedProtocol::Orchard,
+        None, // proposed tx version
+    )
+    .map_err(|e| CoreError::Ceremony(format!("propose transfer: {e:?}")))?;
+
+    let fee = u64::from(proposal.steps().last().balance().fee_required());
+
+    let pczt = create_pczt_from_proposal::<_, _, std::convert::Infallible, _, std::convert::Infallible, _>(
+        &mut db,
+        &params,
+        account_id,
+        OvkPolicy::Sender,
+        &proposal,
+    )
+    .map_err(|e| CoreError::Ceremony(format!("create pczt: {e:?}")))?;
+
+    let pczt_hex = hex::encode(pczt.serialize());
+    let signer = pczt::roles::signer::Signer::new(pczt)
+        .map_err(|e| CoreError::Ceremony(format!("signer: {e:?}")))?;
+    let sighash_hex = hex::encode(signer.shielded_sighash());
+
+    Ok(DraftTransaction {
+        pczt_hex,
+        sighash_hex,
+        fee_zatoshis: fee,
+        amount_zatoshis,
+        recipient: recipient.to_string(),
+    })
 }
 
 /// The receiving unified address for a UFVK string, encoded for `network`.
