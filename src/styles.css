@@ -260,6 +260,29 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 }
 .sidebar a.nav-subitem.active::before { color: var(--accent); }
 
+/* Group entry with Details/Wallet sub-links */
+.nav-group { margin: 4px 0 2px; }
+.nav-group-name {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  padding: 4px 12px 2px 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar a.nav-subsubitem {
+  font-size: 13px;
+  padding: 5px 12px 5px 34px;
+  color: var(--text-dim);
+  display: block;
+}
+.sidebar a.nav-subsubitem.active,
+.sidebar a.nav-subsubitem:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
 .group-pick { transition: border-color 0.12s; }
 .group-pick:hover { border-color: var(--accent); }
 

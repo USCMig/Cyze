@@ -43,13 +43,19 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onError: (e) => setErr((e as unknown as AppError).message),
   });
 
+  // TODO(wallet): once auto-sync is proven reliable, remove the manual
+  // "Sync now" button entirely (tracked in TODO.md).
+  const [autoSyncOff, setAutoSyncOff] = useState(false);
   const sync = useMutation({
     mutationFn: () => walletSync(group.id),
     onSuccess: (s) => {
       setErr(null);
       queryClient.setQueryData(["wallet-status", group.id], s);
     },
-    onError: (e) => setErr((e as unknown as AppError).message),
+    onError: (e) => {
+      setErr((e as unknown as AppError).message);
+      setAutoSyncOff(true); // pause auto-sync after a failure until manual retry
+    },
   });
 
   const [recipient, setRecipient] = useState("");
@@ -79,6 +85,24 @@ function GroupWallet({ group }: { group: GroupSummary }) {
       init.mutate();
     }
   }, [status.data, init]);
+
+  // Auto-sync every 30s while the wallet is open (skipped if a sync is in
+  // flight or after a failure, until the user manually retries).
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+  const statusRef = useRef(status.data);
+  statusRef.current = status.data;
+  const autoSyncOffRef = useRef(autoSyncOff);
+  autoSyncOffRef.current = autoSyncOff;
+  useEffect(() => {
+    const t = setInterval(() => {
+      const cur = syncRef.current;
+      if (statusRef.current?.initialized && !cur.isPending && !autoSyncOffRef.current) {
+        cur.mutate();
+      }
+    }, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!group.ciphersuite.includes("Pallas")) return null;
   const s = status.data;
@@ -114,13 +138,19 @@ function GroupWallet({ group }: { group: GroupSummary }) {
             Synced to block {s.synced_height.toLocaleString()}
             {s.chain_tip_height > 0 && <> of {s.chain_tip_height.toLocaleString()}</>}.
           </p>
-          <button onClick={() => sync.mutate()} disabled={sync.isPending}>
+          <button
+            className="secondary"
+            onClick={() => {
+              setAutoSyncOff(false);
+              sync.mutate();
+            }}
+            disabled={sync.isPending}
+          >
             {sync.isPending ? "Syncing…" : "Sync now"}
           </button>
           <p className="dim" style={{ marginTop: 8 }}>
-            Sync downloads and scans compact blocks locally with the group's
-            viewing key. Send testnet ZEC to the address above, then sync to see
-            it appear.
+            Syncs automatically every 30s; "Sync now" forces an immediate scan.
+            Send testnet ZEC to the address above, then it appears after a sync.
           </p>
 
           <h3 style={{ marginTop: 18 }}>Send</h3>
@@ -145,15 +175,40 @@ function GroupWallet({ group }: { group: GroupSummary }) {
             {prepare.isPending ? "Building…" : "Prepare draft transaction"}
           </button>
           {draft && (
-            <div className="callout" style={{ marginTop: 12 }}>
-              <span>
-                Draft built — sending <strong>{zec(draft.amount_zatoshis)} ZEC</strong> to{" "}
-                <span className="code-inline">{draft.recipient.slice(0, 16)}…</span>, fee{" "}
-                {zec(draft.fee_zatoshis)} ZEC. The group must FROST-sign sighash{" "}
-                <span className="code-inline">{draft.sighash_hex.slice(0, 16)}…</span>.
-                <br />
-                <em>No funds moved.</em> Threshold signing &amp; broadcast land next.
-              </span>
+            <div
+              className="card"
+              style={{ marginTop: 12, background: "var(--bg-elevated)" }}
+            >
+              <h3 style={{ marginTop: 0 }}>Prepared transaction</h3>
+              <table className="participants">
+                <tbody>
+                  <tr>
+                    <td>Receiver</td>
+                    <td className="dim mono-cell">{draft.recipient}</td>
+                  </tr>
+                  <tr>
+                    <td>Amount to send</td>
+                    <td>{zec(draft.amount_zatoshis)} ZEC</td>
+                  </tr>
+                  <tr>
+                    <td>Fee</td>
+                    <td>{zec(draft.fee_zatoshis)} ZEC</td>
+                  </tr>
+                  <tr>
+                    <td>Total</td>
+                    <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} ZEC</td>
+                  </tr>
+                  <tr>
+                    <td>Sighash</td>
+                    <td className="dim mono-cell">{draft.sighash_hex}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="dim" style={{ marginTop: 8 }}>
+                <em>No funds moved.</em> This is what the group will authorize —
+                use the sighash to set up a signing session. Threshold signing
+                &amp; broadcast land next.
+              </p>
             </div>
           )}
           <p className="dim" style={{ marginTop: 8 }}>
@@ -432,8 +487,6 @@ export function GroupCard({
         </table>
       </div>
 
-      <GroupWallet group={group} />
-
       <ShareRepairGuide group={group} />
 
       <div style={{ marginTop: 12 }}>
@@ -535,9 +588,12 @@ export function GroupDetail() {
     <div>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
         <h2 style={{ marginBottom: 0 }}>{group.description || "(unnamed group)"}</h2>
-        <Link to="/sign" className="dim">
-          Start a signing session →
-        </Link>
+        <div className="row" style={{ gap: 16 }}>
+          <Link to="/sign">Start a Signing Session →</Link>
+          {group.ciphersuite.includes("Pallas") && (
+            <Link to={`/groups/${group.id}/wallet`}>Build a Transaction →</Link>
+          )}
+        </div>
       </div>
       <GroupCard
         group={group}
@@ -549,5 +605,74 @@ export function GroupDetail() {
         }}
       />
     </div>
+  );
+}
+
+/** `/groups/:id/wallet` — the group's Zcash wallet: balance, send, history. */
+export function GroupWalletPage() {
+  const { id } = useParams();
+  const { groups } = useGroupData();
+  const group = groups.data?.find((g) => g.id === id);
+
+  if (groups.isLoading) return <p className="dim">Loading…</p>;
+  if (!group) {
+    return (
+      <div>
+        <h2>Group not found</h2>
+        <p className="dim">
+          <Link to="/groups">Back to groups</Link>.
+        </p>
+      </div>
+    );
+  }
+  if (!group.ciphersuite.includes("Pallas")) {
+    return (
+      <div>
+        <h2>{group.description || "(unnamed group)"} — Wallet</h2>
+        <p className="dim">
+          A Zcash wallet is only available for RedPallas (Orchard) groups.{" "}
+          <Link to={`/groups/${group.id}`}>Back to group details</Link>.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+        <h2 style={{ marginBottom: 0 }}>{group.description || "(unnamed group)"} — Wallet</h2>
+        <Link to={`/groups/${group.id}`} className="dim">
+          ← Group details
+        </Link>
+      </div>
+      <div className="card">
+        <GroupWallet group={group} />
+      </div>
+      <GroupHistory group={group} />
+    </div>
+  );
+}
+
+/** Transaction + message history for a group's wallet.
+ *  Scaffold: zcash_client_backend 0.23 has no clean tx-history read API, so the
+ *  populated view is tracked in TODO.md (direct wallet-db queries). */
+function GroupHistory({ group }: { group: GroupSummary }) {
+  void group;
+  return (
+    <>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Transaction history</h3>
+        <p className="dim">
+          Sends and receives for this group will appear here once history
+          indexing lands. For now, balance reflects synced funds above.
+        </p>
+      </div>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Message history</h3>
+        <p className="dim">
+          Memos attached to received and sent notes will appear here.
+        </p>
+      </div>
+    </>
   );
 }

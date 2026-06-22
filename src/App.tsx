@@ -15,7 +15,7 @@ import { Logo } from "./components/Logo";
 import Unlock from "./screens/Unlock";
 import Dashboard from "./screens/Dashboard";
 import Contacts from "./screens/Contacts";
-import Groups, { GroupDetail } from "./screens/Groups";
+import Groups, { GroupDetail, GroupWalletPage } from "./screens/Groups";
 import ServerSettings from "./screens/ServerSettings";
 import DkgWizard from "./screens/DkgWizard";
 import NewSigningSession from "./screens/NewSigningSession";
@@ -46,9 +46,19 @@ function GroupsNavItem() {
       </div>
       {open &&
         groups.data?.map((g) => (
-          <NavLink key={g.id} to={`/groups/${g.id}`} className="nav-subitem">
-            {g.description || `${g.id.slice(0, 10)}…`}
-          </NavLink>
+          <div className="nav-group" key={g.id}>
+            <div className="nav-group-name" title={g.description || g.id}>
+              {g.description || `${g.id.slice(0, 10)}…`}
+            </div>
+            <NavLink to={`/groups/${g.id}`} end className="nav-subsubitem">
+              Details
+            </NavLink>
+            {g.ciphersuite.includes("Pallas") && (
+              <NavLink to={`/groups/${g.id}/wallet`} className="nav-subsubitem">
+                Wallet
+              </NavLink>
+            )}
+          </div>
         ))}
     </div>
   );
@@ -142,6 +152,7 @@ const router = createBrowserRouter([
       { path: "contacts", element: <Contacts /> },
       { path: "groups", element: <Groups /> },
       { path: "groups/:id", element: <GroupDetail /> },
+      { path: "groups/:id/wallet", element: <GroupWalletPage /> },
       { path: "dkg", element: <DkgWizard /> },
       { path: "sign", element: <NewSigningSession /> },
       { path: "inbox", element: <Inbox /> },
