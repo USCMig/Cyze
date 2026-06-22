@@ -7,11 +7,81 @@ import {
   listContacts,
   listGroups,
   removeGroup,
+  walletGroupStatus,
+  walletInitAccount,
+  AppError,
   ContactDto,
   GroupSummary,
   Identity,
 } from "../ipc/commands";
 import { resolveParticipant } from "../lib/participants";
+
+/** ZEC display from zatoshis (1 ZEC = 1e8 zatoshis). */
+function zec(zats: number): string {
+  return (zats / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
+}
+
+/** Per-group Zcash wallet: view-only account, receive address, balance. */
+function GroupWallet({ group }: { group: GroupSummary }) {
+  const queryClient = useQueryClient();
+  const status = useQuery({
+    queryKey: ["wallet-status", group.id],
+    queryFn: () => walletGroupStatus(group.id),
+    enabled: group.ciphersuite.includes("Pallas"),
+  });
+  const [err, setErr] = useState<string | null>(null);
+
+  const init = useMutation({
+    mutationFn: () => walletInitAccount(group.id),
+    onSuccess: () => {
+      setErr(null);
+      queryClient.invalidateQueries({ queryKey: ["wallet-status", group.id] });
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  if (!group.ciphersuite.includes("Pallas")) return null;
+  const s = status.data;
+
+  return (
+    <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+      <h3 style={{ marginTop: 0 }}>Wallet (Zcash Orchard)</h3>
+      {!s ? (
+        <p className="dim">Loading wallet status…</p>
+      ) : !s.initialized ? (
+        <>
+          <p className="dim">
+            Set up a view-only wallet for this group to track received funds. It
+            imports the group's viewing key and watches the chain from now on —
+            spending stays under the group's threshold signature.
+          </p>
+          <button onClick={() => init.mutate()} disabled={init.isPending}>
+            {init.isPending ? "Initializing…" : "Initialize wallet"}
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="row" style={{ gap: 28, marginBottom: 6 }}>
+            <div>
+              <label>Total</label>
+              <div style={{ fontSize: 18 }}>{zec(s.total_zatoshis)} ZEC</div>
+            </div>
+            <div>
+              <label>Spendable</label>
+              <div style={{ fontSize: 18 }}>{zec(s.spendable_zatoshis)} ZEC</div>
+            </div>
+          </div>
+          <p className="dim">
+            Synced to block {s.synced_height.toLocaleString()}
+            {s.chain_tip_height > 0 && <> of {s.chain_tip_height.toLocaleString()}</>}.
+            Balance updates after syncing (compact-block sync lands next).
+          </p>
+        </>
+      )}
+      {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
 
 function isOrchard(group: GroupSummary): boolean {
   return group.ciphersuite.includes("Pallas");
@@ -277,6 +347,8 @@ export function GroupCard({
           </tbody>
         </table>
       </div>
+
+      <GroupWallet group={group} />
 
       <ShareRepairGuide group={group} />
 

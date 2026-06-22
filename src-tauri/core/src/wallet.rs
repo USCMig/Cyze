@@ -102,6 +102,166 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
     })
 }
 
+// ---------------------------------------------------------------------------
+// Per-group wallet: sqlite-backed account, sync, and balance.
+//
+// Each FROST group is one view-only Orchard account, stored in its own sqlite
+// wallet under `<data_dir>/wallets/<group_id>/`. The group's UFVK (derived from
+// its `ak`) is imported as a watch-only account; sync trial-decrypts compact
+// blocks locally; balance is read from the wallet db.
+// ---------------------------------------------------------------------------
+
+use std::path::{Path, PathBuf};
+
+use rand::rngs::OsRng;
+use zcash_client_backend::data_api::wallet::ConfirmationsPolicy;
+use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
+use zcash_client_backend::proto::service::{BlockId, ChainSpec};
+use zcash_client_sqlite::util::SystemClock;
+use zcash_client_sqlite::wallet::init::init_wallet_db;
+use zcash_client_sqlite::WalletDb;
+use zcash_keys::keys::UnifiedFullViewingKey;
+
+type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
+
+/// `(wallet.sqlite path, fsblockdb dir)` for a group.
+fn wallet_paths(data_dir: &Path, group_id: &str) -> (PathBuf, PathBuf) {
+    let base = data_dir.join("wallets").join(group_id);
+    (base.join("wallet.sqlite"), base.join("blocks"))
+}
+
+fn open_db(db_path: &Path, network: WalletNetwork) -> Result<GroupDb, CoreError> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut db = WalletDb::for_path(db_path, network.params(), SystemClock, OsRng)
+        .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    init_wallet_db(&mut db, None)
+        .map_err(|e| CoreError::Crypto(format!("init wallet db: {e}")))?;
+    Ok(db)
+}
+
+/// Balance + sync status for a group's wallet.
+#[derive(Debug, Clone, Serialize)]
+pub struct WalletStatus {
+    /// Whether the view-only account has been imported yet.
+    pub initialized: bool,
+    /// Receiving unified address (from the UFVK), for the configured network.
+    pub address: Option<String>,
+    pub total_zatoshis: u64,
+    pub spendable_zatoshis: u64,
+    /// Highest fully-scanned block, and the chain tip the wallet knows about.
+    pub synced_height: u64,
+    pub chain_tip_height: u64,
+}
+
+/// Read a group's wallet status from its local db (no network).
+pub fn group_status(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    ufvk: &str,
+) -> Result<WalletStatus, CoreError> {
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let address = ufvk_default_address(network, ufvk).ok();
+    if !db_path.exists() {
+        return Ok(WalletStatus {
+            initialized: false,
+            address,
+            total_zatoshis: 0,
+            spendable_zatoshis: 0,
+            synced_height: 0,
+            chain_tip_height: 0,
+        });
+    }
+    let db = open_db(&db_path, network)?;
+    let account_ids = db
+        .get_account_ids()
+        .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?;
+    if account_ids.is_empty() {
+        return Ok(WalletStatus {
+            initialized: false,
+            address,
+            total_zatoshis: 0,
+            spendable_zatoshis: 0,
+            synced_height: 0,
+            chain_tip_height: 0,
+        });
+    }
+    let summary = db
+        .get_wallet_summary(ConfirmationsPolicy::default())
+        .map_err(|e| CoreError::Crypto(format!("wallet summary: {e}")))?;
+    let (total, spendable, synced, tip) = match summary {
+        Some(s) => {
+            let bal = s.account_balances().values().next();
+            let total = bal.map(|b| u64::from(b.total())).unwrap_or(0);
+            let spendable = bal.map(|b| u64::from(b.spendable_value())).unwrap_or(0);
+            (
+                total,
+                spendable,
+                u64::from(s.fully_scanned_height()),
+                u64::from(s.chain_tip_height()),
+            )
+        }
+        None => (0, 0, 0, 0),
+    };
+    Ok(WalletStatus {
+        initialized: true,
+        address,
+        total_zatoshis: total,
+        spendable_zatoshis: spendable,
+        synced_height: synced,
+        chain_tip_height: tip,
+    })
+}
+
+/// Import the group's UFVK as a view-only account, with its birthday set to the
+/// current chain tip (no prior funds). Idempotent: a no-op if already imported.
+/// Returns the birthday height. Touches the network (fetches a treestate).
+pub async fn init_group_account(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    ufvk_str: &str,
+    lightwalletd_url: &str,
+) -> Result<u64, CoreError> {
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let mut db = open_db(&db_path, network)?;
+    if !db
+        .get_account_ids()
+        .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?
+        .is_empty()
+    {
+        return Ok(0); // already imported
+    }
+
+    let params = network.params();
+    let ufvk = UnifiedFullViewingKey::decode(&params, ufvk_str)
+        .map_err(|e| CoreError::Crypto(format!("invalid UFVK: {e}")))?;
+
+    // Birthday = current chain tip; the account starts watching from now.
+    let mut client = connect(lightwalletd_url).await?;
+    let tip = client
+        .get_latest_block(ChainSpec {})
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .into_inner();
+    let treestate = client
+        .get_tree_state(BlockId {
+            height: tip.height,
+            hash: vec![],
+        })
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
+        .into_inner();
+    let birthday = AccountBirthday::from_treestate(treestate, None)
+        .map_err(|_| CoreError::Crypto("could not derive account birthday from treestate".into()))?;
+
+    db.import_account_ufvk(group_id, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
+        .map_err(|e| CoreError::Crypto(format!("import account: {e}")))?;
+    Ok(tip.height)
+}
+
 /// The receiving unified address for a UFVK string, encoded for `network`.
 /// This is what the wallet's account would expose for receiving funds.
 pub fn ufvk_default_address(network: WalletNetwork, ufvk: &str) -> Result<String, CoreError> {

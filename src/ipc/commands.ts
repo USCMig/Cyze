@@ -99,6 +99,19 @@ export const setWalletConfig = (network: string, lightwalletdUrl: string) =>
 export const lightwalletdInfo = (url: string | null) =>
   invoke<LightwalletdInfo>("lightwalletd_info", { url });
 
+export interface WalletStatus {
+  initialized: boolean;
+  address: string | null;
+  total_zatoshis: number;
+  spendable_zatoshis: number;
+  synced_height: number;
+  chain_tip_height: number;
+}
+export const walletGroupStatus = (groupId: string) =>
+  invoke<WalletStatus>("wallet_group_status", { groupId });
+export const walletInitAccount = (groupId: string) =>
+  invoke<number>("wallet_init_account", { groupId });
+
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");
 export const addContact = (text: string, alias?: string) =>

@@ -33,6 +33,8 @@ pub fn run() {
             commands::wallet::get_wallet_config,
             commands::wallet::set_wallet_config,
             commands::wallet::lightwalletd_info,
+            commands::wallet::wallet_group_status,
+            commands::wallet::wallet_init_account,
             commands::server::get_settings,
             commands::server::set_server_url,
             commands::server::test_server_connection,
