@@ -111,6 +111,8 @@ export const walletGroupStatus = (groupId: string) =>
   invoke<WalletStatus>("wallet_group_status", { groupId });
 export const walletInitAccount = (groupId: string) =>
   invoke<number>("wallet_init_account", { groupId });
+export const walletSync = (groupId: string) =>
+  invoke<WalletStatus>("wallet_sync", { groupId });
 
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");

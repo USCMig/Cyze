@@ -126,13 +126,23 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
 use std::path::{Path, PathBuf};
 
 use rand::rngs::OsRng;
+use async_trait::async_trait;
+use prost::Message;
+use zcash_client_backend::data_api::chain::error::Error as ChainError;
+use zcash_client_backend::data_api::chain::{BlockCache, BlockSource};
+use zcash_client_backend::data_api::scanning::ScanRange;
 use zcash_client_backend::data_api::wallet::ConfirmationsPolicy;
 use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
+use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_client_backend::proto::service::{BlockId, ChainSpec};
+use zcash_client_sqlite::chain::init::init_blockmeta_db;
+use zcash_client_sqlite::chain::BlockMeta;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
-use zcash_client_sqlite::WalletDb;
+use zcash_client_sqlite::{FsBlockDb, WalletDb};
 use zcash_keys::keys::UnifiedFullViewingKey;
+use zcash_primitives::block::BlockHash;
+use zcash_protocol::consensus::BlockHeight;
 
 type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
 
@@ -272,6 +282,141 @@ pub async fn init_group_account(
     db.import_account_ufvk(group_id, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
         .map_err(|e| CoreError::Crypto(format!("import account: {e}")))?;
     Ok(tip.height)
+}
+
+/// A `BlockCache` over `FsBlockDb`. `FsBlockDb` ships only `BlockSource`, so we
+/// wrap it and add the cache-management methods `sync::run` requires (cache
+/// downloaded compact blocks as files on disk, read them back, prune them).
+///
+/// `FsBlockDb` holds a rusqlite `Connection` (not `Sync`), but `BlockCache`
+/// requires `Sync`, so the inner db is behind a `Mutex`. The cache error type is
+/// `io::Error` because `FsBlockDbError` does not implement `std::error::Error`,
+/// which `sync::run` requires.
+struct FsCache {
+    inner: std::sync::Mutex<FsBlockDb>,
+    blocks_dir: PathBuf,
+}
+
+fn io_err(e: impl std::fmt::Display) -> std::io::Error {
+    std::io::Error::other(e.to_string())
+}
+
+impl FsCache {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, FsBlockDb>, std::io::Error> {
+        self.inner.lock().map_err(|_| io_err("block cache lock poisoned"))
+    }
+}
+
+impl BlockSource for FsCache {
+    type Error = std::io::Error;
+
+    fn with_blocks<F, WalletErrT>(
+        &self,
+        from_height: Option<BlockHeight>,
+        limit: Option<usize>,
+        mut with_block: F,
+    ) -> Result<(), ChainError<WalletErrT, Self::Error>>
+    where
+        F: FnMut(CompactBlock) -> Result<(), ChainError<WalletErrT, Self::Error>>,
+    {
+        let db = self.lock().map_err(ChainError::BlockSource)?;
+        let mut height = from_height.unwrap_or_else(|| BlockHeight::from_u32(0));
+        let mut remaining = limit.unwrap_or(usize::MAX);
+        while remaining > 0 {
+            let meta = match db.find_block(height).map_err(|e| ChainError::BlockSource(io_err(e)))? {
+                Some(m) => m,
+                None => break, // contiguous run ended
+            };
+            let bytes = std::fs::read(meta.block_file_path(&self.blocks_dir))
+                .map_err(ChainError::BlockSource)?;
+            let block =
+                CompactBlock::decode(&bytes[..]).map_err(|e| ChainError::BlockSource(io_err(e)))?;
+            with_block(block)?;
+            height = height + 1;
+            remaining -= 1;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BlockCache for FsCache {
+    fn get_tip_height(
+        &self,
+        _range: Option<&ScanRange>,
+    ) -> Result<Option<BlockHeight>, Self::Error> {
+        self.lock()?.get_max_cached_height().map_err(io_err)
+    }
+
+    async fn read(&self, range: &ScanRange) -> Result<Vec<CompactBlock>, Self::Error> {
+        let range = range.block_range().clone();
+        let db = self.lock()?;
+        let mut blocks = Vec::new();
+        let mut height = range.start;
+        while height < range.end {
+            match db.find_block(height).map_err(io_err)? {
+                Some(meta) => {
+                    let bytes = std::fs::read(meta.block_file_path(&self.blocks_dir))?;
+                    blocks.push(CompactBlock::decode(&bytes[..]).map_err(io_err)?);
+                }
+                None => break,
+            }
+            height = height + 1;
+        }
+        Ok(blocks)
+    }
+
+    async fn insert(&self, compact_blocks: Vec<CompactBlock>) -> Result<(), Self::Error> {
+        let mut metas = Vec::with_capacity(compact_blocks.len());
+        for cb in &compact_blocks {
+            let meta = BlockMeta {
+                height: BlockHeight::from_u32(cb.height as u32),
+                block_hash: BlockHash::from_slice(&cb.hash),
+                block_time: cb.time,
+                sapling_outputs_count: cb.vtx.iter().map(|tx| tx.outputs.len() as u32).sum(),
+                orchard_actions_count: cb.vtx.iter().map(|tx| tx.actions.len() as u32).sum(),
+            };
+            std::fs::write(meta.block_file_path(&self.blocks_dir), cb.encode_to_vec())?;
+            metas.push(meta);
+        }
+        self.lock()?.write_block_metadata(&metas).map_err(io_err)
+    }
+
+    async fn delete(&self, range: ScanRange) -> Result<(), Self::Error> {
+        // Remove cached blocks at/above the range start (keep everything below).
+        let start = u32::from(range.block_range().start);
+        self.lock()?
+            .truncate_to_height(BlockHeight::from_u32(start.saturating_sub(1)))
+            .map_err(io_err)
+    }
+}
+
+/// Sync the group's wallet: download and trial-decrypt compact blocks from
+/// lightwalletd into the local db. Long-running; touches the network.
+pub async fn sync_group(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    lightwalletd_url: &str,
+) -> Result<(), CoreError> {
+    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id);
+    std::fs::create_dir_all(&blocks_dir)?;
+    let mut db = open_db(&db_path, network)?;
+
+    let mut inner = FsBlockDb::for_path(&blocks_dir)
+        .map_err(|e| CoreError::Crypto(format!("block cache: {e}")))?;
+    init_blockmeta_db(&mut inner)
+        .map_err(|e| CoreError::Crypto(format!("init block cache: {e}")))?;
+    let cache = FsCache {
+        inner: std::sync::Mutex::new(inner),
+        blocks_dir: blocks_dir.clone(),
+    };
+
+    let mut client = connect(lightwalletd_url).await?;
+    zcash_client_backend::sync::run(&mut client, &network.params(), &cache, &mut db, 1000)
+        .await
+        .map_err(|e| CoreError::Connection(format!("sync: {e}")))?;
+    Ok(())
 }
 
 /// The receiving unified address for a UFVK string, encoded for `network`.

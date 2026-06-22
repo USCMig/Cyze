@@ -9,6 +9,7 @@ import {
   removeGroup,
   walletGroupStatus,
   walletInitAccount,
+  walletSync,
   AppError,
   ContactDto,
   GroupSummary,
@@ -36,6 +37,15 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onSuccess: () => {
       setErr(null);
       queryClient.invalidateQueries({ queryKey: ["wallet-status", group.id] });
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  const sync = useMutation({
+    mutationFn: () => walletSync(group.id),
+    onSuccess: (s) => {
+      setErr(null);
+      queryClient.setQueryData(["wallet-status", group.id], s);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
   });
@@ -88,7 +98,14 @@ function GroupWallet({ group }: { group: GroupSummary }) {
           <p className="dim">
             Synced to block {s.synced_height.toLocaleString()}
             {s.chain_tip_height > 0 && <> of {s.chain_tip_height.toLocaleString()}</>}.
-            Balance updates after syncing (compact-block sync lands next).
+          </p>
+          <button onClick={() => sync.mutate()} disabled={sync.isPending}>
+            {sync.isPending ? "Syncing…" : "Sync now"}
+          </button>
+          <p className="dim" style={{ marginTop: 8 }}>
+            Sync downloads and scans compact blocks locally with the group's
+            viewing key. Send testnet ZEC to the address above, then sync to see
+            it appear.
           </p>
         </>
       )}

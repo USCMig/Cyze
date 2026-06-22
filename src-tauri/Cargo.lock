@@ -1618,6 +1618,7 @@ name = "frost-app-core"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "async-trait",
  "base64 0.22.1",
  "bech32",
  "bip39",
@@ -1632,6 +1633,7 @@ dependencies = [
  "orchard",
  "pasta_curves",
  "postcard",
+ "prost",
  "rand 0.8.6",
  "rcgen",
  "reddsa 0.5.1",
@@ -1653,6 +1655,7 @@ dependencies = [
  "zcash_client_backend",
  "zcash_client_sqlite",
  "zcash_keys",
+ "zcash_primitives",
  "zcash_protocol",
  "zeroize",
 ]

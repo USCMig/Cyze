@@ -122,3 +122,12 @@ pub async fn wallet_init_account(
     let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
     Ok(wallet::init_group_account(&state.data_dir, &group_id, network, &ufvk, &url).await?)
 }
+
+/// Sync the group's wallet from lightwalletd, then return the updated status.
+/// Long-running. Touches the network.
+#[tauri::command]
+pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppResult<WalletStatus> {
+    let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    wallet::sync_group(&state.data_dir, &group_id, network, &url).await?;
+    Ok(wallet::group_status(&state.data_dir, &group_id, network, &ufvk)?)
+}
