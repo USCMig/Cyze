@@ -114,9 +114,14 @@ export const walletInitAccount = (groupId: string) =>
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
 
+export interface SpendToSign {
+  index: number;
+  alpha_hex: string;
+}
 export interface DraftTransaction {
   pczt_hex: string;
   sighash_hex: string;
+  spends: SpendToSign[];
   fee_zatoshis: number;
   amount_zatoshis: number;
   recipient: string;

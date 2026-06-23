@@ -5,7 +5,9 @@ import {
   Outlet,
   NavLink,
   Navigate,
+  useLocation,
 } from "react-router-dom";
+import type { GroupSummary } from "./ipc/commands";
 import { useQuery } from "@tanstack/react-query";
 import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
@@ -44,22 +46,39 @@ function GroupsNavItem() {
           </button>
         )}
       </div>
-      {open &&
-        groups.data?.map((g) => (
-          <div className="nav-group" key={g.id}>
-            <div className="nav-group-name" title={g.description || g.id}>
-              {g.description || `${g.id.slice(0, 10)}…`}
-            </div>
-            <NavLink to={`/groups/${g.id}`} end className="nav-subsubitem">
-              Details
+      {open && groups.data?.map((g) => <GroupNavEntry key={g.id} g={g} />)}
+    </div>
+  );
+}
+
+/** A single group in the sidebar — collapsible on its name, expanding to
+ *  Details and (for Orchard groups) Wallet. Auto-expands the active group. */
+function GroupNavEntry({ g }: { g: GroupSummary }) {
+  const location = useLocation();
+  const onThisGroup = location.pathname.startsWith(`/groups/${g.id}`);
+  const [open, setOpen] = useState(onThisGroup);
+  return (
+    <div className="nav-group">
+      <button
+        className="nav-group-name"
+        onClick={() => setOpen((o) => !o)}
+        title={g.description || g.id}
+      >
+        <span className="nav-group-caret">{open ? "▾" : "▸"}</span>
+        {g.description || `${g.id.slice(0, 10)}…`}
+      </button>
+      {open && (
+        <>
+          <NavLink to={`/groups/${g.id}`} end className="nav-subsubitem">
+            Details
+          </NavLink>
+          {g.ciphersuite.includes("Pallas") && (
+            <NavLink to={`/groups/${g.id}/wallet`} className="nav-subsubitem">
+              Wallet
             </NavLink>
-            {g.ciphersuite.includes("Pallas") && (
-              <NavLink to={`/groups/${g.id}/wallet`} className="nav-subsubitem">
-                Wallet
-              </NavLink>
-            )}
-          </div>
-        ))}
+          )}
+        </>
+      )}
     </div>
   );
 }

@@ -263,14 +263,26 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 /* Group entry with Details/Wallet sub-links */
 .nav-group { margin: 4px 0 2px; }
 .nav-group-name {
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
   letter-spacing: 0.02em;
   color: var(--text-dim);
-  padding: 4px 12px 2px 22px;
+  padding: 5px 12px 5px 18px;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  border-radius: 6px;
 }
+.nav-group-name:hover { background: var(--bg); color: var(--text); filter: none; }
+.nav-group-caret { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; }
 .sidebar a.nav-subsubitem {
   font-size: 13px;
   padding: 5px 12px 5px 34px;

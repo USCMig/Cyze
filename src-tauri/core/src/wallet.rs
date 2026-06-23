@@ -425,14 +425,26 @@ pub async fn sync_group(
     Ok(())
 }
 
+/// One Orchard spend that the group must FROST-sign: its action index and the
+/// per-spend re-randomization value α (hex of the canonical scalar encoding),
+/// which becomes the FROST coordinator's `randomizer` for that signature.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpendToSign {
+    pub index: usize,
+    pub alpha_hex: String,
+}
+
 /// A draft transaction: a built, unsigned PCZT plus the data the FROST signing
-/// step needs (the shielded sighash to sign). Building moves no funds.
+/// step needs (the shielded sighash to sign, and each spend's α). Building
+/// moves no funds.
 #[derive(Debug, Clone, Serialize)]
 pub struct DraftTransaction {
     /// Hex of the serialized PCZT, carried into the signing/broadcast step.
     pub pczt_hex: String,
     /// The shielded sighash the group must FROST-sign (hex).
     pub sighash_hex: String,
+    /// The Orchard spends to authorize (each FROST-signed with its own α).
+    pub spends: Vec<SpendToSign>,
     pub fee_zatoshis: u64,
     pub amount_zatoshis: u64,
     pub recipient: String,
@@ -494,17 +506,101 @@ pub fn prepare_send(
     .map_err(|e| CoreError::Ceremony(format!("create pczt: {e:?}")))?;
 
     let pczt_hex = hex::encode(pczt.serialize());
-    let signer = pczt::roles::signer::Signer::new(pczt)
-        .map_err(|e| CoreError::Ceremony(format!("signer: {e:?}")))?;
-    let sighash_hex = hex::encode(signer.shielded_sighash());
+
+    let sighash = pczt::roles::signer::Signer::new(pczt.clone())
+        .map_err(|e| CoreError::Ceremony(format!("signer: {e:?}")))?
+        .shielded_sighash();
+
+    // Read each real Orchard spend's α (the re-randomization the FROST signers
+    // must use). Dummy padding actions have zero value and are skipped.
+    let spends = orchard_spends_to_sign(pczt)?;
 
     Ok(DraftTransaction {
         pczt_hex,
-        sighash_hex,
+        sighash_hex: hex::encode(sighash),
+        spends,
         fee_zatoshis: fee,
         amount_zatoshis,
         recipient: recipient.to_string(),
     })
+}
+
+/// Extract the (index, α) of each real Orchard spend in a PCZT. Requires
+/// orchard's `unstable-frost` feature (which exposes `spend().alpha()`).
+fn orchard_spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
+    use ff::PrimeField;
+    use orchard::value::NoteValue;
+
+    let mut spends = Vec::new();
+    let mut parse_err: Option<String> = None;
+    pczt::roles::low_level_signer::Signer::new(pczt)
+        .sign_orchard_with(|_pczt, bundle, _| {
+            for (index, action) in bundle.actions().iter().enumerate() {
+                let is_real = action.spend().value().is_some_and(|v| v != NoteValue::default());
+                if let (true, Some(alpha)) = (is_real, action.spend().alpha()) {
+                    spends.push(SpendToSign {
+                        index,
+                        alpha_hex: hex::encode(alpha.to_repr()),
+                    });
+                }
+            }
+            Ok::<_, orchard::pczt::ParseError>(())
+        })
+        .map_err(|e: orchard::pczt::ParseError| {
+            parse_err = Some(format!("{e:?}"));
+        })
+        .ok();
+    if let Some(e) = parse_err {
+        return Err(CoreError::Ceremony(format!("read orchard spends: {e}")));
+    }
+    Ok(spends)
+}
+
+/// Apply FROST-produced Orchard spend-auth signatures to a draft PCZT, returning
+/// the signed PCZT (hex). `signatures` are (spend index, 64-byte sig hex).
+pub fn apply_orchard_signatures(
+    pczt_hex: &str,
+    sighash_hex: &str,
+    signatures: Vec<(usize, String)>,
+) -> Result<String, CoreError> {
+    use orchard::primitives::redpallas::{Signature, SpendAuth};
+
+    let pczt = pczt::Pczt::parse(
+        &hex::decode(pczt_hex.trim()).map_err(|e| CoreError::Ceremony(format!("pczt hex: {e}")))?,
+    )
+    .map_err(|e| CoreError::Ceremony(format!("parse pczt: {e:?}")))?;
+    let sighash: [u8; 32] = hex::decode(sighash_hex.trim())
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| CoreError::Ceremony("sighash must be 32 bytes hex".into()))?;
+
+    let sigs: Vec<(usize, Signature<SpendAuth>)> = signatures
+        .into_iter()
+        .map(|(idx, sig_hex)| {
+            let bytes: [u8; 64] = hex::decode(sig_hex.trim())
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| CoreError::Ceremony("signature must be 64 bytes hex".into()))?;
+            Ok((idx, Signature::<SpendAuth>::from(bytes)))
+        })
+        .collect::<Result<_, CoreError>>()?;
+
+    let mut apply_err: Option<String> = None;
+    let signer = pczt::roles::low_level_signer::Signer::new(pczt)
+        .sign_orchard_with(|_pczt, bundle, _| {
+            for (idx, sig) in sigs {
+                if let Err(e) = bundle.actions_mut()[idx].apply_signature(sighash, sig) {
+                    apply_err = Some(format!("spend {idx}: {e:?}"));
+                    break;
+                }
+            }
+            Ok::<_, orchard::pczt::ParseError>(())
+        })
+        .map_err(|e: orchard::pczt::ParseError| CoreError::Ceremony(format!("apply: {e:?}")))?;
+    if let Some(e) = apply_err {
+        return Err(CoreError::Ceremony(format!("invalid signature for {e}")));
+    }
+    Ok(hex::encode(signer.finish().serialize()))
 }
 
 /// The receiving unified address for a UFVK string, encoded for `network`.
