@@ -11,6 +11,7 @@ import {
   walletInitAccount,
   walletSync,
   walletPrepareSend,
+  walletSend,
   AppError,
   DraftTransaction,
   ContactDto,
@@ -18,6 +19,7 @@ import {
   Identity,
 } from "../ipc/commands";
 import { resolveParticipant } from "../lib/participants";
+import { useTauriEvent } from "../ipc/events";
 
 /** ZEC display from zatoshis (1 ZEC = 1e8 zatoshis). */
 function zec(zats: number): string {
@@ -67,8 +69,39 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onSuccess: (d) => {
       setErr(null);
       setDraft(d);
+      setSendId(null);
+      setSigned(false);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  // Sign the draft with a FROST ceremony (the other members approve in their
+  // inbox). All members sign in this version; broadcast lands next (5.2c).
+  const [sendId, setSendId] = useState<string | null>(null);
+  const [signed, setSigned] = useState(false);
+  const send = useMutation({
+    mutationFn: () =>
+      walletSend({
+        group_id: group.id,
+        recipient: recipient.trim(),
+        amount_zatoshis: Math.round(Number(amountZec) * 1e8),
+        signers: Object.values(group.participants),
+      }),
+    onSuccess: (id) => {
+      setErr(null);
+      setSigned(false);
+      setSendId(id);
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+  useTauriEvent<{ ceremony_id: string }>("send:complete", (p) => {
+    if (p.ceremony_id === sendId) setSigned(true);
+  });
+  useTauriEvent<{ ceremony_id: string; error: string }>("send:failed", (p) => {
+    if (p.ceremony_id === sendId) {
+      setErr(p.error);
+      setSendId(null);
+    }
   });
 
   // Auto-initialize the view-only account once, using the configured endpoint,
@@ -124,34 +157,38 @@ function GroupWallet({ group }: { group: GroupSummary }) {
         </>
       ) : (
         <>
-          <div className="row" style={{ gap: 28, marginBottom: 6 }}>
-            <div>
-              <label>Total</label>
-              <div style={{ fontSize: 18 }}>{zec(s.total_zatoshis)} ZEC</div>
+          <div className="wallet-summary">
+            <div className="row" style={{ gap: 28 }}>
+              <div>
+                <label>Total</label>
+                <div style={{ fontSize: 18 }}>{zec(s.total_zatoshis)} ZEC</div>
+              </div>
+              <div>
+                <label>Spendable</label>
+                <div style={{ fontSize: 18 }}>{zec(s.spendable_zatoshis)} ZEC</div>
+              </div>
             </div>
-            <div>
-              <label>Spendable</label>
-              <div style={{ fontSize: 18 }}>{zec(s.spendable_zatoshis)} ZEC</div>
+            <div className="sync-box">
+              <div className="dim" style={{ fontSize: 12 }}>
+                Synced to block {s.synced_height.toLocaleString()}
+                {s.chain_tip_height > 0 && <> of {s.chain_tip_height.toLocaleString()}</>}
+              </div>
+              <button
+                className="secondary"
+                style={{ marginTop: 8 }}
+                onClick={() => {
+                  setAutoSyncOff(false);
+                  sync.mutate();
+                }}
+                disabled={sync.isPending}
+              >
+                {sync.isPending ? "Syncing…" : "Sync now"}
+              </button>
+              <div className="dim" style={{ fontSize: 11, marginTop: 6 }}>
+                Auto-syncs every 30s.
+              </div>
             </div>
           </div>
-          <p className="dim">
-            Synced to block {s.synced_height.toLocaleString()}
-            {s.chain_tip_height > 0 && <> of {s.chain_tip_height.toLocaleString()}</>}.
-          </p>
-          <button
-            className="secondary"
-            onClick={() => {
-              setAutoSyncOff(false);
-              sync.mutate();
-            }}
-            disabled={sync.isPending}
-          >
-            {sync.isPending ? "Syncing…" : "Sync now"}
-          </button>
-          <p className="dim" style={{ marginTop: 8 }}>
-            Syncs automatically every 30s; "Sync now" forces an immediate scan.
-            Send testnet ZEC to the address above, then it appears after a sync.
-          </p>
 
           <h3 style={{ marginTop: 18 }}>Send</h3>
           <label>Recipient unified address</label>
@@ -205,10 +242,34 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                 </tbody>
               </table>
               <p className="dim" style={{ marginTop: 8 }}>
-                <em>No funds moved.</em> This is what the group will authorize —
-                use the sighash to set up a signing session. Threshold signing
-                &amp; broadcast land next.
+                Review the details above, then sign with the group.
               </p>
+              {!signed ? (
+                <button
+                  onClick={() => send.mutate()}
+                  disabled={send.isPending || !!sendId}
+                >
+                  {sendId
+                    ? "Signing — awaiting the group…"
+                    : send.isPending
+                      ? "Starting…"
+                      : "Sign transaction with the group"}
+                </button>
+              ) : (
+                <div className="callout" style={{ marginTop: 4 }}>
+                  <span>
+                    ✓ Signed by the group. The transaction is authorized — proving
+                    &amp; broadcast land next (5.2c), after which it goes on-chain.
+                  </span>
+                </div>
+              )}
+              {sendId && !signed && (
+                <p className="dim" style={{ marginTop: 8 }}>
+                  Every member must approve this in their <Link to="/inbox">Inbox</Link>{" "}
+                  (they'll see the sighash to authorize). The signature is produced
+                  once the threshold approves.
+                </p>
+              )}
             </div>
           )}
           <p className="dim" style={{ marginTop: 8 }}>

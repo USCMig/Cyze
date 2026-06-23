@@ -37,6 +37,7 @@ pub fn run() {
             commands::wallet::wallet_init_account,
             commands::wallet::wallet_sync,
             commands::wallet::wallet_prepare_send,
+            commands::wallet::wallet_send,
             commands::server::get_settings,
             commands::server::set_server_url,
             commands::server::test_server_connection,

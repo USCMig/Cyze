@@ -137,6 +137,15 @@ export const walletPrepareSend = (
     amountZatoshis,
   });
 
+/** Build, FROST-sign, and (next) broadcast a transfer. Returns the ceremony id;
+ *  progress arrives via send:progress / send:complete / send:failed events. */
+export const walletSend = (args: {
+  group_id: string;
+  recipient: string;
+  amount_zatoshis: number;
+  signers: string[];
+}) => invoke<string>("wallet_send", { args });
+
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");
 export const addContact = (text: string, alias?: string) =>

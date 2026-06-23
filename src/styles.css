@@ -298,6 +298,22 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .group-pick { transition: border-color 0.12s; }
 .group-pick:hover { border-color: var(--accent); }
 
+/* Wallet: balances left, sync box right */
+.wallet-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.sync-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 190px;
+}
+
 /* Collapsible option cards (server page) */
 .card.collapsible { padding: 0; }
 .collapsible-head {

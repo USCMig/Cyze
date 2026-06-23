@@ -2,12 +2,18 @@
 //! connectivity). Network and endpoint are user-configurable; testnet is the
 //! default for testing, with mainnet available once the pipeline is complete.
 
+use frost_app_core::ciphersuite::Suite;
+use frost_app_core::signing::{run_coordinator, CoordinatorParams};
 use frost_app_core::wallet::{self, LightwalletdInfo, WalletNetwork, WalletStatus};
-use serde::Serialize;
-use tauri::State;
+use frost_client::api::PublicKey;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::state::AppState;
+use crate::state::{AppState, CeremonyHandle};
 
 fn network_from_str(s: &str) -> WalletNetwork {
     match s {
@@ -149,4 +155,157 @@ pub async fn wallet_prepare_send(
         &recipient,
         amount_zatoshis,
     )?)
+}
+
+#[derive(Deserialize)]
+pub struct WalletSendArgs {
+    pub group_id: String,
+    pub recipient: String,
+    pub amount_zatoshis: u64,
+    /// Hex comm pubkeys of the group members who will sign (>= threshold).
+    pub signers: Vec<String>,
+}
+
+/// Build, FROST-sign, and (next phase) broadcast an Orchard transfer. Builds the
+/// PCZT, then drives the existing coordinator ceremony over the transaction
+/// sighash using each spend's α as the re-randomizer; on completion, applies the
+/// group signature to the PCZT. Emits `send:progress` / `send:complete` /
+/// `send:failed`. Returns the ceremony id.
+#[tauri::command]
+pub async fn wallet_send<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    args: WalletSendArgs,
+) -> AppResult<Uuid> {
+    let state = app.state::<AppState>();
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &args.group_id).await?;
+
+    // 1. Build the unsigned transaction.
+    let draft = wallet::prepare_send(
+        &state.data_dir,
+        &args.group_id,
+        network,
+        &args.recipient,
+        args.amount_zatoshis,
+    )?;
+    if draft.spends.len() != 1 {
+        return Err(AppError::new(
+            "wallet",
+            format!(
+                "this version supports single-Orchard-spend transactions (built {})",
+                draft.spends.len()
+            ),
+        ));
+    }
+    let spend = draft.spends[0].clone();
+    let message = hex::decode(draft.sighash_hex.trim())
+        .map_err(|e| AppError::new("wallet", format!("sighash: {e}")))?;
+    let randomizer = hex::decode(spend.alpha_hex.trim())
+        .map_err(|e| AppError::new("wallet", format!("alpha: {e}")))?;
+
+    // 2. Coordinator params over the sighash, with the spend's α as randomizer.
+    let (group, server_url) =
+        crate::commands::signing::group_context(&state, &args.group_id, None).await?;
+    let suite = Suite::from_id(&group.ciphersuite).map_err(AppError::from)?;
+    let trust = crate::commands::server::trust_for(&state, &server_url).await;
+    let signers = args
+        .signers
+        .iter()
+        .map(|hex_pubkey| {
+            let pubkey = PublicKey(
+                hex::decode(hex_pubkey)
+                    .map_err(|e| AppError::new("config", format!("bad signer pubkey: {e}")))?,
+            );
+            let participant = group
+                .participant
+                .values()
+                .find(|p| p.pubkey == pubkey)
+                .ok_or_else(|| AppError::new("config", "signer is not a group participant"))?;
+            Ok((pubkey, participant.identifier.clone()))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    let (comm_privkey, comm_pubkey) = state
+        .with_config(|config| {
+            let comm = config
+                .communication_key
+                .as_ref()
+                .ok_or_else(|| AppError::new("config", "keystore has no communication key"))?;
+            Ok((comm.privkey.clone(), comm.pubkey.clone()))
+        })
+        .await?;
+    let params = CoordinatorParams {
+        server_url,
+        trust,
+        comm_privkey,
+        comm_pubkey,
+        public_key_package: group.public_key_package.clone(),
+        message,
+        signers,
+        self_key_package: group.key_package.clone(),
+        randomizer: Some(randomizer), // the Orchard spend's α
+    };
+
+    // 3. Spawn the ceremony; apply the signature to the PCZT on completion.
+    let ceremony_id = Uuid::new_v4();
+    let cancel = CancellationToken::new();
+    state.ceremonies.lock().await.insert(
+        ceremony_id,
+        CeremonyHandle {
+            cancel: cancel.clone(),
+            approval: None,
+        },
+    );
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let event_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let _ = event_app.emit(
+                "send:progress",
+                serde_json::json!({ "ceremony_id": ceremony_id, "event": event }),
+            );
+        }
+    });
+
+    let task_app = app.clone();
+    let pczt_hex = draft.pczt_hex.clone();
+    let sighash_hex = draft.sighash_hex.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = run_coordinator(suite, params, tx, cancel).await;
+        let state = task_app.state::<AppState>();
+        state.ceremonies.lock().await.remove(&ceremony_id);
+        match result {
+            Ok(output) => {
+                let sig_hex = hex::encode(&output.signature);
+                match wallet::apply_orchard_signatures(
+                    &pczt_hex,
+                    &sighash_hex,
+                    vec![(spend.index, sig_hex)],
+                ) {
+                    Ok(signed_pczt_hex) => {
+                        let _ = task_app.emit(
+                            "send:complete",
+                            serde_json::json!({
+                                "ceremony_id": ceremony_id,
+                                "signed_pczt_hex": signed_pczt_hex,
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        let _ = task_app.emit(
+                            "send:failed",
+                            serde_json::json!({ "ceremony_id": ceremony_id, "error": e.to_string() }),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = task_app.emit(
+                    "send:failed",
+                    serde_json::json!({ "ceremony_id": ceremony_id, "error": e.to_string() }),
+                );
+            }
+        }
+    });
+
+    Ok(ceremony_id)
 }

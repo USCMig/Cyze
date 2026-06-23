@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::{AppState, CeremonyHandle};
 
 /// Resolve a group from the keystore plus the server/trust to use for it.
-async fn group_context(
+pub(crate) async fn group_context(
     state: &AppState,
     group_id: &str,
     server_override: Option<String>,
