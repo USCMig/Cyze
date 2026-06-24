@@ -147,14 +147,16 @@ pub async fn wallet_prepare_send(
     recipient: String,
     amount_zatoshis: u64,
 ) -> AppResult<wallet::DraftTransaction> {
-    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    let (network, url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
     Ok(wallet::prepare_send(
         &state.data_dir,
         &group_id,
         network,
         &recipient,
         amount_zatoshis,
-    )?)
+        &url,
+    )
+    .await?)
 }
 
 #[derive(Deserialize)]
@@ -179,14 +181,17 @@ pub async fn wallet_send<R: tauri::Runtime>(
     let state = app.state::<AppState>();
     let (network, url, _ufvk) = group_wallet_ctx(&state, &args.group_id).await?;
 
-    // 1. Build the unsigned transaction.
+    // 1. Build the unsigned transaction (refreshes the chain tip so the expiry
+    //    is anchored to the live tip).
     let draft = wallet::prepare_send(
         &state.data_dir,
         &args.group_id,
         network,
         &args.recipient,
         args.amount_zatoshis,
-    )?;
+        &url,
+    )
+    .await?;
     if draft.spends.len() != 1 {
         return Err(AppError::new(
             "wallet",

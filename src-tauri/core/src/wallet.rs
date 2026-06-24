@@ -453,12 +453,20 @@ pub struct DraftTransaction {
 /// Build an unsigned Orchard transfer as a PCZT and return its sighash. Uses
 /// the standard ZIP-317 fee and greedy input selection. No signing, no
 /// broadcast — this only constructs the transaction.
-pub fn prepare_send(
+///
+/// Before building, the wallet's chain tip is refreshed from lightwalletd so the
+/// transaction's expiry height is anchored to the *current* tip. Otherwise a
+/// stale tip yields an expiry that may already be in the past by broadcast time,
+/// and the node rejects the tx ("must not be mined at a block height greater
+/// than its expiry"). The signing ceremony must still complete within the
+/// ~40-block expiry window (≈50 min on testnet) of the build.
+pub async fn prepare_send(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
     recipient: &str,
     amount_zatoshis: u64,
+    lightwalletd_url: &str,
 ) -> Result<DraftTransaction, CoreError> {
     use zcash_keys::address::Address;
     use zcash_protocol::value::Zatoshis;
@@ -467,6 +475,17 @@ pub fn prepare_send(
     let params = network.params();
     let (db_path, _) = wallet_paths(data_dir, group_id);
     let mut db = open_db(&db_path, network)?;
+
+    // Anchor the expiry to the live chain tip, not whatever sync last recorded.
+    let mut client = connect(lightwalletd_url).await?;
+    let tip_height = client
+        .get_latest_block(ChainSpec {})
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .into_inner()
+        .height;
+    db.update_chain_tip(BlockHeight::from_u32(tip_height as u32))
+        .map_err(|e| CoreError::Crypto(format!("update chain tip: {e}")))?;
 
     let account_id = *db
         .get_account_ids()

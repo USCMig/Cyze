@@ -33,3 +33,11 @@
       ceremony per spend (or batch), then apply all signatures before proving.
 - [ ] **Signer selection** — `wallet_send` signs with *all* group members;
       add a threshold-subset picker (reuse `NewSigningSession`'s selector).
+- [ ] **Longer expiry window** — `prepare_send` now anchors the tx expiry to the
+      live chain tip, but `propose_standard_transfer_to_address` bakes in the
+      default ~40-block delta (≈50 min on testnet). A slow multi-party ceremony
+      can still exceed it. `zcash_client_backend` exposes no expiry knob and the
+      pczt `Updater` has no `set_expiry_height`, so a longer/zero expiry needs
+      either an upstream API or writing the PCZT global directly. NB: bumping the
+      wallet's chain tip past reality is NOT a workaround — it makes `sync::run`
+      try to fetch non-existent blocks and fail.
