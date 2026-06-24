@@ -603,6 +603,77 @@ pub fn apply_orchard_signatures(
     Ok(hex::encode(signer.finish().serialize()))
 }
 
+/// Prove, finalize, and broadcast a fully spend-auth-signed PCZT, returning the
+/// transaction id. The Orchard proof step is CPU-heavy (building the proving
+/// key takes several seconds), so it runs on a blocking thread.
+///
+/// This is the final leg of the send pipeline: the group has already applied
+/// its threshold signature to every spend ([`apply_orchard_signatures`]); here
+/// we attach the zero-knowledge proof, finalize, extract the transaction (which
+/// creates the binding signature), and submit it to lightwalletd.
+pub async fn broadcast_signed(
+    signed_pczt_hex: &str,
+    _network: WalletNetwork,
+    url: &str,
+) -> Result<String, CoreError> {
+    let pczt = pczt::Pczt::parse(
+        &hex::decode(signed_pczt_hex.trim())
+            .map_err(|e| CoreError::Ceremony(format!("pczt hex: {e}")))?,
+    )
+    .map_err(|e| CoreError::Ceremony(format!("parse pczt: {e:?}")))?;
+
+    // Proving + finalize + extract is synchronous, CPU-bound work; keep it off
+    // the async runtime so progress events and other tasks stay responsive.
+    let (raw, txid) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), CoreError> {
+        use orchard::circuit::{ProvingKey, VerifyingKey};
+        use pczt::roles::{
+            prover::Prover, spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor,
+        };
+
+        // 1. Orchard zero-knowledge proof.
+        let pk = ProvingKey::build();
+        let pczt = Prover::new(pczt)
+            .create_orchard_proof(&pk)
+            .map_err(|e| CoreError::Ceremony(format!("orchard proof: {e:?}")))?
+            .finish();
+
+        // 2. Finalize spends (spend-auth signatures are already applied).
+        let pczt = SpendFinalizer::new(pczt)
+            .finalize_spends()
+            .map_err(|e| CoreError::Ceremony(format!("finalize spends: {e:?}")))?;
+
+        // 3. Extract the final transaction (creates the binding signature).
+        let vk = VerifyingKey::build();
+        let tx = TransactionExtractor::new(pczt)
+            .with_orchard(&vk)
+            .extract()
+            .map_err(|e| CoreError::Ceremony(format!("extract transaction: {e:?}")))?;
+
+        let txid = format!("{}", tx.txid());
+        let mut raw = Vec::new();
+        tx.write(&mut raw)
+            .map_err(|e| CoreError::Ceremony(format!("serialize transaction: {e}")))?;
+        Ok((raw, txid))
+    })
+    .await
+    .map_err(|e| CoreError::Ceremony(format!("proving task panicked: {e}")))??;
+
+    // 4. Submit to lightwalletd.
+    let mut client = connect(url).await?;
+    let resp = client
+        .send_transaction(zcash_client_backend::proto::service::RawTransaction { data: raw, height: 0 })
+        .await
+        .map_err(|e| CoreError::Connection(format!("send_transaction: {e}")))?
+        .into_inner();
+    if resp.error_code != 0 {
+        return Err(CoreError::Connection(format!(
+            "lightwalletd rejected the transaction (code {}): {}",
+            resp.error_code, resp.error_message
+        )));
+    }
+    Ok(txid)
+}
+
 /// The receiving unified address for a UFVK string, encoded for `network`.
 /// This is what the wallet's account would expose for receiving funds.
 pub fn ufvk_default_address(network: WalletNetwork, ufvk: &str) -> Result<String, CoreError> {

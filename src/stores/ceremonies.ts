@@ -9,6 +9,7 @@ export interface CeremonyEventPayload {
   group_id?: string;
   signature_hex?: string | null;
   signed_pczt_hex?: string;
+  txid?: string;
   error?: string;
 }
 
@@ -37,8 +38,12 @@ export interface CeremonyState {
   sessionId?: string;
   /** Send-only: the signed PCZT produced once the group signature is applied. */
   signedPcztHex?: string;
+  /** Send-only: the broadcast transaction id, once on-chain. */
+  txid?: string;
   /** Send-only: what is being sent. */
   send?: SendMeta;
+  /** When the ceremony was started (ms epoch), for ordering history. */
+  startedAt?: number;
 }
 
 interface CeremoniesStore {
@@ -84,6 +89,7 @@ export const useCeremonies = create<CeremoniesStore>()(
               failed: false,
               groupId: meta.groupId,
               send: meta,
+              startedAt: Date.now(),
             },
           },
         })),
@@ -126,6 +132,7 @@ export const useCeremonies = create<CeremoniesStore>()(
               signedPcztHex:
                 payload.signed_pczt_hex ??
                 s.ceremonies[payload.ceremony_id]?.signedPcztHex,
+              txid: payload.txid ?? s.ceremonies[payload.ceremony_id]?.txid,
             },
           },
         })),
@@ -183,4 +190,15 @@ export function selectActiveSend(
 ): CeremonyState | undefined {
   const id = s.activeSendByGroup[groupId];
   return id ? s.ceremonies[id] : undefined;
+}
+
+/** All send ceremonies for a group, newest first — the transaction history. */
+export function selectSendHistory(
+  s: CeremoniesStore,
+  groupId: string
+): (CeremonyState & { id: string })[] {
+  return Object.entries(s.ceremonies)
+    .filter(([, c]) => c.kind === "send" && c.groupId === groupId)
+    .map(([id, c]) => ({ ...c, id }))
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
 }

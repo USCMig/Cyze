@@ -22,6 +22,7 @@ import { resolveParticipant } from "../lib/participants";
 import {
   useCeremonies,
   selectActiveSend,
+  selectSendHistory,
   type CeremonyState,
 } from "../stores/ceremonies";
 
@@ -270,9 +271,58 @@ function GroupWallet({ group }: { group: GroupSummary }) {
           </p>
           </>
           )}
+          <SendHistory groupId={group.id} />
         </>
       )}
       {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
+
+/** Persisted log of past sends for a group: each signing session and its
+ *  outcome (broadcast txid or failure), newest first. */
+function SendHistory({ groupId }: { groupId: string }) {
+  const history = useCeremonies((s) => selectSendHistory(s, groupId));
+  const activeId = useCeremonies((s) => s.activeSendByGroup[groupId]);
+  // The in-progress send shows in its own panel above; history is the rest.
+  const past = history.filter((h) => h.id !== activeId);
+  if (past.length === 0) return null;
+  return (
+    <div style={{ marginTop: 18 }}>
+      <h3>Transaction history</h3>
+      <table className="participants">
+        <tbody>
+          {past.slice(0, 20).map((h) => (
+            <tr key={h.id}>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {h.startedAt
+                  ? new Date(h.startedAt).toLocaleString(undefined, {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })
+                  : "—"}
+              </td>
+              <td>{h.send ? `${zec(h.send.amountZatoshis)} ZEC` : "—"}</td>
+              <td className="dim mono-cell" style={{ maxWidth: 220 }}>
+                {h.send?.recipient ?? ""}
+              </td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {h.failed ? (
+                  <span style={{ color: "var(--danger)" }}>Failed</span>
+                ) : h.done && h.txid ? (
+                  <span title={h.txid} style={{ color: "#4ade80" }}>
+                    Sent · {h.txid.slice(0, 10)}…
+                  </span>
+                ) : h.done ? (
+                  <span style={{ color: "#4ade80" }}>Sent</span>
+                ) : (
+                  <span className="dim">In progress</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -285,7 +335,8 @@ const SEND_PHASES: { key: string; label: string }[] = [
   { key: "signing_package_sent", label: "Signing package sent" },
   { key: "waiting_for_shares", label: "Collecting signature shares" },
   { key: "aggregating", label: "Aggregating group signature" },
-  { key: "complete", label: "Signed by the group" },
+  { key: "proving", label: "Proving & broadcasting" },
+  { key: "complete", label: "Sent — on-chain" },
 ];
 
 /** Active signing session for a transaction: persisted session id (to convey to
@@ -378,10 +429,16 @@ function SendSessionPanel({
       {done && (
         <div className="callout" style={{ marginTop: 8 }}>
           <span>
-            ✓ Signed by the group. The transaction is authorized — proving &amp;
-            broadcast land next (5.2c), after which it goes on-chain.
+            ✓ Sent. The group signed and the transaction was broadcast — it will
+            confirm on-chain in a few minutes.
           </span>
         </div>
+      )}
+      {done && ceremony.txid && (
+        <>
+          <label style={{ marginTop: 12 }}>Transaction ID</label>
+          <div className="mono">{ceremony.txid}</div>
+        </>
       )}
       {failed && (
         <div className="error" style={{ marginTop: 8 }}>

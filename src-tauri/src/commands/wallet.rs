@@ -177,7 +177,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
     args: WalletSendArgs,
 ) -> AppResult<Uuid> {
     let state = app.state::<AppState>();
-    let (network, _url, _ufvk) = group_wallet_ctx(&state, &args.group_id).await?;
+    let (network, url, _ufvk) = group_wallet_ctx(&state, &args.group_id).await?;
 
     // 1. Build the unsigned transaction.
     let draft = wallet::prepare_send(
@@ -273,37 +273,47 @@ pub async fn wallet_send<R: tauri::Runtime>(
         let result = run_coordinator(suite, params, tx, cancel).await;
         let state = task_app.state::<AppState>();
         state.ceremonies.lock().await.remove(&ceremony_id);
+        let fail = |error: String| {
+            let _ = task_app.emit(
+                "send:failed",
+                serde_json::json!({ "ceremony_id": ceremony_id, "error": error }),
+            );
+        };
         match result {
             Ok(output) => {
                 let sig_hex = hex::encode(&output.signature);
-                match wallet::apply_orchard_signatures(
+                let signed_pczt_hex = match wallet::apply_orchard_signatures(
                     &pczt_hex,
                     &sighash_hex,
                     vec![(spend.index, sig_hex)],
                 ) {
-                    Ok(signed_pczt_hex) => {
+                    Ok(hex) => hex,
+                    Err(e) => return fail(e.to_string()),
+                };
+                // Prove + broadcast. Surfaced as its own phase since the proof
+                // build is the slow part (several seconds).
+                let _ = task_app.emit(
+                    "send:progress",
+                    serde_json::json!({
+                        "ceremony_id": ceremony_id,
+                        "event": { "phase": "proving" },
+                    }),
+                );
+                match wallet::broadcast_signed(&signed_pczt_hex, network, &url).await {
+                    Ok(txid) => {
                         let _ = task_app.emit(
                             "send:complete",
                             serde_json::json!({
                                 "ceremony_id": ceremony_id,
+                                "txid": txid,
                                 "signed_pczt_hex": signed_pczt_hex,
                             }),
                         );
                     }
-                    Err(e) => {
-                        let _ = task_app.emit(
-                            "send:failed",
-                            serde_json::json!({ "ceremony_id": ceremony_id, "error": e.to_string() }),
-                        );
-                    }
+                    Err(e) => fail(e.to_string()),
                 }
             }
-            Err(e) => {
-                let _ = task_app.emit(
-                    "send:failed",
-                    serde_json::json!({ "ceremony_id": ceremony_id, "error": e.to_string() }),
-                );
-            }
+            Err(e) => fail(e.to_string()),
         }
     });
 
