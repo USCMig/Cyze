@@ -19,7 +19,11 @@ import {
   Identity,
 } from "../ipc/commands";
 import { resolveParticipant } from "../lib/participants";
-import { useTauriEvent } from "../ipc/events";
+import {
+  useCeremonies,
+  selectActiveSend,
+  type CeremonyState,
+} from "../stores/ceremonies";
 
 /** ZEC display from zatoshis (1 ZEC = 1e8 zatoshis). */
 function zec(zats: number): string {
@@ -69,16 +73,17 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onSuccess: (d) => {
       setErr(null);
       setDraft(d);
-      setSendId(null);
-      setSigned(false);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
   });
 
-  // Sign the draft with a FROST ceremony (the other members approve in their
-  // inbox). All members sign in this version; broadcast lands next (5.2c).
-  const [sendId, setSendId] = useState<string | null>(null);
-  const [signed, setSigned] = useState(false);
+  // The active send for this group lives in the persisted ceremony store, so it
+  // survives navigation/reload and shows the same session id + step-by-step
+  // progress the global CeremonyListener keeps updating. The signing ceremony
+  // is driven via the other members' inbox; broadcast lands next (5.2c).
+  const startSend = useCeremonies((s) => s.startSend);
+  const clearSend = useCeremonies((s) => s.clearSend);
+  const activeSend = useCeremonies((s) => selectActiveSend(s, group.id));
   const send = useMutation({
     mutationFn: () =>
       walletSend({
@@ -89,19 +94,16 @@ function GroupWallet({ group }: { group: GroupSummary }) {
       }),
     onSuccess: (id) => {
       setErr(null);
-      setSigned(false);
-      setSendId(id);
+      if (!draft) return;
+      startSend(id, {
+        groupId: group.id,
+        recipient: draft.recipient,
+        amountZatoshis: draft.amount_zatoshis,
+        feeZatoshis: draft.fee_zatoshis,
+        sighashHex: draft.sighash_hex,
+      });
     },
     onError: (e) => setErr((e as unknown as AppError).message),
-  });
-  useTauriEvent<{ ceremony_id: string }>("send:complete", (p) => {
-    if (p.ceremony_id === sendId) setSigned(true);
-  });
-  useTauriEvent<{ ceremony_id: string; error: string }>("send:failed", (p) => {
-    if (p.ceremony_id === sendId) {
-      setErr(p.error);
-      setSendId(null);
-    }
   });
 
   // Auto-initialize the view-only account once, using the configured endpoint,
@@ -190,6 +192,18 @@ function GroupWallet({ group }: { group: GroupSummary }) {
             </div>
           </div>
 
+          {activeSend && (
+            <SendSessionPanel
+              ceremony={activeSend}
+              onDismiss={() => {
+                clearSend(group.id);
+                setDraft(null);
+              }}
+            />
+          )}
+
+          {!activeSend && (
+          <>
           <h3 style={{ marginTop: 18 }}>Send</h3>
           <label>Recipient unified address</label>
           <input
@@ -242,43 +256,142 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                 </tbody>
               </table>
               <p className="dim" style={{ marginTop: 8 }}>
-                Review the details above, then sign with the group.
+                Review the details above, then start a signing session with the
+                group.
               </p>
-              {!signed ? (
-                <button
-                  onClick={() => send.mutate()}
-                  disabled={send.isPending || !!sendId}
-                >
-                  {sendId
-                    ? "Signing — awaiting the group…"
-                    : send.isPending
-                      ? "Starting…"
-                      : "Sign transaction with the group"}
-                </button>
-              ) : (
-                <div className="callout" style={{ marginTop: 4 }}>
-                  <span>
-                    ✓ Signed by the group. The transaction is authorized — proving
-                    &amp; broadcast land next (5.2c), after which it goes on-chain.
-                  </span>
-                </div>
-              )}
-              {sendId && !signed && (
-                <p className="dim" style={{ marginTop: 8 }}>
-                  Every member must approve this in their <Link to="/inbox">Inbox</Link>{" "}
-                  (they'll see the sighash to authorize). The signature is produced
-                  once the threshold approves.
-                </p>
-              )}
+              <button onClick={() => send.mutate()} disabled={send.isPending}>
+                {send.isPending ? "Starting…" : "Sign transaction with the group"}
+              </button>
             </div>
           )}
           <p className="dim" style={{ marginTop: 8 }}>
             Building a draft constructs the transaction and computes what the
             group needs to sign — it does not move funds or broadcast yet.
           </p>
+          </>
+          )}
         </>
       )}
       {err && <div className="error">{err}</div>}
+    </div>
+  );
+}
+
+/** Phase → human label for a wallet-send signing ceremony (coordinator side). */
+const SEND_PHASES: { key: string; label: string }[] = [
+  { key: "connecting", label: "Connecting to server" },
+  { key: "session_created", label: "Session created — waiting for signers" },
+  { key: "waiting_for_commitments", label: "Collecting commitments" },
+  { key: "signing_package_sent", label: "Signing package sent" },
+  { key: "waiting_for_shares", label: "Collecting signature shares" },
+  { key: "aggregating", label: "Aggregating group signature" },
+  { key: "complete", label: "Signed by the group" },
+];
+
+/** Active signing session for a transaction: persisted session id (to convey to
+ *  signers / find in their inbox) plus a live step-by-step status. Survives
+ *  navigation because it reads from the ceremony store. */
+function SendSessionPanel({
+  ceremony,
+  onDismiss,
+}: {
+  ceremony: CeremonyState;
+  onDismiss: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const meta = ceremony.send;
+  const currentIdx = SEND_PHASES.findIndex((p) => p.key === ceremony.phase);
+  const failed = ceremony.failed;
+  const done = ceremony.done && !failed;
+
+  return (
+    <div className="card" style={{ marginTop: 18, background: "var(--bg-elevated)" }}>
+      <h3 style={{ marginTop: 0 }}>Signing session</h3>
+      {meta && (
+        <table className="participants">
+          <tbody>
+            <tr>
+              <td>Sending</td>
+              <td>{zec(meta.amountZatoshis)} ZEC</td>
+            </tr>
+            <tr>
+              <td>To</td>
+              <td className="dim mono-cell">{meta.recipient}</td>
+            </tr>
+            <tr>
+              <td>Fee</td>
+              <td>{zec(meta.feeZatoshis)} ZEC</td>
+            </tr>
+          </tbody>
+        </table>
+      )}
+
+      <label style={{ marginTop: 12 }}>Session ID</label>
+      {ceremony.sessionId ? (
+        <>
+          <div className="mono">{ceremony.sessionId}</div>
+          <button
+            className="secondary"
+            style={{ marginTop: 6 }}
+            onClick={async () => {
+              await navigator.clipboard.writeText(ceremony.sessionId!);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? "Copied!" : "Copy session ID"}
+          </button>
+          <p className="dim" style={{ marginTop: 6 }}>
+            The other signers approve this in their <Link to="/inbox">Inbox</Link>;
+            share this ID if they need to find the session.
+          </p>
+        </>
+      ) : (
+        <div className="dim">Creating session…</div>
+      )}
+
+      <label style={{ marginTop: 12 }}>Progress</label>
+      <ol className="send-steps">
+        {SEND_PHASES.map((p, i) => {
+          const state = failed
+            ? i < currentIdx
+              ? "done"
+              : i === currentIdx
+                ? "failed"
+                : "pending"
+            : done || i < currentIdx
+              ? "done"
+              : i === currentIdx
+                ? "active"
+                : "pending";
+          return (
+            <li key={p.key} className={`send-step ${state}`}>
+              <span className="send-step-mark">
+                {state === "done" ? "✓" : state === "failed" ? "✕" : i === currentIdx ? "●" : "○"}
+              </span>
+              {p.label}
+            </li>
+          );
+        })}
+      </ol>
+
+      {done && (
+        <div className="callout" style={{ marginTop: 8 }}>
+          <span>
+            ✓ Signed by the group. The transaction is authorized — proving &amp;
+            broadcast land next (5.2c), after which it goes on-chain.
+          </span>
+        </div>
+      )}
+      {failed && (
+        <div className="error" style={{ marginTop: 8 }}>
+          Signing session failed: {ceremony.error ?? "unknown error"}
+        </div>
+      )}
+
+      <button className="secondary" style={{ marginTop: 12 }} onClick={onDismiss}>
+        {done || failed ? "Done — start a new transaction" : "Dismiss (build a new one)"}
+      </button>
     </div>
   );
 }

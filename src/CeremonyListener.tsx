@@ -31,5 +31,11 @@ export default function CeremonyListener() {
     onFailed("signing", p)
   );
 
+  // Wallet send: a coordinator signing ceremony over a transaction sighash.
+  // Captured globally so progress lands even when off the wallet screen.
+  useTauriEvent<CeremonyEventPayload>("send:progress", (p) => onProgress("send", p));
+  useTauriEvent<CeremonyEventPayload>("send:complete", (p) => onComplete("send", p));
+  useTauriEvent<CeremonyEventPayload>("send:failed", (p) => onFailed("send", p));
+
   return null;
 }
