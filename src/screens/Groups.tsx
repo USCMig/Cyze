@@ -84,13 +84,38 @@ function GroupWallet({ group }: { group: GroupSummary }) {
   const startSend = useCeremonies((s) => s.startSend);
   const clearSend = useCeremonies((s) => s.clearSend);
   const activeSend = useCeremonies((s) => selectActiveSend(s, group.id));
+
+  // Which group members will sign this transaction. A t-of-n group only needs
+  // `threshold` of them online — selecting fewer would hang the ceremony, more
+  // is allowed. Pre-seeded with this device's member (the coordinator), if it
+  // is one, since it can contribute its share locally.
+  const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity });
+  const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const signerOptions = useMemo(
+    () =>
+      Object.values(group.participants).map((pubkey) => {
+        const r = resolveParticipant(pubkey, identity.data, contacts.data);
+        return { pubkey, name: r.label, shortPubkey: r.shortPubkey };
+      }),
+    [group, identity.data, contacts.data]
+  );
+  const [signers, setSigners] = useState<Set<string>>(new Set());
+  const seeded = useRef(false);
+  useEffect(() => {
+    const self = identity.data?.pubkey;
+    if (!seeded.current && self && Object.values(group.participants).includes(self)) {
+      setSigners(new Set([self]));
+      seeded.current = true;
+    }
+  }, [identity.data, group]);
+
   const send = useMutation({
     mutationFn: () =>
       walletSend({
         group_id: group.id,
         recipient: recipient.trim(),
         amount_zatoshis: Math.round(Number(amountZec) * 1e8),
-        signers: Object.values(group.participants),
+        signers: [...signers],
       }),
     onSuccess: (id) => {
       setErr(null);
@@ -255,11 +280,37 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                   </tr>
                 </tbody>
               </table>
-              <p className="dim" style={{ marginTop: 8 }}>
-                Review the details above, then start a signing session with the
-                group.
+              <label style={{ marginTop: 12 }}>
+                Signers (need {group.threshold} of {group.num_participants})
+              </label>
+              {signerOptions.map((p) => (
+                <div key={p.pubkey} className="row" style={{ marginBottom: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={signers.has(p.pubkey)}
+                    onChange={(e) => {
+                      const next = new Set(signers);
+                      if (e.target.checked) next.add(p.pubkey);
+                      else next.delete(p.pubkey);
+                      setSigners(next);
+                    }}
+                  />
+                  <span>{p.name}</span>
+                  <span className="dim code-inline">{p.shortPubkey}</span>
+                </div>
+              ))}
+              <p className="dim" style={{ marginTop: 6 }}>
+                {signers.size < group.threshold
+                  ? `Select at least ${group.threshold} signer${
+                      group.threshold === 1 ? "" : "s"
+                    } (${signers.size} chosen). Each must be online to approve in their Inbox.`
+                  : `${signers.size} of ${group.num_participants} selected — each must approve in their Inbox.`}
               </p>
-              <button onClick={() => send.mutate()} disabled={send.isPending}>
+              <button
+                onClick={() => send.mutate()}
+                disabled={send.isPending || signers.size < group.threshold}
+              >
                 {send.isPending ? "Starting…" : "Sign transaction with the group"}
               </button>
             </div>

@@ -31,8 +31,11 @@
 - [ ] **Multi-spend sends** — `wallet_send` currently requires exactly one
       Orchard spend (one α / one ceremony). Support N spends: one re-randomized
       ceremony per spend (or batch), then apply all signatures before proving.
-- [ ] **Signer selection** — `wallet_send` signs with *all* group members;
-      add a threshold-subset picker (reuse `NewSigningSession`'s selector).
+- [x] **Signer selection** — the send form now has a threshold-subset signer
+      picker (`GroupWallet` in `src/screens/Groups.tsx`), pre-seeded with this
+      device's member; the Sign button is gated on `>= threshold`. The chosen
+      pubkeys flow through `wallet_send` unchanged (backend already accepted an
+      arbitrary signer list).
 - [ ] **Longer expiry window** — `prepare_send` now anchors the tx expiry to the
       live chain tip, but `propose_standard_transfer_to_address` bakes in the
       default ~40-block delta (≈50 min on testnet). A slow multi-party ceremony
