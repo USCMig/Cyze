@@ -191,14 +191,3 @@ export function selectActiveSend(
   const id = s.activeSendByGroup[groupId];
   return id ? s.ceremonies[id] : undefined;
 }
-
-/** All send ceremonies for a group, newest first — the transaction history. */
-export function selectSendHistory(
-  s: CeremoniesStore,
-  groupId: string
-): (CeremonyState & { id: string })[] {
-  return Object.entries(s.ceremonies)
-    .filter(([, c]) => c.kind === "send" && c.groupId === groupId)
-    .map(([id, c]) => ({ ...c, id }))
-    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
-}

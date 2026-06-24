@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -22,7 +22,6 @@ import { resolveParticipant } from "../lib/participants";
 import {
   useCeremonies,
   selectActiveSend,
-  selectSendHistory,
   type CeremonyState,
 } from "../stores/ceremonies";
 
@@ -282,10 +281,20 @@ function GroupWallet({ group }: { group: GroupSummary }) {
 /** Persisted log of past sends for a group: each signing session and its
  *  outcome (broadcast txid or failure), newest first. */
 function SendHistory({ groupId }: { groupId: string }) {
-  const history = useCeremonies((s) => selectSendHistory(s, groupId));
+  // Select only stable store slices; derive the (freshly-built) history array
+  // with useMemo so the zustand snapshot stays referentially stable between
+  // renders — returning a new array straight from the selector causes an
+  // infinite render loop via useSyncExternalStore.
+  const ceremonies = useCeremonies((s) => s.ceremonies);
   const activeId = useCeremonies((s) => s.activeSendByGroup[groupId]);
-  // The in-progress send shows in its own panel above; history is the rest.
-  const past = history.filter((h) => h.id !== activeId);
+  const past = useMemo(
+    () =>
+      Object.entries(ceremonies)
+        .filter(([id, c]) => c.kind === "send" && c.groupId === groupId && id !== activeId)
+        .map(([id, c]) => ({ ...c, id }))
+        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
+    [ceremonies, groupId, activeId]
+  );
   if (past.length === 0) return null;
   return (
     <div style={{ marginTop: 18 }}>
