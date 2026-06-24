@@ -192,22 +192,27 @@ pub async fn wallet_send<R: tauri::Runtime>(
         &url,
     )
     .await?;
-    if draft.spends.len() != 1 {
+    if draft.spends.is_empty() {
         return Err(AppError::new(
             "wallet",
-            format!(
-                "this version supports single-Orchard-spend transactions (built {})",
-                draft.spends.len()
-            ),
+            "the transaction has no Orchard spends to sign",
         ));
     }
-    let spend = draft.spends[0].clone();
     let message = hex::decode(draft.sighash_hex.trim())
         .map_err(|e| AppError::new("wallet", format!("sighash: {e}")))?;
-    let randomizer = hex::decode(spend.alpha_hex.trim())
-        .map_err(|e| AppError::new("wallet", format!("alpha: {e}")))?;
+    // Each Orchard spend is re-randomized with its own α, so each needs its own
+    // re-randomized FROST signature over the (shared) sighash.
+    let spends = draft
+        .spends
+        .iter()
+        .map(|s| {
+            let alpha = hex::decode(s.alpha_hex.trim())
+                .map_err(|e| AppError::new("wallet", format!("alpha: {e}")))?;
+            Ok((s.index, alpha))
+        })
+        .collect::<AppResult<Vec<(usize, Vec<u8>)>>>()?;
 
-    // 2. Coordinator params over the sighash, with the spend's α as randomizer.
+    // 2. Shared coordinator inputs (everything but the per-spend randomizer).
     let (group, server_url) =
         crate::commands::signing::group_context(&state, &args.group_id, None).await?;
     let suite = Suite::from_id(&group.ciphersuite).map_err(AppError::from)?;
@@ -237,19 +242,11 @@ pub async fn wallet_send<R: tauri::Runtime>(
             Ok((comm.privkey.clone(), comm.pubkey.clone()))
         })
         .await?;
-    let params = CoordinatorParams {
-        server_url,
-        trust,
-        comm_privkey,
-        comm_pubkey,
-        public_key_package: group.public_key_package.clone(),
-        message,
-        signers,
-        self_key_package: group.key_package.clone(),
-        randomizer: Some(randomizer), // the Orchard spend's α
-    };
+    let public_key_package = group.public_key_package.clone();
+    let self_key_package = group.key_package.clone();
 
-    // 3. Spawn the ceremony; apply the signature to the PCZT on completion.
+    // 3. Spawn: one re-randomized ceremony per spend, then apply every signature
+    //    to the PCZT and prove + broadcast.
     let ceremony_id = Uuid::new_v4();
     let cancel = CancellationToken::new();
     state.ceremonies.lock().await.insert(
@@ -275,48 +272,82 @@ pub async fn wallet_send<R: tauri::Runtime>(
     let pczt_hex = draft.pczt_hex.clone();
     let sighash_hex = draft.sighash_hex.clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_coordinator(suite, params, tx, cancel).await;
-        let state = task_app.state::<AppState>();
-        state.ceremonies.lock().await.remove(&ceremony_id);
         let fail = |error: String| {
             let _ = task_app.emit(
                 "send:failed",
                 serde_json::json!({ "ceremony_id": ceremony_id, "error": error }),
             );
         };
-        match result {
-            Ok(output) => {
-                let sig_hex = hex::encode(&output.signature);
-                let signed_pczt_hex = match wallet::apply_orchard_signatures(
-                    &pczt_hex,
-                    &sighash_hex,
-                    vec![(spend.index, sig_hex)],
-                ) {
-                    Ok(hex) => hex,
-                    Err(e) => return fail(e.to_string()),
-                };
-                // Prove + broadcast. Surfaced as its own phase since the proof
-                // build is the slow part (several seconds).
+        let total = spends.len();
+        let mut signatures: Vec<(usize, String)> = Vec::with_capacity(total);
+        for (i, (index, alpha)) in spends.into_iter().enumerate() {
+            // For a multi-spend send, tell the UI which input is being signed;
+            // each is a separate ceremony the signers approve in their inbox.
+            if total > 1 {
                 let _ = task_app.emit(
                     "send:progress",
                     serde_json::json!({
                         "ceremony_id": ceremony_id,
-                        "event": { "phase": "proving" },
+                        "event": { "phase": "signing_spend", "spend": i + 1, "total": total },
                     }),
                 );
-                match wallet::broadcast_signed(&signed_pczt_hex, network, &url).await {
-                    Ok(txid) => {
-                        let _ = task_app.emit(
-                            "send:complete",
-                            serde_json::json!({
-                                "ceremony_id": ceremony_id,
-                                "txid": txid,
-                                "signed_pczt_hex": signed_pczt_hex,
-                            }),
-                        );
-                    }
-                    Err(e) => fail(e.to_string()),
+            }
+            let params = CoordinatorParams {
+                server_url: server_url.clone(),
+                trust: trust.clone(),
+                comm_privkey: comm_privkey.clone(),
+                comm_pubkey: comm_pubkey.clone(),
+                public_key_package: public_key_package.clone(),
+                message: message.clone(),
+                signers: signers.clone(),
+                self_key_package: self_key_package.clone(),
+                randomizer: Some(alpha), // this spend's α
+            };
+            match run_coordinator(suite, params, tx.clone(), cancel.clone()).await {
+                Ok(output) => signatures.push((index, hex::encode(&output.signature))),
+                Err(e) => {
+                    task_app
+                        .state::<AppState>()
+                        .ceremonies
+                        .lock()
+                        .await
+                        .remove(&ceremony_id);
+                    return fail(e.to_string());
                 }
+            }
+        }
+        drop(tx); // close the progress channel so the forwarding task ends
+        task_app
+            .state::<AppState>()
+            .ceremonies
+            .lock()
+            .await
+            .remove(&ceremony_id);
+
+        let signed_pczt_hex =
+            match wallet::apply_orchard_signatures(&pczt_hex, &sighash_hex, signatures) {
+                Ok(hex) => hex,
+                Err(e) => return fail(e.to_string()),
+            };
+        // Prove + broadcast. Surfaced as its own phase since the proof build is
+        // the slow part (several seconds).
+        let _ = task_app.emit(
+            "send:progress",
+            serde_json::json!({
+                "ceremony_id": ceremony_id,
+                "event": { "phase": "proving" },
+            }),
+        );
+        match wallet::broadcast_signed(&signed_pczt_hex, network, &url).await {
+            Ok(txid) => {
+                let _ = task_app.emit(
+                    "send:complete",
+                    serde_json::json!({
+                        "ceremony_id": ceremony_id,
+                        "txid": txid,
+                        "signed_pczt_hex": signed_pczt_hex,
+                    }),
+                );
             }
             Err(e) => fail(e.to_string()),
         }

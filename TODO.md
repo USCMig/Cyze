@@ -28,9 +28,12 @@
       lightwalletd `send_transaction` (`wallet::broadcast_signed`). Emits the
       `proving` phase + final txid. **Needs a live testnet end-to-end run** to
       confirm the proof/finalize/extract/broadcast leg (compile-verified only).
-- [ ] **Multi-spend sends** — `wallet_send` currently requires exactly one
-      Orchard spend (one α / one ceremony). Support N spends: one re-randomized
-      ceremony per spend (or batch), then apply all signatures before proving.
+- [x] **Multi-spend sends** — `wallet_send` now runs one re-randomized ceremony
+      per Orchard spend (each over the shared sighash with that spend's α),
+      sequentially, then applies all signatures before proving + broadcasting.
+      The UI shows "Signing input i of N". NB: signers approve N times (one
+      inbox session per input). Sequential keeps it within the expiry window for
+      small N; parallelizing the ceremonies is a future optimization if needed.
 - [x] **Signer selection** — the send form now has a threshold-subset signer
       picker (`GroupWallet` in `src/screens/Groups.tsx`), pre-seeded with this
       device's member; the Sign button is gated on `>= threshold`. The chosen

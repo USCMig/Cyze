@@ -42,6 +42,10 @@ export interface CeremonyState {
   txid?: string;
   /** Send-only: what is being sent. */
   send?: SendMeta;
+  /** Send-only: for a multi-spend tx, which input is currently being signed
+   *  (1-based) and how many in total. Sticky across the per-spend ceremonies. */
+  spendIndex?: number;
+  spendTotal?: number;
   /** When the ceremony was started (ms epoch), for ordering history. */
   startedAt?: number;
 }
@@ -111,6 +115,11 @@ export const useCeremonies = create<CeremoniesStore>()(
                 detail: payload.event,
                 // Keep the session id once it appears; later phases omit it.
                 sessionId: payload.event?.session_id ?? prev?.sessionId,
+                // Multi-spend marker is sticky across the per-spend ceremonies.
+                spendIndex:
+                  (payload.event?.spend as number | undefined) ?? prev?.spendIndex,
+                spendTotal:
+                  (payload.event?.total as number | undefined) ?? prev?.spendTotal,
                 done: false,
                 failed: false,
               },

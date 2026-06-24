@@ -462,6 +462,12 @@ function SendSessionPanel({
       )}
 
       <label style={{ marginTop: 12 }}>Progress</label>
+      {!done && !failed && (ceremony.spendTotal ?? 1) > 1 && (
+        <p className="dim" style={{ marginTop: 0 }}>
+          Signing input {ceremony.spendIndex ?? 1} of {ceremony.spendTotal} — each
+          input is a separate approval in signers' inboxes.
+        </p>
+      )}
       <ol className="send-steps">
         {SEND_PHASES.map((p, i) => {
           const state = failed
