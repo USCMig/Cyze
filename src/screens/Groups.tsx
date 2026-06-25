@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   getIdentity,
+  getWalletConfig,
   groupOrchardKeys,
   listContacts,
   listGroups,
@@ -32,8 +33,138 @@ function zec(zats: number): string {
   return (zats / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
+/** Full-page overlay confirmation required before broadcasting a mainnet send.
+ *  The user must explicitly check a box acknowledging irreversibility. */
+function MainnetConfirmModal({
+  draft,
+  isPending,
+  onConfirm,
+  onCancel,
+}: {
+  draft: DraftTransaction;
+  isPending: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const [ack, setAck] = useState(false);
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.72)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        className="card"
+        style={{
+          maxWidth: 480,
+          width: "90%",
+          margin: 0,
+          border: "2px solid var(--danger)",
+        }}
+      >
+        <div
+          style={{
+            background: "rgba(239,68,68,0.12)",
+            border: "1px solid var(--danger)",
+            borderRadius: 6,
+            padding: "10px 14px",
+            marginBottom: 16,
+          }}
+        >
+          <strong style={{ color: "var(--danger)", fontSize: 15 }}>
+            ⚠ Mainnet — Real ZEC Transaction
+          </strong>
+        </div>
+
+        <p style={{ marginTop: 0 }}>
+          You are about to sign and broadcast a transaction on the Zcash
+          mainnet. This will move real funds.
+        </p>
+
+        <table className="participants" style={{ marginBottom: 14 }}>
+          <tbody>
+            <tr>
+              <td>Sending</td>
+              <td>
+                <strong>{zec(draft.amount_zatoshis)} ZEC</strong>
+              </td>
+            </tr>
+            <tr>
+              <td>Network fee</td>
+              <td>{zec(draft.fee_zatoshis)} ZEC</td>
+            </tr>
+            <tr>
+              <td>Total deducted</td>
+              <td>
+                <strong>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} ZEC</strong>
+              </td>
+            </tr>
+            <tr>
+              <td>Recipient</td>
+              <td className="dim mono-cell" style={{ wordBreak: "break-all", fontSize: 11 }}>
+                {draft.recipient}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div className="row" style={{ alignItems: "flex-start", marginBottom: 16 }}>
+          <input
+            id="mainnet-ack"
+            type="checkbox"
+            style={{ width: "auto", marginTop: 3, flexShrink: 0 }}
+            checked={ack}
+            onChange={(e) => setAck(e.target.checked)}
+          />
+          <label htmlFor="mainnet-ack" style={{ cursor: "pointer", margin: 0 }}>
+            I confirm the recipient address is correct and understand this
+            transaction is <strong>irreversible</strong> once broadcast.
+          </label>
+        </div>
+
+        <div className="row">
+          <button
+            className="danger"
+            disabled={!ack || isPending}
+            onClick={onConfirm}
+          >
+            {isPending ? "Starting…" : "Sign and broadcast"}
+          </button>
+          <button className="secondary" onClick={onCancel} disabled={isPending}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Returns a human-readable error if `address` clearly belongs to the wrong
+ *  network, so the user catches the mismatch before paying gas to find out. */
+function detectAddressNetworkMismatch(address: string, isMainnet: boolean): string | null {
+  const a = address.trim();
+  if (!a) return null;
+  if (isMainnet) {
+    if (a.startsWith("utest") || a.startsWith("ztestsapling") || a.startsWith("tm")) {
+      return "This looks like a testnet address. You are on Mainnet — check the address carefully.";
+    }
+  } else {
+    // Mainnet UA starts with "u1"; testnet UA starts with "utest1"
+    if ((a.startsWith("u") && !a.startsWith("utest")) || a.startsWith("zs1") || a.startsWith("t1")) {
+      return "This looks like a mainnet address. You are on Testnet.";
+    }
+  }
+  return null;
+}
+
 /** Per-group Zcash wallet: view-only account, receive address, balance. */
-function GroupWallet({ group }: { group: GroupSummary }) {
+function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
   const queryClient = useQueryClient();
   const status = useQuery({
     queryKey: ["wallet-status", group.id],
@@ -72,6 +203,7 @@ function GroupWallet({ group }: { group: GroupSummary }) {
   const [amountZec, setAmountZec] = useState("");
   const [draft, setDraft] = useState<DraftTransaction | null>(null);
   const [isConsolidation, setIsConsolidation] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const prepare = useMutation({
     mutationFn: () =>
       walletPrepareSend(group.id, recipient.trim(), Math.round(Number(amountZec) * 1e8)),
@@ -255,20 +387,43 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                 clearSend(group.id);
                 setDraft(null);
                 setIsConsolidation(false);
+                setShowConfirm(false);
               }}
             />
           )}
 
           {!activeSend && (
           <>
+          {isMainnet && (
+            <div
+              className="callout warn"
+              style={{
+                border: "1px solid var(--danger)",
+                background: "rgba(239,68,68,0.08)",
+                marginTop: 14,
+                marginBottom: 4,
+              }}
+            >
+              <span>
+                <strong>⚠ Mainnet</strong> — transactions move real ZEC and
+                are irreversible. Verify every address and amount carefully.
+              </span>
+            </div>
+          )}
           <h3 style={{ marginTop: 18 }}>Send</h3>
           <label>Recipient unified address</label>
           <input
             type="text"
-            placeholder="utest1… (testnet) / u1… (mainnet)"
+            placeholder={isMainnet ? "u1… (mainnet)" : "utest1… (testnet)"}
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
           />
+          {/* Warn immediately if the typed address looks like the wrong network */}
+          {detectAddressNetworkMismatch(recipient, isMainnet) && (
+            <div className="error" style={{ marginTop: -4 }}>
+              {detectAddressNetworkMismatch(recipient, isMainnet)}
+            </div>
+          )}
           <label>Amount (ZEC)</label>
           <input
             type="text"
@@ -278,7 +433,12 @@ function GroupWallet({ group }: { group: GroupSummary }) {
           />
           <button
             onClick={() => prepare.mutate()}
-            disabled={prepare.isPending || !recipient.trim() || !(Number(amountZec) > 0)}
+            disabled={
+              prepare.isPending ||
+              !recipient.trim() ||
+              !(Number(amountZec) > 0) ||
+              !!detectAddressNetworkMismatch(recipient, isMainnet)
+            }
           >
             {prepare.isPending ? "Building…" : "Prepare draft transaction"}
           </button>
@@ -394,7 +554,13 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                   : `${signers.size} of ${group.num_participants} selected — each must approve in their Inbox.`}
               </p>
               <button
-                onClick={() => send.mutate()}
+                onClick={() => {
+                  if (isMainnet && !isConsolidation) {
+                    setShowConfirm(true);
+                  } else {
+                    send.mutate();
+                  }
+                }}
                 disabled={send.isPending || signers.size < group.threshold}
               >
                 {send.isPending
@@ -404,6 +570,16 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                     : "Sign transaction with the group"}
               </button>
             </div>
+          )}
+
+          {/* Mainnet confirmation modal — shown before starting a real-ZEC send. */}
+          {showConfirm && draft && (
+            <MainnetConfirmModal
+              draft={draft}
+              isPending={send.isPending}
+              onConfirm={() => { setShowConfirm(false); send.mutate(); }}
+              onCancel={() => setShowConfirm(false)}
+            />
           )}
           <p className="dim" style={{ marginTop: 8 }}>
             Building a draft constructs the transaction and computes what the
@@ -1015,6 +1191,8 @@ export function GroupWalletPage() {
   const { id } = useParams();
   const { groups } = useGroupData();
   const group = groups.data?.find((g) => g.id === id);
+  const walletConfig = useQuery({ queryKey: ["wallet-config"], queryFn: getWalletConfig });
+  const isMainnet = walletConfig.data?.network === "main";
 
   if (groups.isLoading) return <p className="dim">Loading…</p>;
   if (!group) {
@@ -1042,13 +1220,28 @@ export function GroupWalletPage() {
   return (
     <div>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-        <h2 style={{ marginBottom: 0 }}>{group.description || "(unnamed group)"} — Wallet</h2>
+        <h2 style={{ marginBottom: 0 }}>
+          {group.description || "(unnamed group)"} — Wallet
+          {isMainnet && (
+            <span
+              style={{
+                marginLeft: 10,
+                fontSize: 13,
+                color: "var(--danger)",
+                fontWeight: 600,
+                verticalAlign: "middle",
+              }}
+            >
+              ⚠ MAINNET
+            </span>
+          )}
+        </h2>
         <Link to={`/groups/${group.id}`} className="dim">
           ← Group details
         </Link>
       </div>
       <div className="card">
-        <GroupWallet group={group} />
+        <GroupWallet group={group} isMainnet={isMainnet} />
       </div>
       <GroupHistory group={group} />
     </div>

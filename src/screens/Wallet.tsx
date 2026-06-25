@@ -54,9 +54,33 @@ export default function Wallet() {
     }
   };
 
+  const savedNet = config.data?.network ?? "test";
+  const isMainnet = net === "main";
+
   return (
     <div>
       <h2>Wallet</h2>
+
+      {/* Persistent mainnet danger banner — shown any time the active network
+          is main, both here and as a reminder before the user navigates away. */}
+      {savedNet === "main" && (
+        <div
+          className="callout warn"
+          style={{
+            border: "2px solid var(--danger)",
+            background: "rgba(239,68,68,0.08)",
+            marginBottom: 16,
+          }}
+        >
+          <span>
+            <strong>⚠ You are on Mainnet.</strong> Transactions here move{" "}
+            <strong>real ZEC</strong>. Double-check every recipient address and
+            amount before signing. Signed transactions are irreversible once
+            broadcast.
+          </span>
+        </div>
+      )}
+
       <p className="dim">
         Cyze syncs Zcash shielded funds as a light client: it scans compact
         blocks locally with your group's viewing key and talks to a configurable{" "}
@@ -78,17 +102,27 @@ export default function Wallet() {
             Testnet
           </button>
           <button
-            className={net === "main" ? "" : "secondary"}
+            className={isMainnet ? "danger" : "secondary"}
             onClick={() => {
+              if (
+                net !== "main" &&
+                !confirm(
+                  "Switch to Mainnet?\n\n" +
+                    "Mainnet transactions move REAL ZEC and are irreversible once broadcast. " +
+                    "Make sure you are ready before signing any transaction."
+                )
+              ) {
+                return;
+              }
               setNetwork("main");
               setUrl("");
             }}
           >
-            Mainnet
+            {isMainnet ? "⚠ Mainnet (active)" : "Mainnet"}
           </button>
-          <span className="dim">
-            {net === "main"
-              ? "Real funds — use only when ready."
+          <span className={isMainnet ? "error" : "dim"}>
+            {isMainnet
+              ? "Real ZEC — transactions are irreversible."
               : "Safe for testing with faucet funds."}
           </span>
         </div>

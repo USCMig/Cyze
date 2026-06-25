@@ -493,8 +493,20 @@ pub async fn prepare_send(
         .first()
         .ok_or_else(|| CoreError::Crypto("wallet not initialized".into()))?;
 
-    let to = Address::decode(&params, recipient.trim())
-        .ok_or_else(|| CoreError::Crypto("invalid recipient address".into()))?;
+    let r = recipient.trim();
+    let to = Address::decode(&params, r).ok_or_else(|| {
+        // Give a network-mismatch hint when the address prefix clearly belongs
+        // to the other network — saves a confusing round-trip for the user.
+        let hint = match network {
+            WalletNetwork::Main if r.starts_with("utest") || r.starts_with("ztestsapling") =>
+                " — this looks like a testnet address but you are on mainnet",
+            WalletNetwork::Test if (r.starts_with("u1") || r.starts_with("zs1") || r.starts_with("t1"))
+                && !r.starts_with("utest") =>
+                " — this looks like a mainnet address but you are on testnet",
+            _ => "",
+        };
+        CoreError::Crypto(format!("invalid recipient address{hint}"))
+    })?;
     let amount =
         Zatoshis::from_u64(amount_zatoshis).map_err(|e| CoreError::Crypto(format!("amount: {e}")))?;
 
