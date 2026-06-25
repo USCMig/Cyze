@@ -67,12 +67,38 @@ function GroupWallet({ group }: { group: GroupSummary }) {
   const [recipient, setRecipient] = useState("");
   const [amountZec, setAmountZec] = useState("");
   const [draft, setDraft] = useState<DraftTransaction | null>(null);
+  const [isConsolidation, setIsConsolidation] = useState(false);
   const prepare = useMutation({
     mutationFn: () =>
       walletPrepareSend(group.id, recipient.trim(), Math.round(Number(amountZec) * 1e8)),
     onSuccess: (d) => {
       setErr(null);
+      setIsConsolidation(false);
       setDraft(d);
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  // Consolidation: self-transfer of nearly-all spendable balance. Forces the
+  // note selector to pick all (or most) notes, merging them into one output so
+  // future sends require only a single signing round. Costs a small network fee.
+  // 100 000 zatoshis (0.001 ZEC) is a generous fee buffer for up to ~20 inputs.
+  const CONSOLIDATE_FEE_BUFFER = 100_000;
+  const consolidate = useMutation({
+    mutationFn: () => {
+      const addr = status.data?.address;
+      const spendable = status.data?.spendable_zatoshis ?? 0;
+      if (!addr) throw new Error("wallet address not available — try syncing first");
+      if (spendable <= CONSOLIDATE_FEE_BUFFER)
+        throw new Error("balance too low to consolidate (need > 0.001 ZEC above fees)");
+      return walletPrepareSend(group.id, addr, spendable - CONSOLIDATE_FEE_BUFFER);
+    },
+    onSuccess: (d) => {
+      setErr(null);
+      setRecipient(status.data?.address ?? "");
+      setAmountZec(String(d.amount_zatoshis / 1e8));
+      setDraft(d);
+      setIsConsolidation(true);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
   });
@@ -126,6 +152,7 @@ function GroupWallet({ group }: { group: GroupSummary }) {
         amountZatoshis: draft.amount_zatoshis,
         feeZatoshis: draft.fee_zatoshis,
         sighashHex: draft.sighash_hex,
+        isConsolidation,
       });
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -223,6 +250,7 @@ function GroupWallet({ group }: { group: GroupSummary }) {
               onDismiss={() => {
                 clearSend(group.id);
                 setDraft(null);
+                setIsConsolidation(false);
               }}
             />
           )}
@@ -255,12 +283,26 @@ function GroupWallet({ group }: { group: GroupSummary }) {
               className="card"
               style={{ marginTop: 12, background: "var(--bg-elevated)" }}
             >
-              <h3 style={{ marginTop: 0 }}>Prepared transaction</h3>
+              <h3 style={{ marginTop: 0 }}>
+                {isConsolidation ? "Consolidation transaction" : "Prepared transaction"}
+              </h3>
+              {isConsolidation && (
+                <div className="callout" style={{ marginBottom: 12 }}>
+                  <span>
+                    Self-transfer — sends funds back to this group's own address, merging{" "}
+                    <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong> into
+                    one. After signing, future sends will need only a single signing round.
+                    A small network fee applies.
+                  </span>
+                </div>
+              )}
               <table className="participants">
                 <tbody>
                   <tr>
                     <td>Receiver</td>
-                    <td className="dim mono-cell">{draft.recipient}</td>
+                    <td className="dim mono-cell">
+                      {isConsolidation ? "This group (self)" : draft.recipient}
+                    </td>
                   </tr>
                   <tr>
                     <td>Amount to send</td>
@@ -280,6 +322,46 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                   </tr>
                 </tbody>
               </table>
+
+              {/* Multi-spend warning: show when the wallet's notes are fragmented. */}
+              {draft.spends.length > 1 && (
+                <div className="callout warn" style={{ marginTop: 12 }}>
+                  {isConsolidation ? (
+                    <span>
+                      Consolidating <strong>{draft.spends.length} notes</strong> — each signer
+                      will see <strong>{draft.spends.length} inbox approvals</strong>, one per
+                      input. After this completes, future sends will only need one.
+                    </span>
+                  ) : (
+                    <>
+                      <span>
+                        This transaction uses <strong>{draft.spends.length} notes</strong> as
+                        inputs. Each signer will see{" "}
+                        <strong>{draft.spends.length} inbox approvals</strong> — one per input.
+                      </span>
+                      {status.data?.address &&
+                        (status.data?.spendable_zatoshis ?? 0) > CONSOLIDATE_FEE_BUFFER && (
+                          <div style={{ marginTop: 8 }}>
+                            <button
+                              className="secondary"
+                              onClick={() => consolidate.mutate()}
+                              disabled={consolidate.isPending}
+                            >
+                              {consolidate.isPending
+                                ? "Building consolidation…"
+                                : "Consolidate notes first (recommended)"}
+                            </button>
+                            <p className="dim" style={{ margin: "6px 0 0", fontSize: 13 }}>
+                              Merges your notes into one via a self-transfer — costs a small
+                              fee, but future sends require only a single signing round.
+                            </p>
+                          </div>
+                        )}
+                    </>
+                  )}
+                </div>
+              )}
+
               <label style={{ marginTop: 12 }}>
                 Signers (need {group.threshold} of {group.num_participants})
               </label>
@@ -311,7 +393,11 @@ function GroupWallet({ group }: { group: GroupSummary }) {
                 onClick={() => send.mutate()}
                 disabled={send.isPending || signers.size < group.threshold}
               >
-                {send.isPending ? "Starting…" : "Sign transaction with the group"}
+                {send.isPending
+                  ? "Starting…"
+                  : isConsolidation
+                    ? "Sign consolidation with the group"
+                    : "Sign transaction with the group"}
               </button>
             </div>
           )}
@@ -362,9 +448,15 @@ function SendHistory({ groupId }: { groupId: string }) {
                     })
                   : "—"}
               </td>
-              <td>{h.send ? `${zec(h.send.amountZatoshis)} ZEC` : "—"}</td>
+              <td>
+                {h.send?.isConsolidation
+                  ? "Consolidation"
+                  : h.send
+                    ? `${zec(h.send.amountZatoshis)} ZEC`
+                    : "—"}
+              </td>
               <td className="dim mono-cell" style={{ maxWidth: 220 }}>
-                {h.send?.recipient ?? ""}
+                {h.send?.isConsolidation ? "(self)" : (h.send?.recipient ?? "")}
               </td>
               <td style={{ whiteSpace: "nowrap" }}>
                 {h.failed ? (
@@ -419,22 +511,31 @@ function SendSessionPanel({
     <div className="card" style={{ marginTop: 18, background: "var(--bg-elevated)" }}>
       <h3 style={{ marginTop: 0 }}>Signing session</h3>
       {meta && (
-        <table className="participants">
-          <tbody>
-            <tr>
-              <td>Sending</td>
-              <td>{zec(meta.amountZatoshis)} ZEC</td>
-            </tr>
-            <tr>
-              <td>To</td>
-              <td className="dim mono-cell">{meta.recipient}</td>
-            </tr>
-            <tr>
-              <td>Fee</td>
-              <td>{zec(meta.feeZatoshis)} ZEC</td>
-            </tr>
-          </tbody>
-        </table>
+        <>
+          {meta.isConsolidation && (
+            <div className="callout" style={{ marginBottom: 10 }}>
+              <span>Note consolidation — merging fragmented notes into one to simplify future sends.</span>
+            </div>
+          )}
+          <table className="participants">
+            <tbody>
+              <tr>
+                <td>Sending</td>
+                <td>{zec(meta.amountZatoshis)} ZEC</td>
+              </tr>
+              <tr>
+                <td>To</td>
+                <td className="dim mono-cell">
+                  {meta.isConsolidation ? "This group (self)" : meta.recipient}
+                </td>
+              </tr>
+              <tr>
+                <td>Fee</td>
+                <td>{zec(meta.feeZatoshis)} ZEC</td>
+              </tr>
+            </tbody>
+          </table>
+        </>
       )}
 
       <label style={{ marginTop: 12 }}>Session ID</label>

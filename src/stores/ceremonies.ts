@@ -21,6 +21,8 @@ export interface SendMeta {
   amountZatoshis: number;
   feeZatoshis: number;
   sighashHex: string;
+  /** True when this is a self-transfer to consolidate fragmented notes into one. */
+  isConsolidation?: boolean;
 }
 
 export interface CeremonyState {
