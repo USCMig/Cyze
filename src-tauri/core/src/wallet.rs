@@ -693,6 +693,193 @@ pub async fn broadcast_signed(
     Ok(txid)
 }
 
+/// A single transaction as seen from this wallet's perspective.
+#[derive(Debug, Clone, Serialize)]
+pub struct TxRecord {
+    /// Transaction ID, hex, in display order (bytes reversed vs. on-disk storage).
+    pub txid: String,
+    /// Block height when mined; `None` for pending/unconfirmed.
+    pub block_height: Option<u64>,
+    /// `"receive"` or `"send"`.
+    pub direction: String,
+    /// Value in zatoshis (always positive; for sends this is the total value
+    /// of the output(s) created, not including change returned to the wallet).
+    pub amount_zatoshis: u64,
+    /// Network fee paid, if known (only present for sends created by this wallet).
+    pub fee_zatoshis: Option<u64>,
+    /// Decoded memo text, if one was attached to this transaction.
+    pub memo: Option<String>,
+    /// Recipient unified address for sends; `None` for self-transfers (note consolidation).
+    pub recipient: Option<String>,
+}
+
+/// Read on-chain transaction history for a group's wallet — received funds and
+/// sent transactions, newest confirmed first.
+///
+/// Uses direct SQLite queries because `zcash_client_backend 0.23` exposes no
+/// clean transaction-list API on `WalletRead`. The tables queried are stable
+/// parts of `zcash_client_sqlite`'s schema: `transactions`, `accounts`,
+/// `orchard_received_notes`, and `sent_notes`.
+pub fn wallet_history(
+    data_dir: &Path,
+    group_id: &str,
+) -> Result<Vec<TxRecord>, CoreError> {
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+
+    // There is at most one account per group wallet.
+    use rusqlite::OptionalExtension;
+    let account_id: Option<i64> = conn
+        .query_row("SELECT id FROM accounts LIMIT 1", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| CoreError::Crypto(format!("get account id: {e}")))?;
+    let Some(account_id) = account_id else {
+        return Ok(vec![]);
+    };
+
+    let mut records: Vec<TxRecord> = Vec::new();
+
+    // ── Received ────────────────────────────────────────────────────────────
+    // Orchard notes for our account that are not change (is_change = 0 means
+    // this note arrived in a transaction that we did NOT also spend from —
+    // i.e., someone else sent us funds). Group by transaction so one tx = one
+    // history entry, sum the note values, and pick the first real memo.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.txid, t.mined_height, SUM(orn.value), \
+                 ( SELECT orn2.memo \
+                   FROM orchard_received_notes orn2 \
+                   WHERE orn2.transaction_id = t.id_tx \
+                     AND orn2.account_id = ?1 \
+                     AND orn2.is_change = 0 \
+                     AND orn2.memo IS NOT NULL \
+                   LIMIT 1 ) \
+                 FROM orchard_received_notes orn \
+                 JOIN transactions t ON orn.transaction_id = t.id_tx \
+                 WHERE orn.account_id = ?1 AND orn.is_change = 0 \
+                 GROUP BY t.id_tx \
+                 HAVING SUM(orn.value) > 0 \
+                 ORDER BY t.mined_height DESC NULLS LAST",
+            )
+            .map_err(|e| CoreError::Crypto(format!("prepare receive query: {e}")))?;
+
+        let rows = stmt
+            .query_map([account_id], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Option<u64>>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                ))
+            })
+            .map_err(|e| CoreError::Crypto(format!("execute receive query: {e}")))?;
+
+        for row in rows {
+            let (mut txid_bytes, block_height, amount, memo_bytes) =
+                row.map_err(|e| CoreError::Crypto(format!("receive row: {e}")))?;
+            // zcash_client_sqlite stores txid in internal byte order; the
+            // conventional display representation (block explorers, CLI) is
+            // byte-reversed.
+            txid_bytes.reverse();
+            records.push(TxRecord {
+                txid: hex::encode(&txid_bytes),
+                block_height,
+                direction: "receive".to_string(),
+                amount_zatoshis: amount,
+                fee_zatoshis: None,
+                memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
+                recipient: None,
+            });
+        }
+    }
+
+    // ── Sent ────────────────────────────────────────────────────────────────
+    // Rows in `sent_notes` where our account was the sender. Group by
+    // transaction; summing values gives total sent (not including change, which
+    // is modelled as a received note with is_change = 1 and never appears in
+    // sent_notes). The recipient is `to_address`; NULL means the output went
+    // back to this same wallet (self-transfer / consolidation).
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.txid, t.mined_height, t.fee, SUM(sn.value), \
+                 MAX(sn.to_address), \
+                 ( SELECT sn2.memo \
+                   FROM sent_notes sn2 \
+                   WHERE sn2.transaction_id = t.id_tx \
+                     AND sn2.from_account_id = ?1 \
+                     AND sn2.to_address IS NOT NULL \
+                     AND sn2.memo IS NOT NULL \
+                   LIMIT 1 ) \
+                 FROM sent_notes sn \
+                 JOIN transactions t ON sn.transaction_id = t.id_tx \
+                 WHERE sn.from_account_id = ?1 \
+                 GROUP BY t.id_tx \
+                 ORDER BY t.mined_height DESC NULLS LAST",
+            )
+            .map_err(|e| CoreError::Crypto(format!("prepare send query: {e}")))?;
+
+        let rows = stmt
+            .query_map([account_id], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Option<u64>>(1)?,
+                    row.get::<_, Option<u64>>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            })
+            .map_err(|e| CoreError::Crypto(format!("execute send query: {e}")))?;
+
+        for row in rows {
+            let (mut txid_bytes, block_height, fee, amount, to_address, memo_bytes) =
+                row.map_err(|e| CoreError::Crypto(format!("send row: {e}")))?;
+            txid_bytes.reverse();
+            records.push(TxRecord {
+                txid: hex::encode(&txid_bytes),
+                block_height,
+                direction: "send".to_string(),
+                amount_zatoshis: amount,
+                fee_zatoshis: fee,
+                memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
+                recipient: to_address,
+            });
+        }
+    }
+
+    // Merge and sort: confirmed newest first, then pending (no block).
+    records.sort_by(|a, b| match (b.block_height, a.block_height) {
+        (Some(bh), Some(ah)) => bh.cmp(&ah),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    Ok(records)
+}
+
+/// Decode a raw Zcash memo blob (up to 512 bytes) to a UTF-8 string.
+/// The 0xF6 sentinel byte signals an explicitly empty memo; all-zero padding
+/// is also treated as absent. Returns `None` for either case.
+fn decode_zcash_memo(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes[0] == 0xF6 {
+        return None;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim_end_matches('\0').trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
 /// The receiving unified address for a UFVK string, encoded for `network`.
 /// This is what the wallet's account would expose for receiving funds.
 pub fn ufvk_default_address(network: WalletNetwork, ufvk: &str) -> Result<String, CoreError> {

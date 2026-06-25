@@ -10,14 +10,15 @@
       (`SendHistory` in `src/screens/Groups.tsx`) now lists this device's past
       send ceremonies from the persisted store (time, amount, recipient, status
       + txid). Survives reload.
-- [ ] **On-chain transaction history** — the client-side log only covers sends
-      *initiated on this device*; it misses received funds and sends made
-      elsewhere with the same UFVK. For a complete ledger, add direct wallet-db
-      (sqlite) queries over `transactions`/`sent_notes`/`received_notes` in
-      `core/src/wallet.rs` (a new `wallet_history` command): txid, direction,
-      net value, height/time, status. Merge with the client-side log.
-- [ ] **Message history** — memos from received and sent notes, surfaced in the
-      "Message history" panel. Comes from the same wallet-db query work.
+- [x] **On-chain transaction history** — `wallet_history` command queries
+      `orchard_received_notes` (is_change=0) and `sent_notes` directly from the
+      wallet sqlite, returning `TxRecord[]` (txid, direction, amount, fee, memo,
+      recipient). Rendered in the expandable `GroupHistory` table on the wallet
+      page. Refreshes after each sync cycle. Capped at 50 rows displayed.
+- [x] **Message history** — memos decoded from `orchard_received_notes.memo`
+      and `sent_notes.memo` (0xF6 empty-sentinel + null-padding stripped).
+      Rendered in the "Message history" panel below the tx table, filtered to
+      entries with non-null memos. Capped at 30 rows.
 
 ## Send path (Phase 5.2, in progress)
 

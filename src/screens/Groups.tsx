@@ -12,8 +12,10 @@ import {
   walletSync,
   walletPrepareSend,
   walletSend,
+  walletHistory,
   AppError,
   DraftTransaction,
+  TxRecord,
   ContactDto,
   GroupSummary,
   Identity,
@@ -57,6 +59,8 @@ function GroupWallet({ group }: { group: GroupSummary }) {
     onSuccess: (s) => {
       setErr(null);
       queryClient.setQueryData(["wallet-status", group.id], s);
+      // New blocks may have confirmed transactions; refresh history.
+      queryClient.invalidateQueries({ queryKey: ["wallet-history", group.id] });
     },
     onError: (e) => {
       setErr((e as unknown as AppError).message);
@@ -1051,26 +1055,195 @@ export function GroupWalletPage() {
   );
 }
 
-/** Transaction + message history for a group's wallet.
- *  Scaffold: zcash_client_backend 0.23 has no clean tx-history read API, so the
- *  populated view is tracked in TODO.md (direct wallet-db queries). */
+/** Format a block height + optional block time as a human-readable date.
+ *  We only have the height, not a timestamp, so we show just the height. */
+function blockLabel(height: number | null): string {
+  if (height == null) return "Pending";
+  return `#${height.toLocaleString()}`;
+}
+
+/** Transaction + message history for a group's wallet, read from the local
+ *  wallet-db. Refreshes after each sync (same staleTime as wallet-status). */
 function GroupHistory({ group }: { group: GroupSummary }) {
-  void group;
+  const history = useQuery({
+    queryKey: ["wallet-history", group.id],
+    queryFn: () => walletHistory(group.id),
+    enabled: group.ciphersuite.includes("Pallas"),
+    refetchInterval: 35_000, // just after the 30s auto-sync cycle
+  });
+
+  const txns = history.data ?? [];
+  const memos = useMemo(
+    () => txns.filter((t) => t.memo != null),
+    [txns]
+  );
+
+  if (!group.ciphersuite.includes("Pallas")) return null;
+
   return (
     <>
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Transaction history</h3>
-        <p className="dim">
-          Sends and receives for this group will appear here once history
-          indexing lands. For now, balance reflects synced funds above.
-        </p>
+        {history.isLoading && <p className="dim">Loading…</p>}
+        {history.isError && (
+          <p className="error">
+            Could not load history:{" "}
+            {(history.error as unknown as AppError)?.message ?? String(history.error)}
+          </p>
+        )}
+        {history.isSuccess && txns.length === 0 && (
+          <p className="dim">
+            No transactions yet — balance updates appear here after syncing.
+          </p>
+        )}
+        {txns.length > 0 && (
+          <table className="participants">
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Block</th>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Type</th>
+                <th style={{ textAlign: "right", paddingBottom: 6 }}>Amount</th>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txns.slice(0, 50).map((tx) => (
+                <TxRow key={tx.txid} tx={tx} />
+              ))}
+            </tbody>
+          </table>
+        )}
+        {txns.length > 50 && (
+          <p className="dim" style={{ marginTop: 8, fontSize: 12 }}>
+            Showing 50 most recent of {txns.length} transactions.
+          </p>
+        )}
       </div>
+
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Message history</h3>
-        <p className="dim">
-          Memos attached to received and sent notes will appear here.
-        </p>
+        {memos.length === 0 ? (
+          <p className="dim">No memos in received or sent notes yet.</p>
+        ) : (
+          <table className="participants">
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Block</th>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Type</th>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Memo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {memos.slice(0, 30).map((tx) => (
+                <tr key={tx.txid + "-memo"}>
+                  <td style={{ whiteSpace: "nowrap" }} className="dim">
+                    {blockLabel(tx.block_height)}
+                  </td>
+                  <td>
+                    <span
+                      className="badge"
+                      style={{
+                        background:
+                          tx.direction === "receive"
+                            ? "var(--accent-dim)"
+                            : "var(--bg-elevated)",
+                        fontSize: 11,
+                      }}
+                    >
+                      {tx.direction === "receive" ? "↓ Recv" : "↑ Sent"}
+                    </span>
+                  </td>
+                  <td style={{ maxWidth: 340, wordBreak: "break-word" }}>
+                    {tx.memo}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
+    </>
+  );
+}
+
+/** A single row in the transaction history table. */
+function TxRow({ tx }: { tx: TxRecord }) {
+  const [expanded, setExpanded] = useState(false);
+  const isReceive = tx.direction === "receive";
+  const isSelf = tx.direction === "send" && tx.recipient == null;
+
+  return (
+    <>
+      <tr
+        style={{ cursor: "pointer" }}
+        onClick={() => setExpanded((e) => !e)}
+        title="Click to expand"
+      >
+        <td style={{ whiteSpace: "nowrap" }} className="dim">
+          {blockLabel(tx.block_height)}
+        </td>
+        <td>
+          {isReceive ? (
+            <span style={{ color: "#4ade80" }}>↓ Received</span>
+          ) : isSelf ? (
+            <span className="dim">⇄ Consolidation</span>
+          ) : (
+            <span style={{ color: "var(--accent)" }}>↑ Sent</span>
+          )}
+        </td>
+        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+          {isReceive ? "+" : isSelf ? "" : "−"}
+          {zec(tx.amount_zatoshis)} ZEC
+        </td>
+        <td className="dim mono-cell" style={{ maxWidth: 200 }}>
+          {isReceive
+            ? ""
+            : isSelf
+              ? "(self)"
+              : (tx.recipient?.slice(0, 18) ?? "") + "…"}
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td
+            colSpan={4}
+            style={{
+              padding: "8px 0 12px 0",
+              background: "var(--bg-elevated)",
+              borderRadius: 4,
+            }}
+          >
+            <div style={{ padding: "4px 12px", fontSize: 13 }}>
+              <div>
+                <label>Transaction ID</label>
+                <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+                  {tx.txid}
+                </div>
+              </div>
+              {!isReceive && tx.recipient && (
+                <div style={{ marginTop: 6 }}>
+                  <label>Recipient</label>
+                  <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+                    {tx.recipient}
+                  </div>
+                </div>
+              )}
+              {tx.fee_zatoshis != null && (
+                <div style={{ marginTop: 6 }}>
+                  <label>Fee</label>
+                  <div>{zec(tx.fee_zatoshis)} ZEC</div>
+                </div>
+              )}
+              {tx.memo && (
+                <div style={{ marginTop: 6 }}>
+                  <label>Memo</label>
+                  <div>{tx.memo}</div>
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
     </>
   );
 }

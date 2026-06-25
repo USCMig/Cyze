@@ -138,6 +138,16 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
     Ok(wallet::group_status(&state.data_dir, &group_id, network, &ufvk)?)
 }
 
+/// On-chain transaction history for a group wallet: received funds and sent
+/// transactions from the local wallet db, newest confirmed first.
+#[tauri::command]
+pub async fn wallet_history(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> AppResult<Vec<wallet::TxRecord>> {
+    Ok(wallet::wallet_history(&state.data_dir, &group_id)?)
+}
+
 /// Build (but do not sign or broadcast) an Orchard transfer, returning the
 /// draft PCZT and the sighash the group must FROST-sign. Moves no funds.
 #[tauri::command]

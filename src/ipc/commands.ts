@@ -114,6 +114,21 @@ export const walletInitAccount = (groupId: string) =>
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
 
+export interface TxRecord {
+  txid: string;
+  block_height: number | null;
+  /** "receive" | "send" */
+  direction: string;
+  amount_zatoshis: number;
+  fee_zatoshis: number | null;
+  memo: string | null;
+  /** Recipient unified address for sends; null for self-transfers (consolidation). */
+  recipient: string | null;
+}
+/** On-chain transaction history from the group's local wallet db. */
+export const walletHistory = (groupId: string) =>
+  invoke<TxRecord[]>("wallet_history", { groupId });
+
 export interface SpendToSign {
   index: number;
   alpha_hex: string;
