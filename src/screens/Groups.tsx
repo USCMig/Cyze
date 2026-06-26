@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -183,20 +183,19 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     onError: (e) => setErr((e as unknown as AppError).message),
   });
 
-  // TODO(wallet): once auto-sync is proven reliable, remove the manual
-  // "Sync now" button entirely (tracked in TODO.md).
   const [autoSyncOff, setAutoSyncOff] = useState(false);
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const sync = useMutation({
     mutationFn: () => walletSync(group.id),
     onSuccess: (s) => {
       setErr(null);
+      setLastSynced(new Date());
       queryClient.setQueryData(["wallet-status", group.id], s);
-      // New blocks may have confirmed transactions; refresh history.
       queryClient.invalidateQueries({ queryKey: ["wallet-history", group.id] });
     },
     onError: (e) => {
       setErr((e as unknown as AppError).message);
-      setAutoSyncOff(true); // pause auto-sync after a failure until manual retry
+      setAutoSyncOff(true);
     },
   });
 
@@ -311,14 +310,21 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     }
   }, [status.data, init]);
 
-  // Auto-sync every 30s while the wallet is open (skipped if a sync is in
-  // flight or after a failure, until the user manually retries).
+  // Auto-sync: fire immediately on first load, then every 30s.
   const syncRef = useRef(sync);
   syncRef.current = sync;
   const statusRef = useRef(status.data);
   statusRef.current = status.data;
   const autoSyncOffRef = useRef(autoSyncOff);
   autoSyncOffRef.current = autoSyncOff;
+  const syncedOnMount = useRef(false);
+  useEffect(() => {
+    if (status.data?.initialized && !syncedOnMount.current && !sync.isPending) {
+      syncedOnMount.current = true;
+      sync.mutate();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status.data?.initialized]);
   useEffect(() => {
     const t = setInterval(() => {
       const cur = syncRef.current;
@@ -362,22 +368,30 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
             </div>
             <div className="sync-box">
               <div className="dim" style={{ fontSize: 12 }}>
-                Synced to block {s.synced_height.toLocaleString()}
-                {s.chain_tip_height > 0 && <> of {s.chain_tip_height.toLocaleString()}</>}
+                Block {s.synced_height.toLocaleString()}
+                {s.chain_tip_height > 0 && <> / {s.chain_tip_height.toLocaleString()}</>}
               </div>
-              <button
-                className="secondary"
-                style={{ marginTop: 8 }}
-                onClick={() => {
-                  setAutoSyncOff(false);
-                  sync.mutate();
-                }}
-                disabled={sync.isPending}
-              >
-                {sync.isPending ? "Syncing…" : "Sync now"}
-              </button>
-              <div className="dim" style={{ fontSize: 11, marginTop: 6 }}>
-                Auto-syncs every 30s.
+              <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
+                {sync.isPending ? (
+                  <span>↻ Syncing…</span>
+                ) : lastSynced ? (
+                  <span>
+                    ✓ Synced {lastSynced.toLocaleTimeString(undefined, { timeStyle: "short" })}
+                    {autoSyncOff && (
+                      <>
+                        {" · "}
+                        <button
+                          style={{ all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
+                          onClick={() => { setAutoSyncOff(false); sync.mutate(); }}
+                        >
+                          Resume auto-sync
+                        </button>
+                      </>
+                    )}
+                  </span>
+                ) : (
+                  <span className="dim">Auto-syncing every 30s</span>
+                )}
               </div>
             </div>
           </div>
@@ -590,7 +604,6 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           </p>
           </>
           )}
-          <SendHistory groupId={group.id} />
         </>
       )}
       {err && <div className="error">{err}</div>}
@@ -598,68 +611,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   );
 }
 
-/** Persisted log of past sends for a group: each signing session and its
- *  outcome (broadcast txid or failure), newest first. */
-function SendHistory({ groupId }: { groupId: string }) {
-  // Select only stable store slices; derive the (freshly-built) history array
-  // with useMemo so the zustand snapshot stays referentially stable between
-  // renders — returning a new array straight from the selector causes an
-  // infinite render loop via useSyncExternalStore.
-  const ceremonies = useCeremonies((s) => s.ceremonies);
-  const activeId = useCeremonies((s) => s.activeSendByGroup[groupId]);
-  const past = useMemo(
-    () =>
-      Object.entries(ceremonies)
-        .filter(([id, c]) => c.kind === "send" && c.groupId === groupId && id !== activeId)
-        .map(([id, c]) => ({ ...c, id }))
-        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
-    [ceremonies, groupId, activeId]
-  );
-  if (past.length === 0) return null;
-  return (
-    <div style={{ marginTop: 18 }}>
-      <h3>Transaction history</h3>
-      <table className="participants">
-        <tbody>
-          {past.slice(0, 20).map((h) => (
-            <tr key={h.id}>
-              <td style={{ whiteSpace: "nowrap" }}>
-                {h.startedAt
-                  ? new Date(h.startedAt).toLocaleString(undefined, {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })
-                  : "—"}
-              </td>
-              <td>
-                {h.send?.isConsolidation
-                  ? "Consolidation"
-                  : h.send
-                    ? `${zec(h.send.amountZatoshis)} ZEC`
-                    : "—"}
-              </td>
-              <td className="dim mono-cell" style={{ maxWidth: 220 }}>
-                {h.send?.isConsolidation ? "(self)" : (h.send?.recipient ?? "")}
-              </td>
-              <td style={{ whiteSpace: "nowrap" }}>
-                {h.failed ? (
-                  <span style={{ color: "var(--danger)" }}>Failed</span>
-                ) : h.done && h.txid ? (
-                  <span title={h.txid} style={{ color: "#4ade80" }}>
-                    Sent · {h.txid.slice(0, 10)}…
-                  </span>
-                ) : h.done ? (
-                  <span style={{ color: "#4ade80" }}>Sent</span>
-                ) : (
-                  <span className="dim">In progress</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+/** Format a date for the history table. */
+function fmtDate(d: Date): string {
+  return d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 }
 
 /** Phase → human label for a wallet-send signing ceremony (coordinator side). */
@@ -1290,199 +1244,339 @@ export function GroupWalletPage() {
       <div className="card">
         <GroupWallet group={group} isMainnet={isMainnet} />
       </div>
-      <GroupHistory group={group} />
+      <WalletTxHistory group={group} />
     </div>
   );
 }
 
-/** Format a block height + optional block time as a human-readable date.
- *  We only have the height, not a timestamp, so we show just the height. */
-function blockLabel(height: number | null): string {
-  if (height == null) return "Pending";
-  return `#${height.toLocaleString()}`;
-}
-
-/** Transaction + message history for a group's wallet, read from the local
- *  wallet-db. Refreshes after each sync (same staleTime as wallet-status). */
-function GroupHistory({ group }: { group: GroupSummary }) {
+/** Unified on-chain + pending-ceremony transaction history for a group wallet.
+ *
+ *  Data sources:
+ *  - On-chain rows come from the local SQLite wallet-db (authoritative).
+ *  - Pending rows come from the in-memory ceremony store for sends that have
+ *    been started but haven't landed on-chain yet (in-flight or failed).
+ *
+ *  Columns: Date & Time | Type | Amount | Address | Tx Hash | [+]
+ */
+function WalletTxHistory({ group }: { group: GroupSummary }) {
   const history = useQuery({
     queryKey: ["wallet-history", group.id],
     queryFn: () => walletHistory(group.id),
     enabled: group.ciphersuite.includes("Pallas"),
-    refetchInterval: 35_000, // just after the 30s auto-sync cycle
+    refetchInterval: 35_000,
   });
 
-  const txns = history.data ?? [];
-  const memos = useMemo(
-    () => txns.filter((t) => t.memo != null),
-    [txns]
+  // Pending / recently-completed sends not yet confirmed on-chain.
+  const ceremonies = useCeremonies((s) => s.ceremonies);
+  const activeId = useCeremonies((s) => s.activeSendByGroup[group.id]);
+  const onchainTxids = useMemo(
+    () => new Set((history.data ?? []).map((t) => t.txid)),
+    [history.data]
+  );
+  const pendingRows = useMemo(
+    () =>
+      Object.entries(ceremonies)
+        .filter(
+          ([id, c]) =>
+            c.kind === "send" &&
+            c.groupId === group.id &&
+            id !== activeId &&
+            // If it landed on-chain, let the SQLite row be authoritative.
+            !(c.txid && onchainTxids.has(c.txid))
+        )
+        .map(([id, c]) => ({ ...c, id }))
+        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
+    [ceremonies, group.id, activeId, onchainTxids]
+  );
+
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const toggle = useCallback(
+    (key: string) => setExpandedKey((prev) => (prev === key ? null : key)),
+    []
   );
 
   if (!group.ciphersuite.includes("Pallas")) return null;
 
+  const onchainRows = history.data ?? [];
+  const hasAny = pendingRows.length > 0 || onchainRows.length > 0;
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3 style={{ marginTop: 0 }}>Transaction history</h3>
+
+      {history.isLoading && <p className="dim">Loading…</p>}
+      {history.isError && (
+        <p className="error">
+          Could not load history:{" "}
+          {(history.error as unknown as AppError)?.message ?? String(history.error)}
+        </p>
+      )}
+      {history.isSuccess && !hasAny && (
+        <p className="dim">
+          No transactions yet — balance updates appear here after syncing.
+        </p>
+      )}
+
+      {hasAny && (
+        <table className="participants" style={{ tableLayout: "fixed", width: "100%" }}>
+          <colgroup>
+            <col style={{ width: "13%" }} />
+            <col style={{ width: "12%" }} />
+            <col style={{ width: "13%" }} />
+            <col style={{ width: "28%" }} />
+            <col style={{ width: "28%" }} />
+            <col style={{ width: "6%" }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Date & Time</th>
+              <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Type</th>
+              <th style={{ textAlign: "right", paddingBottom: 6, fontWeight: 500 }}>Amount</th>
+              <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Address</th>
+              <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Tx Hash</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {/* Pending / in-flight / recently-failed ceremony rows */}
+            {pendingRows.map((row) => (
+              <PendingTxRow
+                key={row.id}
+                row={row}
+                isExpanded={expandedKey === row.id}
+                onToggle={() => toggle(row.id)}
+              />
+            ))}
+            {/* On-chain confirmed rows from SQLite */}
+            {onchainRows.slice(0, 50).map((tx) => (
+              <OnchainTxRow
+                key={tx.txid}
+                tx={tx}
+                isExpanded={expandedKey === tx.txid}
+                onToggle={() => toggle(tx.txid)}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {onchainRows.length > 50 && (
+        <p className="dim" style={{ marginTop: 8, fontSize: 12 }}>
+          Showing 50 most recent of {onchainRows.length} transactions.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Expand-detail panel shared by both row types. */
+function TxDetail({
+  colSpan,
+  txid,
+  recipient,
+  fee,
+  memo,
+  blockHeight,
+  error,
+}: {
+  colSpan: number;
+  txid?: string;
+  recipient?: string | null;
+  fee?: number | null;
+  memo?: string | null;
+  blockHeight?: number | null;
+  error?: string;
+}) {
+  return (
+    <tr>
+      <td
+        colSpan={colSpan}
+        style={{ padding: "0 0 12px 0", background: "var(--bg-elevated)" }}
+      >
+        <div style={{ padding: "8px 12px", fontSize: 13, display: "grid", gap: 6 }}>
+          {txid && (
+            <div>
+              <label>Transaction ID</label>
+              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+                {txid}
+              </div>
+            </div>
+          )}
+          {recipient && (
+            <div>
+              <label>Recipient</label>
+              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+                {recipient}
+              </div>
+            </div>
+          )}
+          {fee != null && (
+            <div>
+              <label>Fee</label>
+              <div>{zec(fee)} ZEC</div>
+            </div>
+          )}
+          {blockHeight != null && (
+            <div>
+              <label>Block</label>
+              <div>#{blockHeight.toLocaleString()}</div>
+            </div>
+          )}
+          {memo && (
+            <div>
+              <label>Memo</label>
+              <div>{memo}</div>
+            </div>
+          )}
+          {error && (
+            <div>
+              <label>Error</label>
+              <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>
+            </div>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+type PendingRow = CeremonyState & { id: string };
+
+function PendingTxRow({
+  row,
+  isExpanded,
+  onToggle,
+}: {
+  row: PendingRow;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const meta = row.send;
+  const isSelf = meta?.isConsolidation;
+  const dateStr = row.startedAt ? fmtDate(new Date(row.startedAt)) : "—";
+  const addrDisplay = isSelf
+    ? "(self)"
+    : meta?.recipient
+      ? meta.recipient.slice(0, 16) + "…"
+      : "—";
+  const txHashDisplay = row.txid ? row.txid.slice(0, 12) + "…" : "—";
+
   return (
     <>
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Transaction history</h3>
-        {history.isLoading && <p className="dim">Loading…</p>}
-        {history.isError && (
-          <p className="error">
-            Could not load history:{" "}
-            {(history.error as unknown as AppError)?.message ?? String(history.error)}
-          </p>
-        )}
-        {history.isSuccess && txns.length === 0 && (
-          <p className="dim">
-            No transactions yet — balance updates appear here after syncing.
-          </p>
-        )}
-        {txns.length > 0 && (
-          <table className="participants">
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", paddingBottom: 6 }}>Block</th>
-                <th style={{ textAlign: "left", paddingBottom: 6 }}>Type</th>
-                <th style={{ textAlign: "right", paddingBottom: 6 }}>Amount</th>
-                <th style={{ textAlign: "left", paddingBottom: 6 }}>Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {txns.slice(0, 50).map((tx) => (
-                <TxRow key={tx.txid} tx={tx} />
-              ))}
-            </tbody>
-          </table>
-        )}
-        {txns.length > 50 && (
-          <p className="dim" style={{ marginTop: 8, fontSize: 12 }}>
-            Showing 50 most recent of {txns.length} transactions.
-          </p>
-        )}
-      </div>
-
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Message history</h3>
-        {memos.length === 0 ? (
-          <p className="dim">No memos in received or sent notes yet.</p>
-        ) : (
-          <table className="participants">
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", paddingBottom: 6 }}>Block</th>
-                <th style={{ textAlign: "left", paddingBottom: 6 }}>Type</th>
-                <th style={{ textAlign: "left", paddingBottom: 6 }}>Memo</th>
-              </tr>
-            </thead>
-            <tbody>
-              {memos.slice(0, 30).map((tx) => (
-                <tr key={tx.txid + "-memo"}>
-                  <td style={{ whiteSpace: "nowrap" }} className="dim">
-                    {blockLabel(tx.block_height)}
-                  </td>
-                  <td>
-                    <span
-                      className="badge"
-                      style={{
-                        background:
-                          tx.direction === "receive"
-                            ? "var(--accent-dim)"
-                            : "var(--bg-elevated)",
-                        fontSize: 11,
-                      }}
-                    >
-                      {tx.direction === "receive" ? "↓ Recv" : "↑ Sent"}
-                    </span>
-                  </td>
-                  <td style={{ maxWidth: 340, wordBreak: "break-word" }}>
-                    {tx.memo}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <tr>
+        <td className="dim" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{dateStr}</td>
+        <td>
+          {row.failed ? (
+            <span style={{ color: "var(--danger)", fontSize: 12 }}>✕ Failed</span>
+          ) : isSelf ? (
+            <span className="dim" style={{ fontSize: 12 }}>⇄ Consolidation</span>
+          ) : (
+            <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
+          )}
+        </td>
+        <td style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 12 }}>
+          {meta ? `−${zec(meta.amountZatoshis)} ZEC` : "—"}
+        </td>
+        <td className="dim mono-cell" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}>
+          {addrDisplay}
+        </td>
+        <td className="dim mono-cell" style={{ fontSize: 11 }}>
+          {txHashDisplay}
+          {!row.txid && !row.failed && (
+            <span style={{ marginLeft: 4 }} title="Awaiting confirmation">⏳</span>
+          )}
+        </td>
+        <td style={{ textAlign: "center" }}>
+          <button
+            className="secondary"
+            style={{ padding: "2px 6px", fontSize: 11, lineHeight: 1 }}
+            onClick={onToggle}
+            title={isExpanded ? "Collapse" : "Expand"}
+          >
+            {isExpanded ? "−" : "+"}
+          </button>
+        </td>
+      </tr>
+      {isExpanded && (
+        <TxDetail
+          colSpan={6}
+          txid={row.txid}
+          recipient={isSelf ? undefined : meta?.recipient}
+          fee={meta?.feeZatoshis}
+          error={row.error}
+        />
+      )}
     </>
   );
 }
 
-/** A single row in the transaction history table. */
-function TxRow({ tx }: { tx: TxRecord }) {
-  const [expanded, setExpanded] = useState(false);
+function OnchainTxRow({
+  tx,
+  isExpanded,
+  onToggle,
+}: {
+  tx: TxRecord;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
   const isReceive = tx.direction === "receive";
   const isSelf = tx.direction === "send" && tx.recipient == null;
+  const addrDisplay = isReceive
+    ? "—"
+    : isSelf
+      ? "(self)"
+      : tx.recipient
+        ? tx.recipient.slice(0, 16) + "…"
+        : "—";
+  const txHashDisplay = tx.txid.slice(0, 12) + "…";
+  // Block height as approximate date label (no timestamp in db).
+  const dateDisplay = tx.block_height != null
+    ? `Block #${tx.block_height.toLocaleString()}`
+    : "Pending";
 
   return (
     <>
-      <tr
-        style={{ cursor: "pointer" }}
-        onClick={() => setExpanded((e) => !e)}
-        title="Click to expand"
-      >
-        <td style={{ whiteSpace: "nowrap" }} className="dim">
-          {blockLabel(tx.block_height)}
-        </td>
+      <tr>
+        <td className="dim" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{dateDisplay}</td>
         <td>
           {isReceive ? (
-            <span style={{ color: "#4ade80" }}>↓ Received</span>
+            <span style={{ color: "#4ade80", fontSize: 12 }}>↓ Received</span>
           ) : isSelf ? (
-            <span className="dim">⇄ Consolidation</span>
+            <span className="dim" style={{ fontSize: 12 }}>⇄ Consolidation</span>
           ) : (
-            <span style={{ color: "var(--accent)" }}>↑ Sent</span>
+            <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
           )}
         </td>
-        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-          {isReceive ? "+" : isSelf ? "" : "−"}
-          {zec(tx.amount_zatoshis)} ZEC
+        <td style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 12 }}>
+          <span style={{ color: isReceive ? "#4ade80" : undefined }}>
+            {isReceive ? "+" : isSelf ? "" : "−"}
+            {zec(tx.amount_zatoshis)} ZEC
+          </span>
         </td>
-        <td className="dim mono-cell" style={{ maxWidth: 200 }}>
-          {isReceive
-            ? ""
-            : isSelf
-              ? "(self)"
-              : (tx.recipient?.slice(0, 18) ?? "") + "…"}
+        <td className="dim mono-cell" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}>
+          {addrDisplay}
+        </td>
+        <td className="dim mono-cell" style={{ fontSize: 11 }}>{txHashDisplay}</td>
+        <td style={{ textAlign: "center" }}>
+          <button
+            className="secondary"
+            style={{ padding: "2px 6px", fontSize: 11, lineHeight: 1 }}
+            onClick={onToggle}
+            title={isExpanded ? "Collapse" : "Expand"}
+          >
+            {isExpanded ? "−" : "+"}
+          </button>
         </td>
       </tr>
-      {expanded && (
-        <tr>
-          <td
-            colSpan={4}
-            style={{
-              padding: "8px 0 12px 0",
-              background: "var(--bg-elevated)",
-              borderRadius: 4,
-            }}
-          >
-            <div style={{ padding: "4px 12px", fontSize: 13 }}>
-              <div>
-                <label>Transaction ID</label>
-                <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
-                  {tx.txid}
-                </div>
-              </div>
-              {!isReceive && tx.recipient && (
-                <div style={{ marginTop: 6 }}>
-                  <label>Recipient</label>
-                  <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
-                    {tx.recipient}
-                  </div>
-                </div>
-              )}
-              {tx.fee_zatoshis != null && (
-                <div style={{ marginTop: 6 }}>
-                  <label>Fee</label>
-                  <div>{zec(tx.fee_zatoshis)} ZEC</div>
-                </div>
-              )}
-              {tx.memo && (
-                <div style={{ marginTop: 6 }}>
-                  <label>Memo</label>
-                  <div>{tx.memo}</div>
-                </div>
-              )}
-            </div>
-          </td>
-        </tr>
+      {isExpanded && (
+        <TxDetail
+          colSpan={6}
+          txid={tx.txid}
+          recipient={isSelf ? undefined : tx.recipient}
+          fee={tx.fee_zatoshis}
+          memo={tx.memo}
+          blockHeight={tx.block_height ?? undefined}
+        />
       )}
     </>
   );

@@ -8,6 +8,81 @@ import {
   LightwalletdInfo,
 } from "../ipc/commands";
 
+/** Themed confirmation dialog for switching to mainnet — replaces the plain
+ *  browser confirm() so it matches the application's design language. */
+function SwitchNetworkModal({
+  onConfirm,
+  onCancel,
+}: {
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.72)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        className="card"
+        style={{
+          maxWidth: 420,
+          width: "90%",
+          margin: 0,
+          border: "2px solid var(--danger)",
+        }}
+      >
+        <div
+          style={{
+            borderBottom: "1px solid var(--border)",
+            paddingBottom: 12,
+            marginBottom: 16,
+          }}
+        >
+          <div className="dim" style={{ fontSize: 11, marginBottom: 4, letterSpacing: "0.06em" }}>
+            CYZE · NETWORK SETTINGS
+          </div>
+          <strong style={{ fontSize: 16 }}>Switching to Mainnet</strong>
+        </div>
+
+        <div
+          className="callout warn"
+          style={{
+            border: "1px solid var(--danger)",
+            background: "rgba(239,68,68,0.08)",
+            marginBottom: 16,
+          }}
+        >
+          <span>
+            Mainnet transactions move <strong>real ZEC</strong> and are{" "}
+            <strong>irreversible</strong> once broadcast. Only switch if you are
+            ready to handle live funds.
+          </span>
+        </div>
+
+        <p className="dim" style={{ marginTop: 0, fontSize: 13 }}>
+          You can switch back to testnet at any time from this page.
+        </p>
+
+        <div className="row" style={{ marginTop: 4 }}>
+          <button className="danger" onClick={onConfirm}>
+            Switch to Mainnet
+          </button>
+          <button className="secondary" onClick={onCancel}>
+            Keep Testnet
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Known public lightwalletd endpoints per network (user can also type their own). */
 const PRESETS: Record<string, { label: string; url: string }[]> = {
   test: [
@@ -27,6 +102,7 @@ export default function Wallet() {
   const [info, setInfo] = useState<LightwalletdInfo | null>(null);
   const [testErr, setTestErr] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [showMainnetModal, setShowMainnetModal] = useState(false);
 
   const net = network ?? config.data?.network ?? "test";
   const effectiveUrl = url ?? config.data?.lightwalletd_url ?? "";
@@ -104,18 +180,9 @@ export default function Wallet() {
           <button
             className={isMainnet ? "danger" : "secondary"}
             onClick={() => {
-              if (
-                net !== "main" &&
-                !confirm(
-                  "Switch to Mainnet?\n\n" +
-                    "Mainnet transactions move REAL ZEC and are irreversible once broadcast. " +
-                    "Make sure you are ready before signing any transaction."
-                )
-              ) {
-                return;
+              if (net !== "main") {
+                setShowMainnetModal(true);
               }
-              setNetwork("main");
-              setUrl("");
             }}
           >
             {isMainnet ? "⚠ Mainnet (active)" : "Mainnet"}
@@ -180,6 +247,17 @@ export default function Wallet() {
         )}
         {testErr && <div className="error" style={{ marginTop: 10 }}>{testErr}</div>}
       </div>
+
+      {showMainnetModal && (
+        <SwitchNetworkModal
+          onConfirm={() => {
+            setShowMainnetModal(false);
+            setNetwork("main");
+            setUrl("");
+          }}
+          onCancel={() => setShowMainnetModal(false)}
+        />
+      )}
 
       <div className="card">
         <h3>Coming next</h3>

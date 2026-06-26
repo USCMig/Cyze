@@ -27,6 +27,8 @@ export interface SendMeta {
 
 export interface CeremonyState {
   kind: CeremonyKind;
+  /** Human-readable name for display (e.g. DKG group description, signing message). */
+  label?: string;
   phase: string;
   detail?: Record<string, unknown>;
   done: boolean;
@@ -62,7 +64,7 @@ interface CeremoniesStore {
   /** Active send ceremony per group id, so the wallet screen reattaches to an
    *  in-flight send after navigation. */
   activeSendByGroup: Record<string, string>;
-  setActiveDkg: (id: string | null) => void;
+  setActiveDkg: (id: string | null, label?: string) => void;
   setActiveSigning: (id: string | null) => void;
   /** Register a freshly-started send so it persists and can be reattached. */
   startSend: (ceremonyId: string, meta: SendMeta) => void;
@@ -81,7 +83,24 @@ export const useCeremonies = create<CeremoniesStore>()(
       activeDkgId: null,
       activeSigningId: null,
       activeSendByGroup: {},
-      setActiveDkg: (id) => set({ activeDkgId: id }),
+      setActiveDkg: (id, label) =>
+        set((s) => {
+          if (!id) return { activeDkgId: null };
+          const prev = s.ceremonies[id];
+          const seeded: CeremonyState = prev ?? {
+            kind: "dkg",
+            phase: "connecting",
+            done: false,
+            failed: false,
+          };
+          return {
+            activeDkgId: id,
+            ceremonies: {
+              ...s.ceremonies,
+              [id]: { ...seeded, label: label ?? seeded.label },
+            },
+          };
+        }),
       setActiveSigning: (id) => set({ activeSigningId: id }),
       startSend: (ceremonyId, meta) =>
         set((s) => ({

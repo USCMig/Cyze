@@ -84,7 +84,10 @@ export default function DkgWizard() {
         server_url: effectiveServer || null,
         session_id: null,
       });
-      setActiveDkg(id);
+      const label =
+        description.trim() ||
+        `${suite === "redpallas" ? "RedPallas" : "Ed25519"} ${threshold}-of-${totalParticipants}`;
+      setActiveDkg(id, label);
     } catch (e) {
       setError((e as AppError).message ?? String(e));
     }
@@ -95,7 +98,14 @@ export default function DkgWizard() {
     const currentIdx = phases.indexOf(ceremony.phase);
     return (
       <div>
-        <h2>DKG ceremony</h2>
+        <h2>
+          DKG ceremony
+          {ceremony.label && (
+            <span className="dim" style={{ fontWeight: 400, fontSize: 16, marginLeft: 10 }}>
+              — {ceremony.label}
+            </span>
+          )}
+        </h2>
         <div className="card">
           <div className="stepper">
             {phases.map((p, i) => (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   createBrowserRouter,
   RouterProvider,
@@ -24,11 +24,25 @@ import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
 import Wallet from "./screens/Wallet";
 
-/** Expandable Groups nav entry: a dropdown listing every group the keystore
- *  can access, each linking to its own detail page. */
+/** Expandable Groups nav entry: accordion — at most one group's sub-links
+ *  visible at a time to keep the sidebar uncluttered. Auto-opens the group
+ *  whose page is currently active. */
 function GroupsNavItem() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const [open, setOpen] = useState(true);
+  const location = useLocation();
+
+  // Track which group id (if any) is expanded. Auto-update when the route
+  // changes so navigating via the main content stays in sync with the sidebar.
+  const activeGroupId = useMemo(() => {
+    const m = location.pathname.match(/^\/groups\/([^/]+)/);
+    return m ? m[1] : null;
+  }, [location.pathname]);
+  const [expandedId, setExpandedId] = useState<string | null>(activeGroupId);
+  useEffect(() => {
+    if (activeGroupId) setExpandedId(activeGroupId);
+  }, [activeGroupId]);
+
   const hasGroups = !!groups.data?.length;
   return (
     <div className="nav-expandable">
@@ -46,28 +60,43 @@ function GroupsNavItem() {
           </button>
         )}
       </div>
-      {open && groups.data?.map((g) => <GroupNavEntry key={g.id} g={g} />)}
+      {open &&
+        groups.data?.map((g) => (
+          <GroupNavEntry
+            key={g.id}
+            g={g}
+            isOpen={expandedId === g.id}
+            onToggle={() =>
+              setExpandedId((prev) => (prev === g.id ? null : g.id))
+            }
+          />
+        ))}
     </div>
   );
 }
 
-/** A single group in the sidebar — collapsible on its name, expanding to
- *  Details and (for Orchard groups) Wallet. Auto-expands the active group. */
-function GroupNavEntry({ g }: { g: GroupSummary }) {
-  const location = useLocation();
-  const onThisGroup = location.pathname.startsWith(`/groups/${g.id}`);
-  const [open, setOpen] = useState(onThisGroup);
+/** A single group in the sidebar. Controlled open state is lifted to the
+ *  parent so only one group can be expanded at a time. */
+function GroupNavEntry({
+  g,
+  isOpen,
+  onToggle,
+}: {
+  g: GroupSummary;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div className="nav-group">
       <button
         className="nav-group-name"
-        onClick={() => setOpen((o) => !o)}
+        onClick={onToggle}
         title={g.description || g.id}
       >
-        <span className="nav-group-caret">{open ? "▾" : "▸"}</span>
+        <span className="nav-group-caret">{isOpen ? "▾" : "▸"}</span>
         {g.description || `${g.id.slice(0, 10)}…`}
       </button>
-      {open && (
+      {isOpen && (
         <>
           <NavLink to={`/groups/${g.id}`} end className="nav-subsubitem">
             Details
