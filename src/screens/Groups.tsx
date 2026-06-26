@@ -295,6 +295,8 @@ function ReceiveShieldCard({ address }: { address: string | null }) {
   );
 }
 
+type WalletTab = "balance" | "receive" | "send";
+
 /** Per-group Zcash wallet: view-only account, receive address, balance. */
 function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
   const queryClient = useQueryClient();
@@ -304,6 +306,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     enabled: group.ciphersuite.includes("Pallas"),
   });
   const [err, setErr] = useState<string | null>(null);
+  const [walletTab, setWalletTab] = useState<WalletTab>("balance");
 
   const init = useMutation({
     mutationFn: () => walletInitAccount(group.id),
@@ -493,6 +496,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         </>
       ) : (
         <>
+          {/* Balance summary — always visible at top */}
           <div className="wallet-summary">
             <div className="row" style={{ gap: 28 }}>
               <div>
@@ -540,273 +544,317 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
             </div>
           </div>
 
-          <PoolsPanel status={s} />
-
-          <ReceiveShieldCard address={s.address} />
-
-          {activeSend && (
-            <SendSessionPanel
-              ceremonyId={activeSendId ?? ""}
-              ceremony={activeSend}
-              onDismiss={() => {
-                clearSend(group.id);
-                setDraft(null);
-                setIsConsolidation(false);
-                setShowConfirm(false);
-              }}
-            />
-          )}
-
-          {!activeSend && (
-          <>
-          {isMainnet && (
-            <div
-              className="callout warn"
-              style={{
-                border: "1px solid var(--danger)",
-                background: "rgba(239,68,68,0.08)",
-                marginTop: 14,
-                marginBottom: 4,
-              }}
-            >
-              <span>
-                <strong>⚠ Mainnet</strong> — transactions move real ZEC and
-                are irreversible. Verify every address and amount carefully.
-              </span>
-            </div>
-          )}
-          <h3 style={{ marginTop: 18 }}>Send</h3>
-          {/* Mode toggle: shielded Orchard send vs. unshield to transparent. */}
-          <div className="row" style={{ marginBottom: 12, gap: 8 }}>
-            <button
-              className={sendMode === "shielded" ? "" : "secondary"}
-              onClick={() => { setSendMode("shielded"); setRecipient(""); setDraft(null); }}
-            >
-              Send (shielded)
-            </button>
-            <button
-              className={sendMode === "unshield" ? "" : "secondary"}
-              onClick={() => { setSendMode("unshield"); setRecipient(""); setDraft(null); }}
-            >
-              Unshield → transparent
-            </button>
-          </div>
-          {sendMode === "unshield" && (
-            <div className="callout warn" style={{ marginBottom: 10 }}>
-              <span>
-                Unshielding moves funds from the group's shielded Orchard pool to a{" "}
-                <strong>transparent</strong> address. The amount and recipient become{" "}
-                <strong>publicly visible on-chain</strong>. The group's Orchard spend is
-                still FROST-signed by the threshold.
-              </span>
-            </div>
-          )}
-          <label>
-            {sendMode === "unshield"
-              ? "Transparent recipient address"
-              : "Recipient unified address"}
-          </label>
-          <input
-            type="text"
-            placeholder={
-              sendMode === "unshield"
-                ? isMainnet
-                  ? "t1… or t3… (mainnet transparent)"
-                  : "tm… or t2… (testnet transparent)"
-                : isMainnet
-                  ? "u1… (mainnet)"
-                  : "utest1… (testnet)"
-            }
-            value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
-          />
-          {/* Warn immediately if the typed address is the wrong network or kind */}
-          {recipientErr && (
-            <div className="error" style={{ marginTop: -4 }}>
-              {recipientErr}
-            </div>
-          )}
-          <label>Amount (ZEC)</label>
-          <input
-            type="text"
-            placeholder="0.001"
-            value={amountZec}
-            onChange={(e) => setAmountZec(e.target.value)}
-          />
-          <button
-            onClick={() => prepare.mutate()}
-            disabled={
-              prepare.isPending ||
-              !recipient.trim() ||
-              !(Number(amountZec) > 0) ||
-              !!recipientErr
-            }
+          {/* Tab bar */}
+          <div
+            className="row"
+            style={{
+              gap: 0,
+              marginTop: 16,
+              borderBottom: "1px solid var(--border)",
+              flexWrap: "wrap",
+            }}
           >
-            {prepare.isPending
-              ? "Building…"
-              : sendMode === "unshield"
-                ? "Prepare unshield transaction"
-                : "Prepare draft transaction"}
-          </button>
-          {draft && (
-            <div
-              className="card"
-              style={{ marginTop: 12, background: "var(--bg-elevated)" }}
-            >
-              <h3 style={{ marginTop: 0 }}>
-                {isConsolidation
-                  ? "Consolidation transaction"
-                  : draft.is_unshield
-                    ? "Unshield transaction"
-                    : "Prepared transaction"}
-              </h3>
-              {isConsolidation && (
-                <div className="callout" style={{ marginBottom: 12 }}>
-                  <span>
-                    Self-transfer — sends funds back to this group's own address, merging{" "}
-                    <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong> into
-                    one. After signing, future sends will need only a single signing round.
-                    A small network fee applies.
-                  </span>
-                </div>
-              )}
-              {!isConsolidation && draft.is_unshield && (
-                <div className="callout warn" style={{ marginBottom: 12 }}>
-                  <span>
-                    Unshield — moves <strong>{zec(draft.amount_zatoshis)} ZEC</strong> from
-                    the group's shielded Orchard pool to a transparent address. The amount
-                    and recipient will be <strong>publicly visible on-chain</strong>.
-                  </span>
-                </div>
-              )}
-              <table className="participants">
-                <tbody>
-                  <tr>
-                    <td>Receiver</td>
-                    <td className="dim mono-cell">
-                      {isConsolidation ? "This group (self)" : draft.recipient}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Amount to send</td>
-                    <td>{zec(draft.amount_zatoshis)} ZEC</td>
-                  </tr>
-                  <tr>
-                    <td>Fee</td>
-                    <td>{zec(draft.fee_zatoshis)} ZEC</td>
-                  </tr>
-                  <tr>
-                    <td>Total</td>
-                    <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} ZEC</td>
-                  </tr>
-                  <tr>
-                    <td>Sighash</td>
-                    <td className="dim mono-cell">{draft.sighash_hex}</td>
-                  </tr>
-                </tbody>
-              </table>
+            {(["balance", "receive", "send"] as WalletTab[]).map((tab) => {
+              const active = walletTab === tab;
+              const label =
+                tab === "balance"
+                  ? "Balance & Pools"
+                  : tab === "receive"
+                    ? "Receive / Shield"
+                    : activeSend && !activeSend.done
+                      ? "Send / Unshield ●"
+                      : "Send / Unshield";
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setWalletTab(tab)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
+                    color: active ? "var(--accent)" : "inherit",
+                    padding: "8px 14px",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: active ? 600 : 400,
+                    marginBottom: -1,
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
 
-              {/* Multi-spend warning: show when the wallet's notes are fragmented. */}
-              {draft.spends.length > 1 && (
-                <div className="callout warn" style={{ marginTop: 12 }}>
-                  {isConsolidation ? (
-                    <span>
-                      Consolidating <strong>{draft.spends.length} notes</strong> — each signer
-                      will see <strong>{draft.spends.length} inbox approvals</strong>, one per
-                      input. After this completes, future sends will only need one.
-                    </span>
-                  ) : (
-                    <>
+          {/* Balance & Pools tab */}
+          {walletTab === "balance" && <PoolsPanel status={s} />}
+
+          {/* Receive / Shield tab */}
+          {walletTab === "receive" && <ReceiveShieldCard address={s.address} />}
+
+          {/* Send / Unshield tab */}
+          {walletTab === "send" && (
+            <>
+              {activeSend ? (
+                <SendSessionPanel
+                  ceremonyId={activeSendId ?? ""}
+                  ceremony={activeSend}
+                  onDismiss={() => {
+                    clearSend(group.id);
+                    setDraft(null);
+                    setIsConsolidation(false);
+                    setShowConfirm(false);
+                  }}
+                />
+              ) : (
+                <>
+                  {isMainnet && (
+                    <div
+                      className="callout warn"
+                      style={{
+                        border: "1px solid var(--danger)",
+                        background: "rgba(239,68,68,0.08)",
+                        marginTop: 14,
+                        marginBottom: 4,
+                      }}
+                    >
                       <span>
-                        This transaction uses <strong>{draft.spends.length} notes</strong> as
-                        inputs. Each signer will see{" "}
-                        <strong>{draft.spends.length} inbox approvals</strong> — one per input.
+                        <strong>⚠ Mainnet</strong> — transactions move real ZEC and
+                        are irreversible. Verify every address and amount carefully.
                       </span>
-                      {status.data?.address &&
-                        (status.data?.spendable_zatoshis ?? 0) > CONSOLIDATE_FEE_BUFFER && (
-                          <div style={{ marginTop: 8 }}>
-                            <button
-                              className="secondary"
-                              onClick={() => consolidate.mutate()}
-                              disabled={consolidate.isPending}
-                            >
-                              {consolidate.isPending
-                                ? "Building consolidation…"
-                                : "Consolidate notes first (recommended)"}
-                            </button>
-                            <p className="dim" style={{ margin: "6px 0 0", fontSize: 13 }}>
-                              Merges your notes into one via a self-transfer — costs a small
-                              fee, but future sends require only a single signing round.
-                            </p>
-                          </div>
-                        )}
-                    </>
+                    </div>
                   )}
-                </div>
-              )}
 
-              <label style={{ marginTop: 12 }}>
-                Signers (need {group.threshold} of {group.num_participants})
-              </label>
-              {signerOptions.map((p) => (
-                <div key={p.pubkey} className="row" style={{ marginBottom: 6 }}>
+                  {/* Mode toggle: shielded Orchard send vs. unshield to transparent. */}
+                  <div className="row" style={{ marginTop: 14, marginBottom: 12, gap: 8 }}>
+                    <button
+                      className={sendMode === "shielded" ? "" : "secondary"}
+                      onClick={() => { setSendMode("shielded"); setRecipient(""); setDraft(null); }}
+                    >
+                      Send (shielded)
+                    </button>
+                    <button
+                      className={sendMode === "unshield" ? "" : "secondary"}
+                      onClick={() => { setSendMode("unshield"); setRecipient(""); setDraft(null); }}
+                    >
+                      Unshield → transparent
+                    </button>
+                  </div>
+                  {sendMode === "unshield" && (
+                    <div className="callout warn" style={{ marginBottom: 10 }}>
+                      <span>
+                        Unshielding moves funds from the group's shielded Orchard pool to a{" "}
+                        <strong>transparent</strong> address. The amount and recipient become{" "}
+                        <strong>publicly visible on-chain</strong>. The group's Orchard spend is
+                        still FROST-signed by the threshold.
+                      </span>
+                    </div>
+                  )}
+                  <label>
+                    {sendMode === "unshield"
+                      ? "Transparent recipient address"
+                      : "Recipient unified address"}
+                  </label>
                   <input
-                    type="checkbox"
-                    style={{ width: "auto" }}
-                    checked={signers.has(p.pubkey)}
-                    onChange={(e) => {
-                      const next = new Set(signers);
-                      if (e.target.checked) next.add(p.pubkey);
-                      else next.delete(p.pubkey);
-                      setSigners(next);
-                    }}
+                    type="text"
+                    placeholder={
+                      sendMode === "unshield"
+                        ? isMainnet
+                          ? "t1… or t3… (mainnet transparent)"
+                          : "tm… or t2… (testnet transparent)"
+                        : isMainnet
+                          ? "u1… (mainnet)"
+                          : "utest1… (testnet)"
+                    }
+                    value={recipient}
+                    onChange={(e) => setRecipient(e.target.value)}
                   />
-                  <span>{p.name}</span>
-                  <span className="dim code-inline">{p.shortPubkey}</span>
-                </div>
-              ))}
-              <p className="dim" style={{ marginTop: 6 }}>
-                {signers.size < group.threshold
-                  ? `Select at least ${group.threshold} signer${
-                      group.threshold === 1 ? "" : "s"
-                    } (${signers.size} chosen). Each must be online to approve in their Inbox.`
-                  : `${signers.size} of ${group.num_participants} selected — each must approve in their Inbox.`}
-              </p>
-              <button
-                onClick={() => {
-                  if (isMainnet && !isConsolidation) {
-                    setShowConfirm(true);
-                  } else {
-                    send.mutate();
-                  }
-                }}
-                disabled={send.isPending || signers.size < group.threshold}
-              >
-                {send.isPending
-                  ? "Starting…"
-                  : isConsolidation
-                    ? "Sign consolidation with the group"
-                    : draft.is_unshield
-                      ? "Sign unshield with the group"
-                      : "Sign transaction with the group"}
-              </button>
-            </div>
-          )}
+                  {recipientErr && (
+                    <div className="error" style={{ marginTop: -4 }}>
+                      {recipientErr}
+                    </div>
+                  )}
+                  <label>Amount (ZEC)</label>
+                  <input
+                    type="text"
+                    placeholder="0.001"
+                    value={amountZec}
+                    onChange={(e) => setAmountZec(e.target.value)}
+                  />
+                  <button
+                    onClick={() => prepare.mutate()}
+                    disabled={
+                      prepare.isPending ||
+                      !recipient.trim() ||
+                      !(Number(amountZec) > 0) ||
+                      !!recipientErr
+                    }
+                  >
+                    {prepare.isPending
+                      ? "Building…"
+                      : sendMode === "unshield"
+                        ? "Prepare unshield transaction"
+                        : "Prepare draft transaction"}
+                  </button>
+                  {draft && (
+                    <div
+                      className="card"
+                      style={{ marginTop: 12, background: "var(--bg-elevated)" }}
+                    >
+                      <h3 style={{ marginTop: 0 }}>
+                        {isConsolidation
+                          ? "Consolidation transaction"
+                          : draft.is_unshield
+                            ? "Unshield transaction"
+                            : "Prepared transaction"}
+                      </h3>
+                      {isConsolidation && (
+                        <div className="callout" style={{ marginBottom: 12 }}>
+                          <span>
+                            Self-transfer — sends funds back to this group's own address, merging{" "}
+                            <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong> into
+                            one. After signing, future sends will need only a single signing round.
+                            A small network fee applies.
+                          </span>
+                        </div>
+                      )}
+                      {!isConsolidation && draft.is_unshield && (
+                        <div className="callout warn" style={{ marginBottom: 12 }}>
+                          <span>
+                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} ZEC</strong> from
+                            the group's shielded Orchard pool to a transparent address. The amount
+                            and recipient will be <strong>publicly visible on-chain</strong>.
+                          </span>
+                        </div>
+                      )}
+                      <table className="participants">
+                        <tbody>
+                          <tr>
+                            <td>Receiver</td>
+                            <td className="dim mono-cell">
+                              {isConsolidation ? "This group (self)" : draft.recipient}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td>Amount to send</td>
+                            <td>{zec(draft.amount_zatoshis)} ZEC</td>
+                          </tr>
+                          <tr>
+                            <td>Fee</td>
+                            <td>{zec(draft.fee_zatoshis)} ZEC</td>
+                          </tr>
+                          <tr>
+                            <td>Total</td>
+                            <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} ZEC</td>
+                          </tr>
+                          <tr>
+                            <td>Sighash</td>
+                            <td className="dim mono-cell">{draft.sighash_hex}</td>
+                          </tr>
+                        </tbody>
+                      </table>
 
-          {/* Mainnet confirmation modal — shown before starting a real-ZEC send. */}
-          {showConfirm && draft && (
-            <MainnetConfirmModal
-              draft={draft}
-              isPending={send.isPending}
-              onConfirm={() => { setShowConfirm(false); send.mutate(); }}
-              onCancel={() => setShowConfirm(false)}
-            />
-          )}
-          <p className="dim" style={{ marginTop: 8 }}>
-            Building a draft constructs the transaction and computes what the
-            group needs to sign — it does not move funds or broadcast yet.
-          </p>
-          </>
+                      {draft.spends.length > 1 && (
+                        <div className="callout warn" style={{ marginTop: 12 }}>
+                          {isConsolidation ? (
+                            <span>
+                              Consolidating <strong>{draft.spends.length} notes</strong> — each signer
+                              will see <strong>{draft.spends.length} inbox approvals</strong>, one per
+                              input. After this completes, future sends will only need one.
+                            </span>
+                          ) : (
+                            <>
+                              <span>
+                                This transaction uses <strong>{draft.spends.length} notes</strong> as
+                                inputs. Each signer will see{" "}
+                                <strong>{draft.spends.length} inbox approvals</strong> — one per input.
+                              </span>
+                              {status.data?.address &&
+                                (status.data?.spendable_zatoshis ?? 0) > CONSOLIDATE_FEE_BUFFER && (
+                                  <div style={{ marginTop: 8 }}>
+                                    <button
+                                      className="secondary"
+                                      onClick={() => consolidate.mutate()}
+                                      disabled={consolidate.isPending}
+                                    >
+                                      {consolidate.isPending
+                                        ? "Building consolidation…"
+                                        : "Consolidate notes first (recommended)"}
+                                    </button>
+                                    <p className="dim" style={{ margin: "6px 0 0", fontSize: 13 }}>
+                                      Merges your notes into one via a self-transfer — costs a small
+                                      fee, but future sends require only a single signing round.
+                                    </p>
+                                  </div>
+                                )}
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      <label style={{ marginTop: 12 }}>
+                        Signers (need {group.threshold} of {group.num_participants})
+                      </label>
+                      {signerOptions.map((p) => (
+                        <div key={p.pubkey} className="row" style={{ marginBottom: 6 }}>
+                          <input
+                            type="checkbox"
+                            style={{ width: "auto" }}
+                            checked={signers.has(p.pubkey)}
+                            onChange={(e) => {
+                              const next = new Set(signers);
+                              if (e.target.checked) next.add(p.pubkey);
+                              else next.delete(p.pubkey);
+                              setSigners(next);
+                            }}
+                          />
+                          <span>{p.name}</span>
+                          <span className="dim code-inline">{p.shortPubkey}</span>
+                        </div>
+                      ))}
+                      <p className="dim" style={{ marginTop: 6 }}>
+                        {signers.size < group.threshold
+                          ? `Select at least ${group.threshold} signer${
+                              group.threshold === 1 ? "" : "s"
+                            } (${signers.size} chosen). Each must be online to approve in their Inbox.`
+                          : `${signers.size} of ${group.num_participants} selected — each must approve in their Inbox.`}
+                      </p>
+                      <button
+                        onClick={() => {
+                          if (isMainnet && !isConsolidation) {
+                            setShowConfirm(true);
+                          } else {
+                            send.mutate();
+                          }
+                        }}
+                        disabled={send.isPending || signers.size < group.threshold}
+                      >
+                        {send.isPending
+                          ? "Starting…"
+                          : isConsolidation
+                            ? "Sign consolidation with the group"
+                            : draft.is_unshield
+                              ? "Sign unshield with the group"
+                              : "Sign transaction with the group"}
+                      </button>
+                    </div>
+                  )}
+
+                  {showConfirm && draft && (
+                    <MainnetConfirmModal
+                      draft={draft}
+                      isPending={send.isPending}
+                      onConfirm={() => { setShowConfirm(false); send.mutate(); }}
+                      onCancel={() => setShowConfirm(false)}
+                    />
+                  )}
+                  <p className="dim" style={{ marginTop: 8 }}>
+                    Building a draft constructs the transaction and computes what the
+                    group needs to sign — it does not move funds or broadcast yet.
+                  </p>
+                </>
+              )}
+            </>
           )}
         </>
       )}
@@ -1674,8 +1722,8 @@ function PendingTxRow({
   return (
     <>
       <tr>
-        <td className="dim" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{dateStr}</td>
-        <td>
+        <td className="dim" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{dateStr}</td>
+        <td style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {row.failed ? (
             <span style={{ color: "var(--danger)", fontSize: 12 }}>✕ Failed</span>
           ) : isSelf ? (
@@ -1686,13 +1734,13 @@ function PendingTxRow({
             <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
           )}
         </td>
-        <td style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 12 }}>
+        <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
           {meta ? `−${zec(meta.amountZatoshis)} ZEC` : "—"}
         </td>
-        <td className="dim mono-cell" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}>
+        <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
           {addrDisplay}
         </td>
-        <td className="dim mono-cell" style={{ fontSize: 11 }}>
+        <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
           {txHashDisplay}
           {!row.txid && !row.failed && (
             <span style={{ marginLeft: 4 }} title="Awaiting confirmation">⏳</span>
@@ -1749,8 +1797,8 @@ function OnchainTxRow({
   return (
     <>
       <tr>
-        <td className="dim" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{dateDisplay}</td>
-        <td>
+        <td className="dim" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{dateDisplay}</td>
+        <td style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {isReceive ? (
             <span style={{ color: "#4ade80", fontSize: 12 }}>↓ Received</span>
           ) : isSelf ? (
@@ -1759,16 +1807,16 @@ function OnchainTxRow({
             <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
           )}
         </td>
-        <td style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 12 }}>
+        <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
           <span style={{ color: isReceive ? "#4ade80" : undefined }}>
             {isReceive ? "+" : isSelf ? "" : "−"}
             {zec(tx.amount_zatoshis)} ZEC
           </span>
         </td>
-        <td className="dim mono-cell" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}>
+        <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
           {addrDisplay}
         </td>
-        <td className="dim mono-cell" style={{ fontSize: 11 }}>{txHashDisplay}</td>
+        <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{txHashDisplay}</td>
         <td style={{ textAlign: "center" }}>
           <button
             className="secondary"
