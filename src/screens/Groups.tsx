@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  cancelCeremony,
   getIdentity,
   getWalletConfig,
   groupOrchardKeys,
@@ -246,6 +247,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const startSend = useCeremonies((s) => s.startSend);
   const clearSend = useCeremonies((s) => s.clearSend);
   const activeSend = useCeremonies((s) => selectActiveSend(s, group.id));
+  const activeSendId = useCeremonies((s) => s.activeSendByGroup[group.id]);
 
   // Which group members will sign this transaction. A t-of-n group only needs
   // `threshold` of them online — selecting fewer would hang the ceremony, more
@@ -382,6 +384,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
           {activeSend && (
             <SendSessionPanel
+              ceremonyId={activeSendId ?? ""}
               ceremony={activeSend}
               onDismiss={() => {
                 clearSend(group.id);
@@ -675,13 +678,37 @@ const SEND_PHASES: { key: string; label: string }[] = [
  *  signers / find in their inbox) plus a live step-by-step status. Survives
  *  navigation because it reads from the ceremony store. */
 function SendSessionPanel({
+  ceremonyId,
   ceremony,
   onDismiss,
 }: {
+  ceremonyId: string;
   ceremony: CeremonyState;
   onDismiss: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  // Track elapsed minutes so we can show a "stuck" warning when a signer
+  // goes offline. Updates every 30 s while the ceremony is in flight.
+  const [elapsedMin, setElapsedMin] = useState(0);
+  useEffect(() => {
+    if (!ceremony.startedAt || ceremony.done || ceremony.failed) return;
+    const update = () =>
+      setElapsedMin(Math.floor((Date.now() - ceremony.startedAt!) / 60_000));
+    update();
+    const t = setInterval(update, 30_000);
+    return () => clearInterval(t);
+  }, [ceremony.startedAt, ceremony.done, ceremony.failed]);
+
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      if (ceremonyId) await cancelCeremony(ceremonyId);
+    } finally {
+      onDismiss();
+    }
+  };
+
   const meta = ceremony.send;
   const currentIdx = SEND_PHASES.findIndex((p) => p.key === ceremony.phase);
   const failed = ceremony.failed;
@@ -749,6 +776,15 @@ function SendSessionPanel({
           input is a separate approval in signers' inboxes.
         </p>
       )}
+      {/* Stuck warning: shown after 10 minutes with no completion. */}
+      {!done && !failed && elapsedMin >= 10 && (
+        <div className="callout warn" style={{ marginTop: 4 }}>
+          <span>
+            Waiting {elapsedMin} min — a signer may be offline or the session
+            timed out. You can cancel and restart when everyone is available.
+          </span>
+        </div>
+      )}
       <ol className="send-steps">
         {SEND_PHASES.map((p, i) => {
           const state = failed
@@ -793,9 +829,20 @@ function SendSessionPanel({
         </div>
       )}
 
-      <button className="secondary" style={{ marginTop: 12 }} onClick={onDismiss}>
-        {done || failed ? "Done — start a new transaction" : "Dismiss (build a new one)"}
-      </button>
+      <div className="row" style={{ marginTop: 12, flexWrap: "wrap", gap: 8 }}>
+        <button className="secondary" onClick={onDismiss}>
+          {done || failed ? "Done — start a new transaction" : "Dismiss"}
+        </button>
+        {!done && !failed && (
+          <button
+            className="danger"
+            onClick={handleCancel}
+            disabled={cancelling}
+          >
+            {cancelling ? "Cancelling…" : "Cancel ceremony"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

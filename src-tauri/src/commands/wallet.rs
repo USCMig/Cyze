@@ -288,44 +288,62 @@ pub async fn wallet_send<R: tauri::Runtime>(
                 serde_json::json!({ "ceremony_id": ceremony_id, "error": error }),
             );
         };
-        let total = spends.len();
-        let mut signatures: Vec<(usize, String)> = Vec::with_capacity(total);
-        for (i, (index, alpha)) in spends.into_iter().enumerate() {
-            // For a multi-spend send, tell the UI which input is being signed;
-            // each is a separate ceremony the signers approve in their inbox.
-            if total > 1 {
-                let _ = task_app.emit(
-                    "send:progress",
-                    serde_json::json!({
-                        "ceremony_id": ceremony_id,
-                        "event": { "phase": "signing_spend", "spend": i + 1, "total": total },
-                    }),
-                );
-            }
-            let params = CoordinatorParams {
-                server_url: server_url.clone(),
-                trust: trust.clone(),
-                comm_privkey: comm_privkey.clone(),
-                comm_pubkey: comm_pubkey.clone(),
-                public_key_package: public_key_package.clone(),
-                message: message.clone(),
-                signers: signers.clone(),
-                self_key_package: self_key_package.clone(),
-                randomizer: Some(alpha), // this spend's α
+
+        // Budget the entire signing phase to 35 minutes. This is intentionally
+        // tighter than the Zcash tx expiry window (~40 blocks ≈ 40 min on
+        // testnet, 50 min on mainnet) so the user receives a clear timeout
+        // message instead of a cryptic "transaction expired" error at broadcast.
+        // Multi-spend transactions use this same total budget across all spends.
+        const SIGNING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35 * 60);
+
+        let signing_result: Result<Vec<(usize, String)>, String> = {
+            let total = spends.len();
+            let mut signatures: Vec<(usize, String)> = Vec::with_capacity(total);
+            let signing_fut = async {
+                for (i, (index, alpha)) in spends.into_iter().enumerate() {
+                    // For a multi-spend send, tell the UI which input is being
+                    // signed; each is a separate ceremony in signers' inboxes.
+                    if total > 1 {
+                        let _ = task_app.emit(
+                            "send:progress",
+                            serde_json::json!({
+                                "ceremony_id": ceremony_id,
+                                "event": { "phase": "signing_spend", "spend": i + 1, "total": total },
+                            }),
+                        );
+                    }
+                    let params = CoordinatorParams {
+                        server_url: server_url.clone(),
+                        trust: trust.clone(),
+                        comm_privkey: comm_privkey.clone(),
+                        comm_pubkey: comm_pubkey.clone(),
+                        public_key_package: public_key_package.clone(),
+                        message: message.clone(),
+                        signers: signers.clone(),
+                        self_key_package: self_key_package.clone(),
+                        randomizer: Some(alpha), // this spend's α
+                    };
+                    match run_coordinator(suite, params, tx.clone(), cancel.clone()).await {
+                        Ok(output) => signatures.push((index, hex::encode(&output.signature))),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+                Ok(signatures)
             };
-            match run_coordinator(suite, params, tx.clone(), cancel.clone()).await {
-                Ok(output) => signatures.push((index, hex::encode(&output.signature))),
-                Err(e) => {
-                    task_app
-                        .state::<AppState>()
-                        .ceremonies
-                        .lock()
-                        .await
-                        .remove(&ceremony_id);
-                    return fail(e.to_string());
+            match tokio::time::timeout(SIGNING_TIMEOUT, signing_fut).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    cancel.cancel();
+                    Err(
+                        "Signing timed out after 35 minutes. \
+                         The transaction has expired — start a new transaction \
+                         when all signers are available."
+                        .to_string(),
+                    )
                 }
             }
-        }
+        };
+
         drop(tx); // close the progress channel so the forwarding task ends
         task_app
             .state::<AppState>()
@@ -333,6 +351,11 @@ pub async fn wallet_send<R: tauri::Runtime>(
             .lock()
             .await
             .remove(&ceremony_id);
+
+        let signatures = match signing_result {
+            Ok(sigs) => sigs,
+            Err(e) => return fail(e),
+        };
 
         let signed_pczt_hex =
             match wallet::apply_orchard_signatures(&pczt_hex, &sighash_hex, signatures) {

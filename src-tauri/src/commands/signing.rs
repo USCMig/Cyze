@@ -139,7 +139,17 @@ pub async fn create_signing_session<R: tauri::Runtime>(
 
     let task_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_coordinator(suite, params, tx, cancel).await;
+        // 35-minute timeout: gives signers ample time to approve while keeping
+        // the session from hanging indefinitely when someone goes offline.
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35 * 60);
+        let result = match tokio::time::timeout(TIMEOUT, run_coordinator(suite, params, tx, cancel)).await {
+            Ok(r) => r,
+            Err(_) => Err(frost_app_core::CoreError::Ceremony(
+                "Signing session timed out after 35 minutes. \
+                 Start a new session when all participants are available."
+                .to_string(),
+            )),
+        };
         let state = task_app.state::<AppState>();
         state.ceremonies.lock().await.remove(&ceremony_id);
         match result {
