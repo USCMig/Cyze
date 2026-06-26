@@ -99,11 +99,23 @@ export const setWalletConfig = (network: string, lightwalletdUrl: string) =>
 export const lightwalletdInfo = (url: string | null) =>
   invoke<LightwalletdInfo>("lightwalletd_info", { url });
 
+/** A single pool's balance, split into spendable now / pending / total. */
+export interface PoolBalance {
+  spendable_zatoshis: number;
+  pending_zatoshis: number;
+  total_zatoshis: number;
+}
 export interface WalletStatus {
   initialized: boolean;
   address: string | null;
+  /** Aggregate totals (kept for back-compat; equal to the Orchard pool). */
   total_zatoshis: number;
   spendable_zatoshis: number;
+  /** Per-pool breakdown. With an Orchard-only group UFVK, sapling & transparent
+   *  are 0 — the threshold group cannot hold or spend those pools. */
+  orchard: PoolBalance;
+  sapling: PoolBalance;
+  transparent: PoolBalance;
   synced_height: number;
   chain_tip_height: number;
 }
@@ -140,6 +152,9 @@ export interface DraftTransaction {
   fee_zatoshis: number;
   amount_zatoshis: number;
   recipient: string;
+  /** True when the recipient is a transparent address — this is an unshield
+   *  (Orchard → transparent). The amount/recipient become public on-chain. */
+  is_unshield: boolean;
 }
 export const walletPrepareSend = (
   groupId: string,

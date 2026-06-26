@@ -23,6 +23,8 @@ export interface SendMeta {
   sighashHex: string;
   /** True when this is a self-transfer to consolidate fragmented notes into one. */
   isConsolidation?: boolean;
+  /** True when this moves shielded Orchard funds to a transparent address. */
+  isUnshield?: boolean;
 }
 
 export interface CeremonyState {

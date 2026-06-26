@@ -18,6 +18,7 @@ import {
   AppError,
   DraftTransaction,
   TxRecord,
+  WalletStatus,
   ContactDto,
   GroupSummary,
   Identity,
@@ -146,22 +147,152 @@ function MainnetConfirmModal({
   );
 }
 
-/** Returns a human-readable error if `address` clearly belongs to the wrong
- *  network, so the user catches the mismatch before paying gas to find out. */
-function detectAddressNetworkMismatch(address: string, isMainnet: boolean): string | null {
+type SendMode = "shielded" | "unshield";
+
+/** Network a transparent address belongs to (mainnet t1/t3 P2PKH/P2SH,
+ *  testnet tm/t2), or null if not a transparent address. */
+function transparentNet(a: string): "main" | "test" | null {
+  if (a.startsWith("t1") || a.startsWith("t3")) return "main";
+  if (a.startsWith("tm") || a.startsWith("t2")) return "test";
+  return null;
+}
+
+/** Network a shielded address belongs to (UA u1/utest1, Sapling zs1/ztestsapling),
+ *  or null if not a shielded address. */
+function shieldedNet(a: string): "main" | "test" | null {
+  if (a.startsWith("utest") || a.startsWith("ztestsapling")) return "test";
+  if (a.startsWith("u1") || a.startsWith("zs1")) return "main";
+  return null;
+}
+
+/** Mode-aware recipient validation. Returns a human-readable error if the
+ *  address is the wrong network OR the wrong kind for the selected mode (so the
+ *  user catches a transparent/shielded mix-up before building). The backend
+ *  Address::decode stays authoritative on submit; this is fast guidance. */
+function validateRecipient(
+  address: string,
+  isMainnet: boolean,
+  mode: SendMode
+): string | null {
   const a = address.trim();
   if (!a) return null;
-  if (isMainnet) {
-    if (a.startsWith("utest") || a.startsWith("ztestsapling") || a.startsWith("tm")) {
-      return "This looks like a testnet address. You are on Mainnet — check the address carefully.";
+  const t = transparentNet(a);
+  const sh = shieldedNet(a);
+  const wrongNet = (net: "main" | "test" | null) =>
+    (isMainnet && net === "test") || (!isMainnet && net === "main");
+
+  if (mode === "unshield") {
+    if (sh) {
+      return "This is a shielded address — switch to Send for shielded recipients. Unshield needs a transparent t-address.";
     }
-  } else {
-    // Mainnet UA starts with "u1"; testnet UA starts with "utest1"
-    if ((a.startsWith("u") && !a.startsWith("utest")) || a.startsWith("zs1") || a.startsWith("t1")) {
-      return "This looks like a mainnet address. You are on Testnet.";
+    if (t && wrongNet(t)) {
+      return isMainnet
+        ? "This looks like a testnet transparent address. You are on Mainnet."
+        : "This looks like a mainnet transparent address. You are on Testnet.";
     }
+    return null;
+  }
+  // shielded mode
+  if (t) {
+    return "This is a transparent address — switch to Unshield to send to a transparent t-address.";
+  }
+  if (sh && wrongNet(sh)) {
+    return isMainnet
+      ? "This looks like a testnet address. You are on Mainnet — check the address carefully."
+      : "This looks like a mainnet address. You are on Testnet.";
   }
   return null;
+}
+
+/** Pool-awareness panel: the group holds & spends only Orchard. Surfaces the
+ *  transparent/Sapling balances (normally 0) with a clear note that the
+ *  threshold group cannot spend them — so users don't expect to. */
+function PoolsPanel({ status }: { status: WalletStatus }) {
+  const rows: { label: string; bal: number; spendable: boolean; note: string }[] = [
+    {
+      label: "Orchard (shielded)",
+      bal: status.orchard.total_zatoshis,
+      spendable: true,
+      note: "Spendable by the threshold group via FROST.",
+    },
+    {
+      label: "Sapling (shielded)",
+      bal: status.sapling.total_zatoshis,
+      spendable: false,
+      note: "Not held or spendable by the group (different signature scheme).",
+    },
+    {
+      label: "Transparent",
+      bal: status.transparent.total_zatoshis,
+      spendable: false,
+      note: "Not held or spendable by the group (needs threshold ECDSA).",
+    },
+  ];
+  return (
+    <div className="card" style={{ marginTop: 14, background: "var(--bg-elevated)" }}>
+      <h3 style={{ marginTop: 0 }}>Pools</h3>
+      <table className="participants">
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label}>
+              <td>
+                {r.label}{" "}
+                {r.spendable ? (
+                  <span className="badge blue" style={{ marginLeft: 4 }}>
+                    group-spendable
+                  </span>
+                ) : (
+                  <span className="badge" style={{ marginLeft: 4 }}>
+                    not group-held
+                  </span>
+                )}
+                <div className="dim" style={{ fontSize: 12 }}>{r.note}</div>
+              </td>
+              <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                {zec(r.bal)} ZEC
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="dim" style={{ marginTop: 8, fontSize: 12 }}>
+        The group's key authorizes only Orchard spends. To move shielded funds
+        out to a transparent address, use <strong>Unshield</strong> below.
+      </p>
+    </div>
+  );
+}
+
+/** Receive / shield-into-group card: shows the group's Orchard unified address.
+ *  "Shielding" into the group means sending funds to this address from a
+ *  personal wallet — the group then holds them as spendable Orchard. */
+function ReceiveShieldCard({ address }: { address: string | null }) {
+  const [copied, setCopied] = useState(false);
+  if (!address) return null;
+  return (
+    <div className="card" style={{ marginTop: 14, background: "var(--bg-elevated)" }}>
+      <h3 style={{ marginTop: 0 }}>Receive / Shield into group</h3>
+      <p className="dim" style={{ marginTop: 0 }}>
+        Send Zcash to this unified address to fund the group. Funds arrive in the
+        group's shielded <strong>Orchard</strong> pool and become spendable by the
+        threshold. To <strong>shield</strong> transparent funds, send them here
+        from a personal wallet — the receive itself is the shielding step.
+      </p>
+      <label>Group Orchard unified address</label>
+      <div className="mono">{address}</div>
+      <button
+        className="secondary"
+        style={{ marginTop: 6 }}
+        onClick={async () => {
+          await navigator.clipboard.writeText(address);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? "Copied!" : "Copy address"}
+      </button>
+    </div>
+  );
 }
 
 /** Per-group Zcash wallet: view-only account, receive address, balance. */
@@ -204,6 +335,12 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const [draft, setDraft] = useState<DraftTransaction | null>(null);
   const [isConsolidation, setIsConsolidation] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  // Shielded send (Orchard → Orchard) vs. unshield (Orchard → transparent).
+  // Both reuse the same prepare/sign machinery; the mode only drives the
+  // recipient validation, placeholder, and labeling — the backend decides the
+  // authoritative is_unshield flag from the decoded address.
+  const [sendMode, setSendMode] = useState<SendMode>("shielded");
+  const recipientErr = validateRecipient(recipient, isMainnet, sendMode);
   const prepare = useMutation({
     mutationFn: () =>
       walletPrepareSend(group.id, recipient.trim(), Math.round(Number(amountZec) * 1e8)),
@@ -290,6 +427,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         feeZatoshis: draft.fee_zatoshis,
         sighashHex: draft.sighash_hex,
         isConsolidation,
+        isUnshield: draft.is_unshield,
       });
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -358,12 +496,18 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           <div className="wallet-summary">
             <div className="row" style={{ gap: 28 }}>
               <div>
-                <label>Total</label>
-                <div style={{ fontSize: 18 }}>{zec(s.total_zatoshis)} ZEC</div>
+                <label>Spendable (Orchard)</label>
+                <div style={{ fontSize: 18, color: "var(--accent)" }}>
+                  {zec(s.orchard.spendable_zatoshis)} ZEC
+                </div>
               </div>
               <div>
-                <label>Spendable</label>
-                <div style={{ fontSize: 18 }}>{zec(s.spendable_zatoshis)} ZEC</div>
+                <label>Pending</label>
+                <div style={{ fontSize: 18 }}>{zec(s.orchard.pending_zatoshis)} ZEC</div>
+              </div>
+              <div>
+                <label>Total</label>
+                <div style={{ fontSize: 18 }}>{zec(s.orchard.total_zatoshis)} ZEC</div>
               </div>
             </div>
             <div className="sync-box">
@@ -395,6 +539,10 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               </div>
             </div>
           </div>
+
+          <PoolsPanel status={s} />
+
+          <ReceiveShieldCard address={s.address} />
 
           {activeSend && (
             <SendSessionPanel
@@ -428,17 +576,54 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
             </div>
           )}
           <h3 style={{ marginTop: 18 }}>Send</h3>
-          <label>Recipient unified address</label>
+          {/* Mode toggle: shielded Orchard send vs. unshield to transparent. */}
+          <div className="row" style={{ marginBottom: 12, gap: 8 }}>
+            <button
+              className={sendMode === "shielded" ? "" : "secondary"}
+              onClick={() => { setSendMode("shielded"); setRecipient(""); setDraft(null); }}
+            >
+              Send (shielded)
+            </button>
+            <button
+              className={sendMode === "unshield" ? "" : "secondary"}
+              onClick={() => { setSendMode("unshield"); setRecipient(""); setDraft(null); }}
+            >
+              Unshield → transparent
+            </button>
+          </div>
+          {sendMode === "unshield" && (
+            <div className="callout warn" style={{ marginBottom: 10 }}>
+              <span>
+                Unshielding moves funds from the group's shielded Orchard pool to a{" "}
+                <strong>transparent</strong> address. The amount and recipient become{" "}
+                <strong>publicly visible on-chain</strong>. The group's Orchard spend is
+                still FROST-signed by the threshold.
+              </span>
+            </div>
+          )}
+          <label>
+            {sendMode === "unshield"
+              ? "Transparent recipient address"
+              : "Recipient unified address"}
+          </label>
           <input
             type="text"
-            placeholder={isMainnet ? "u1… (mainnet)" : "utest1… (testnet)"}
+            placeholder={
+              sendMode === "unshield"
+                ? isMainnet
+                  ? "t1… or t3… (mainnet transparent)"
+                  : "tm… or t2… (testnet transparent)"
+                : isMainnet
+                  ? "u1… (mainnet)"
+                  : "utest1… (testnet)"
+            }
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
           />
-          {/* Warn immediately if the typed address looks like the wrong network */}
-          {detectAddressNetworkMismatch(recipient, isMainnet) && (
+          {/* Warn immediately if the typed address is the wrong network or kind */}
+          {recipientErr && (
             <div className="error" style={{ marginTop: -4 }}>
-              {detectAddressNetworkMismatch(recipient, isMainnet)}
+              {recipientErr}
             </div>
           )}
           <label>Amount (ZEC)</label>
@@ -454,10 +639,14 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               prepare.isPending ||
               !recipient.trim() ||
               !(Number(amountZec) > 0) ||
-              !!detectAddressNetworkMismatch(recipient, isMainnet)
+              !!recipientErr
             }
           >
-            {prepare.isPending ? "Building…" : "Prepare draft transaction"}
+            {prepare.isPending
+              ? "Building…"
+              : sendMode === "unshield"
+                ? "Prepare unshield transaction"
+                : "Prepare draft transaction"}
           </button>
           {draft && (
             <div
@@ -465,7 +654,11 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               style={{ marginTop: 12, background: "var(--bg-elevated)" }}
             >
               <h3 style={{ marginTop: 0 }}>
-                {isConsolidation ? "Consolidation transaction" : "Prepared transaction"}
+                {isConsolidation
+                  ? "Consolidation transaction"
+                  : draft.is_unshield
+                    ? "Unshield transaction"
+                    : "Prepared transaction"}
               </h3>
               {isConsolidation && (
                 <div className="callout" style={{ marginBottom: 12 }}>
@@ -474,6 +667,15 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong> into
                     one. After signing, future sends will need only a single signing round.
                     A small network fee applies.
+                  </span>
+                </div>
+              )}
+              {!isConsolidation && draft.is_unshield && (
+                <div className="callout warn" style={{ marginBottom: 12 }}>
+                  <span>
+                    Unshield — moves <strong>{zec(draft.amount_zatoshis)} ZEC</strong> from
+                    the group's shielded Orchard pool to a transparent address. The amount
+                    and recipient will be <strong>publicly visible on-chain</strong>.
                   </span>
                 </div>
               )}
@@ -584,7 +786,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                   ? "Starting…"
                   : isConsolidation
                     ? "Sign consolidation with the group"
-                    : "Sign transaction with the group"}
+                    : draft.is_unshield
+                      ? "Sign unshield with the group"
+                      : "Sign transaction with the group"}
               </button>
             </div>
           )}
@@ -678,10 +882,15 @@ function SendSessionPanel({
               <span>Note consolidation — merging fragmented notes into one to simplify future sends.</span>
             </div>
           )}
+          {meta.isUnshield && (
+            <div className="callout warn" style={{ marginBottom: 10 }}>
+              <span>Unshield — moving funds from the group's shielded Orchard pool to a transparent address (publicly visible on-chain).</span>
+            </div>
+          )}
           <table className="participants">
             <tbody>
               <tr>
-                <td>Sending</td>
+                <td>{meta.isUnshield ? "Unshielding" : "Sending"}</td>
                 <td>{zec(meta.amountZatoshis)} ZEC</td>
               </tr>
               <tr>
@@ -1453,6 +1662,7 @@ function PendingTxRow({
 }) {
   const meta = row.send;
   const isSelf = meta?.isConsolidation;
+  const isUnshield = meta?.isUnshield;
   const dateStr = row.startedAt ? fmtDate(new Date(row.startedAt)) : "—";
   const addrDisplay = isSelf
     ? "(self)"
@@ -1470,6 +1680,8 @@ function PendingTxRow({
             <span style={{ color: "var(--danger)", fontSize: 12 }}>✕ Failed</span>
           ) : isSelf ? (
             <span className="dim" style={{ fontSize: 12 }}>⇄ Consolidation</span>
+          ) : isUnshield ? (
+            <span style={{ color: "var(--accent)", fontSize: 12 }}>⇲ Unshield</span>
           ) : (
             <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
           )}

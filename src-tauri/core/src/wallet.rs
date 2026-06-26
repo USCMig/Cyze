@@ -167,6 +167,18 @@ fn open_db(db_path: &Path, network: WalletNetwork) -> Result<GroupDb, CoreError>
     Ok(db)
 }
 
+/// A single shielded/transparent pool's balance, broken into spendable now,
+/// pending (maturing or unconfirmed), and total.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct PoolBalance {
+    /// Confirmed and spendable right now.
+    pub spendable_zatoshis: u64,
+    /// Received but not yet spendable (awaiting confirmations / maturity).
+    pub pending_zatoshis: u64,
+    /// spendable + pending.
+    pub total_zatoshis: u64,
+}
+
 /// Balance + sync status for a group's wallet.
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletStatus {
@@ -174,8 +186,15 @@ pub struct WalletStatus {
     pub initialized: bool,
     /// Receiving unified address (from the UFVK), for the configured network.
     pub address: Option<String>,
+    /// Aggregate totals (kept for back-compat; equal to the Orchard pool since
+    /// the group's UFVK is Orchard-only).
     pub total_zatoshis: u64,
     pub spendable_zatoshis: u64,
+    /// Per-pool breakdown. With an Orchard-only group UFVK, `sapling` and
+    /// `transparent` are zero — the group cannot hold/spend those pools.
+    pub orchard: PoolBalance,
+    pub sapling: PoolBalance,
+    pub transparent: PoolBalance,
     /// Highest fully-scanned block, and the chain tip the wallet knows about.
     pub synced_height: u64,
     pub chain_tip_height: u64,
@@ -196,6 +215,9 @@ pub fn group_status(
             address,
             total_zatoshis: 0,
             spendable_zatoshis: 0,
+            orchard: PoolBalance::default(),
+            sapling: PoolBalance::default(),
+            transparent: PoolBalance::default(),
             synced_height: 0,
             chain_tip_height: 0,
         });
@@ -210,6 +232,9 @@ pub fn group_status(
             address,
             total_zatoshis: 0,
             spendable_zatoshis: 0,
+            orchard: PoolBalance::default(),
+            sapling: PoolBalance::default(),
+            transparent: PoolBalance::default(),
             synced_height: 0,
             chain_tip_height: 0,
         });
@@ -217,28 +242,71 @@ pub fn group_status(
     let summary = db
         .get_wallet_summary(ConfirmationsPolicy::default())
         .map_err(|e| CoreError::Crypto(format!("wallet summary: {e}")))?;
-    let (total, spendable, synced, tip) = match summary {
+    let (total, spendable, orchard, sapling, transparent, synced, tip) = match summary {
         Some(s) => {
             let bal = s.account_balances().values().next();
             let total = bal.map(|b| u64::from(b.total())).unwrap_or(0);
             let spendable = bal.map(|b| u64::from(b.spendable_value())).unwrap_or(0);
+            // Per-pool breakdown. Orchard is the only pool the group can hold;
+            // sapling/transparent read 0 with an Orchard-only UFVK.
+            let orchard = bal.map(|b| pool_balance(b.orchard_balance())).unwrap_or_default();
+            let sapling = bal.map(|b| pool_balance(b.sapling_balance())).unwrap_or_default();
+            let transparent = bal
+                .map(|b| {
+                    // Transparent (unshielded) has no maturity concept; treat the
+                    // whole unshielded balance as spendable/total.
+                    let t = u64::from(b.unshielded_balance().total());
+                    PoolBalance {
+                        spendable_zatoshis: t,
+                        pending_zatoshis: 0,
+                        total_zatoshis: t,
+                    }
+                })
+                .unwrap_or_default();
             (
                 total,
                 spendable,
+                orchard,
+                sapling,
+                transparent,
                 u64::from(s.fully_scanned_height()),
                 u64::from(s.chain_tip_height()),
             )
         }
-        None => (0, 0, 0, 0),
+        None => (
+            0,
+            0,
+            PoolBalance::default(),
+            PoolBalance::default(),
+            PoolBalance::default(),
+            0,
+            0,
+        ),
     };
     Ok(WalletStatus {
         initialized: true,
         address,
         total_zatoshis: total,
         spendable_zatoshis: spendable,
+        orchard,
+        sapling,
+        transparent,
         synced_height: synced,
         chain_tip_height: tip,
     })
+}
+
+/// Convert a zcash_client_backend shielded-pool `Balance` into our `PoolBalance`.
+/// Pending = value awaiting spendability + change awaiting confirmation.
+fn pool_balance(b: &zcash_client_backend::data_api::Balance) -> PoolBalance {
+    let spendable = u64::from(b.spendable_value());
+    let pending = u64::from(b.value_pending_spendability())
+        + u64::from(b.change_pending_confirmation());
+    PoolBalance {
+        spendable_zatoshis: spendable,
+        pending_zatoshis: pending,
+        total_zatoshis: u64::from(b.total()),
+    }
 }
 
 /// Import the group's UFVK as a view-only account, with its birthday set to the
@@ -448,6 +516,11 @@ pub struct DraftTransaction {
     pub fee_zatoshis: u64,
     pub amount_zatoshis: u64,
     pub recipient: String,
+    /// True when the recipient is a transparent address, i.e. this transfer
+    /// moves funds out of the group's shielded Orchard pool into the
+    /// transparent pool (an "unshield"). The group's Orchard spend is still
+    /// FROST-signed exactly as a normal shielded send; only the output differs.
+    pub is_unshield: bool,
 }
 
 /// Build an unsigned Orchard transfer as a PCZT and return its sighash. Uses
@@ -507,6 +580,8 @@ pub async fn prepare_send(
         };
         CoreError::Crypto(format!("invalid recipient address{hint}"))
     })?;
+    // A transparent recipient means this is an unshield (Orchard → transparent).
+    let is_unshield = matches!(to, Address::Transparent(_));
     let amount =
         Zatoshis::from_u64(amount_zatoshis).map_err(|e| CoreError::Crypto(format!("amount: {e}")))?;
 
@@ -553,6 +628,7 @@ pub async fn prepare_send(
         fee_zatoshis: fee,
         amount_zatoshis,
         recipient: recipient.to_string(),
+        is_unshield,
     })
 }
 
