@@ -1577,12 +1577,12 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
       {hasAny && (
         <table className="participants" style={{ tableLayout: "fixed", width: "100%" }}>
           <colgroup>
-            <col style={{ width: "13%" }} />
-            <col style={{ width: "12%" }} />
-            <col style={{ width: "13%" }} />
-            <col style={{ width: "28%" }} />
-            <col style={{ width: "28%" }} />
-            <col style={{ width: "6%" }} />
+            <col style={{ width: "21%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "22%" }} />
+            <col style={{ width: "9%" }} />
           </colgroup>
           <thead>
             <tr>
@@ -1650,11 +1650,11 @@ function TxDetail({
         colSpan={colSpan}
         style={{ padding: "0 0 12px 0", background: "var(--bg-elevated)" }}
       >
-        <div style={{ padding: "8px 12px", fontSize: 13, display: "grid", gap: 6 }}>
+        <div style={{ padding: "8px 12px", fontSize: 13, display: "grid", gap: 6, overflow: "hidden" }}>
           {txid && (
             <div>
               <label>Transaction ID</label>
-              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                 {txid}
               </div>
             </div>
@@ -1662,7 +1662,7 @@ function TxDetail({
           {recipient && (
             <div>
               <label>Recipient</label>
-              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                 {recipient}
               </div>
             </div>
@@ -1715,9 +1715,9 @@ function PendingTxRow({
   const addrDisplay = isSelf
     ? "(self)"
     : meta?.recipient
-      ? meta.recipient.slice(0, 16) + "…"
+      ? meta.recipient.slice(0, 10) + "…"
       : "—";
-  const txHashDisplay = row.txid ? row.txid.slice(0, 12) + "…" : "—";
+  const txHashDisplay = row.txid ? row.txid.slice(0, 10) + "…" : "—";
 
   return (
     <>
@@ -1786,10 +1786,9 @@ function OnchainTxRow({
     : isSelf
       ? "(self)"
       : tx.recipient
-        ? tx.recipient.slice(0, 16) + "…"
+        ? tx.recipient.slice(0, 10) + "…"
         : "—";
-  const txHashDisplay = tx.txid.slice(0, 12) + "…";
-  // Block height as approximate date label (no timestamp in db).
+  const txHashDisplay = tx.txid.slice(0, 10) + "…";
   const dateDisplay = tx.block_height != null
     ? `Block #${tx.block_height.toLocaleString()}`
     : "Pending";
