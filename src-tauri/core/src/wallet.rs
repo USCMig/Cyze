@@ -925,11 +925,11 @@ pub fn wallet_history(
             .prepare(
                 "SELECT t.txid, t.mined_height, b.time, t.fee, SUM(sn.value), \
                  MAX(sn.to_address), \
+                 MAX(CASE WHEN sn.to_account_id IS NULL THEN 1 ELSE 0 END) AS has_external, \
                  ( SELECT sn2.memo \
                    FROM sent_notes sn2 \
                    WHERE sn2.transaction_id = t.id_tx \
                      AND sn2.from_account_id = ?1 \
-                     AND sn2.to_address IS NOT NULL \
                      AND sn2.memo IS NOT NULL \
                    LIMIT 1 ) \
                  FROM sent_notes sn \
@@ -950,20 +950,25 @@ pub fn wallet_history(
                     row.get::<_, Option<u64>>(3)?,
                     row.get::<_, u64>(4)?,
                     row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<Vec<u8>>>(6)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<Vec<u8>>>(7)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute send query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, timestamp, fee, amount, to_address, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, fee, amount, to_address, has_external, memo_bytes) =
                 row.map_err(|e| CoreError::Crypto(format!("send row: {e}")))?;
             txid_bytes.reverse();
+            // has_external = 1 means at least one output went to an external recipient
+            // (to_account_id IS NULL). When false with a null to_address it's a
+            // true self-transfer (note consolidation within the same wallet).
+            let is_self_transfer = has_external == 0 && to_address.is_none();
             records.push(TxRecord {
                 txid: hex::encode(&txid_bytes),
                 block_height,
                 timestamp,
-                direction: "send".to_string(),
+                direction: if is_self_transfer { "self".to_string() } else { "send".to_string() },
                 amount_zatoshis: amount,
                 fee_zatoshis: fee,
                 memo: memo_bytes.as_deref().and_then(decode_zcash_memo),

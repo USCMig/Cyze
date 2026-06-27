@@ -1798,13 +1798,19 @@ function TxDetail({
   rows.push({ label: "Date & Time", value: dateStr });
   if (blockHeight != null) rows.push({ label: "Block", value: `#${blockHeight.toLocaleString()}` });
   if (txid) rows.push({ label: "Transaction ID", value: txid, mono: true });
-  if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : direction === "send" ? "Sent" : "Consolidation" });
-  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : direction === "send" ? "−" : ""}${zec(amount)} ZEC` });
+  if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : direction === "self" ? "Consolidation (self-transfer)" : "Sent" });
+  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ZEC` });
   if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ZEC` });
-  if (fromAddress) rows.push({ label: "From", value: fromAddress, mono: true });
-  else if (direction === "receive") rows.push({ label: "From", value: "Shielded sender (private)" });
-  if (recipient) rows.push({ label: "To", value: recipient, mono: true });
-  else if (direction === "send") rows.push({ label: "To", value: "This group (consolidation)" });
+  if (direction === "receive") {
+    rows.push({ label: "From", value: "Shielded sender (private)" });
+  } else if (fromAddress) {
+    rows.push({ label: "From", value: fromAddress, mono: true });
+  }
+  if (recipient) {
+    rows.push({ label: "To", value: recipient, mono: true });
+  } else if (direction === "self") {
+    rows.push({ label: "To", value: "This group's wallet (self-transfer)" });
+  }
   if (memo) rows.push({ label: "Memo", value: memo });
   if (signers && signers.length > 0 && contacts) {
     rows.push({
@@ -1947,7 +1953,8 @@ function OnchainTxRow({
   onToggle: () => void;
 }) {
   const isReceive = tx.direction === "receive";
-  const isSelf = tx.direction === "send" && tx.recipient == null;
+  const isSelf = tx.direction === "self";
+  const isSend = tx.direction === "send";
   const addrDisplay = isReceive
     ? "—"
     : isSelf
@@ -1977,7 +1984,7 @@ function OnchainTxRow({
         </td>
         <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
           <span style={{ color: isReceive ? "#4ade80" : undefined }}>
-            {isReceive ? "+" : isSelf ? "" : "−"}
+            {isReceive ? "+" : "−"}
             {zec(tx.amount_zatoshis)} ZEC
           </span>
         </td>
@@ -2002,11 +2009,11 @@ function OnchainTxRow({
           txid={tx.txid}
           timestamp={tx.timestamp}
           blockHeight={tx.block_height}
-          direction={isSelf ? "self" : tx.direction}
+          direction={tx.direction}
           amount={tx.amount_zatoshis}
           fee={tx.fee_zatoshis}
           fromAddress={isReceive ? null : groupAddress}
-          recipient={isSelf ? undefined : tx.recipient}
+          recipient={isReceive ? groupAddress : (isSend || isSelf) ? (tx.recipient ?? groupAddress) : undefined}
           memo={tx.memo}
           signers={signers}
           contacts={contacts}
