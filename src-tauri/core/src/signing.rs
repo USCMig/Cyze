@@ -206,12 +206,33 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
     // Merge external commitments with the coordinator's own.
     let (mut commitments_map, recipients) = if num_external > 0 {
         let (commitments, pubkeys) = state.commitments().map_err(cerr)?;
+        // Log the identifier←→pubkey mapping so a MissingCommitment can be
+        // diagnosed: each key here must equal the corresponding participant's
+        // key_package.identifier() when they try to sign.
+        for (pk, id) in &pubkeys {
+            eprintln!(
+                "[frost-sign] external signer pubkey={} → identifier={}",
+                hex::encode(&pk.0),
+                hex::encode(id.serialize()),
+            );
+        }
         (commitments[0].clone(), pubkeys.keys().cloned().collect::<Vec<_>>())
     } else {
         (std::collections::BTreeMap::new(), Vec::new())
     };
     if let (Some((id, _)), Some((_, commitment))) = (&self_signer, &self_round1) {
+        eprintln!(
+            "[frost-sign] coordinator self-signer identifier={}",
+            hex::encode(id.serialize()),
+        );
         commitments_map.insert(*id, *commitment);
+    }
+    // Log the full commitments map that will go into the signing package.
+    for id in commitments_map.keys() {
+        eprintln!(
+            "[frost-sign] signing package will include identifier={}",
+            hex::encode(id.serialize()),
+        );
     }
 
     // Build the signing package; RedPallas additionally needs a randomizer
@@ -455,6 +476,24 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
     }
 
     // Round 2: produce and send the signature share.
+    // Log identifier state so MissingCommitment can be diagnosed: the
+    // participant's own identifier must appear in the signing package.
+    let own_id_hex = hex::encode(key_package.identifier().serialize());
+    eprintln!("[frost-sign] in-app participant key_package.identifier={}", own_id_hex);
+    let id_present = signing_package
+        .signing_commitment(key_package.identifier())
+        .is_some();
+    if !id_present {
+        // Log the full signing package as JSON so the coordinator-side identifiers
+        // can be compared against the participant's own identifier above.
+        let pkg_json = serde_json::to_string(signing_package).unwrap_or_else(|e| e.to_string());
+        eprintln!(
+            "[frost-sign] MissingCommitment about to occur: \
+             participant identifier={} is NOT in the signing package. \
+             Full signing package JSON: {}",
+            own_id_hex, pkg_json,
+        );
+    }
     let share = if !send_args.randomizer.is_empty() {
         frost_rerandomized::sign::<C>(
             signing_package,
