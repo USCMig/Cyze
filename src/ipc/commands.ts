@@ -129,6 +129,8 @@ export const walletSync = (groupId: string) =>
 export interface TxRecord {
   txid: string;
   block_height: number | null;
+  /** Unix timestamp (seconds) from the mined block; null when unconfirmed. */
+  timestamp: number | null;
   /** "receive" | "send" */
   direction: string;
   amount_zatoshis: number;

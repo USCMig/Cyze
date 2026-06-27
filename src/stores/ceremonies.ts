@@ -27,6 +27,8 @@ export interface SendMeta {
   isUnshield?: boolean;
   /** Optional memo attached to the recipient output (shielded sends only). */
   memo?: string;
+  /** Comm pubkeys of the participants who signed this transaction. */
+  signers?: string[];
 }
 
 export interface CeremonyState {
@@ -68,6 +70,9 @@ interface CeremoniesStore {
   /** Active send ceremony per group id, so the wallet screen reattaches to an
    *  in-flight send after navigation. */
   activeSendByGroup: Record<string, string>;
+  /** txid → signer comm pubkeys; persisted so on-chain rows can show signers
+   *  even after the pending ceremony entry has been cleared. */
+  txSigners: Record<string, string[]>;
   setActiveDkg: (id: string | null, label?: string) => void;
   setActiveSigning: (id: string | null) => void;
   /** Register a freshly-started send so it persists and can be reattached. */
@@ -87,6 +92,7 @@ export const useCeremonies = create<CeremoniesStore>()(
       activeDkgId: null,
       activeSigningId: null,
       activeSendByGroup: {},
+      txSigners: {},
       setActiveDkg: (id, label) =>
         set((s) => {
           if (!id) return { activeDkgId: null };
@@ -152,24 +158,32 @@ export const useCeremonies = create<CeremoniesStore>()(
           };
         }),
       onComplete: (kind, payload) =>
-        set((s) => ({
-          ceremonies: {
-            ...s.ceremonies,
-            [payload.ceremony_id]: {
-              ...s.ceremonies[payload.ceremony_id],
-              kind,
-              phase: "complete",
-              done: true,
-              failed: false,
-              groupId: payload.group_id ?? s.ceremonies[payload.ceremony_id]?.groupId,
-              signatureHex: payload.signature_hex,
-              signedPcztHex:
-                payload.signed_pczt_hex ??
-                s.ceremonies[payload.ceremony_id]?.signedPcztHex,
-              txid: payload.txid ?? s.ceremonies[payload.ceremony_id]?.txid,
+        set((s) => {
+          const prev = s.ceremonies[payload.ceremony_id];
+          const txid = payload.txid ?? prev?.txid;
+          const signers = prev?.send?.signers;
+          return {
+            ceremonies: {
+              ...s.ceremonies,
+              [payload.ceremony_id]: {
+                ...prev,
+                kind,
+                phase: "complete",
+                done: true,
+                failed: false,
+                groupId: payload.group_id ?? prev?.groupId,
+                signatureHex: payload.signature_hex,
+                signedPcztHex: payload.signed_pczt_hex ?? prev?.signedPcztHex,
+                txid,
+              },
             },
-          },
-        })),
+            // Index signers by txid so on-chain rows can look them up later.
+            txSigners:
+              txid && signers
+                ? { ...s.txSigners, [txid]: signers }
+                : s.txSigners,
+          };
+        }),
       onFailed: (kind, payload) =>
         set((s) => ({
           ceremonies: {
@@ -206,6 +220,7 @@ export const useCeremonies = create<CeremoniesStore>()(
         activeDkgId: s.activeDkgId,
         activeSigningId: s.activeSigningId,
         activeSendByGroup: s.activeSendByGroup,
+        txSigners: s.txSigners,
       }),
     }
   )

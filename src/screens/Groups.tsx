@@ -440,6 +440,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         isConsolidation,
         isUnshield: draft.is_unshield,
         memo: draft.memo ?? undefined,
+        signers: [...signers],
       });
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -1633,9 +1634,17 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
     enabled: group.ciphersuite.includes("Pallas"),
     refetchInterval: 35_000,
   });
+  const walletStatus = useQuery({
+    queryKey: ["wallet-status", group.id],
+    queryFn: () => walletGroupStatus(group.id),
+    enabled: group.ciphersuite.includes("Pallas"),
+  });
+  const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const groupAddress = walletStatus.data?.address ?? null;
 
   // Pending / recently-completed sends not yet confirmed on-chain.
   const ceremonies = useCeremonies((s) => s.ceremonies);
+  const txSigners = useCeremonies((s) => s.txSigners);
   const activeId = useCeremonies((s) => s.activeSendByGroup[group.id]);
   const onchainTxids = useMemo(
     () => new Set((history.data ?? []).map((t) => t.txid)),
@@ -1711,6 +1720,8 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
               <PendingTxRow
                 key={row.id}
                 row={row}
+                contacts={contacts.data ?? []}
+                groupAddress={groupAddress}
                 isExpanded={expandedKey === row.id}
                 onToggle={() => toggle(row.id)}
               />
@@ -1720,6 +1731,9 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
               <OnchainTxRow
                 key={tx.txid}
                 tx={tx}
+                contacts={contacts.data ?? []}
+                groupAddress={groupAddress}
+                signers={txSigners[tx.txid]}
                 isExpanded={expandedKey === tx.txid}
                 onToggle={() => toggle(tx.txid)}
               />
@@ -1737,71 +1751,96 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
   );
 }
 
+/** Resolve a comm pubkey to a display name using the contacts list. */
+function signerLabel(pubkey: string, contacts: ContactDto[]): string {
+  const c = contacts.find((c) => c.pubkey === pubkey);
+  return c ? (c.alias ?? c.name ?? pubkey.slice(0, 8) + "…") : pubkey.slice(0, 8) + "…";
+}
+
 /** Expand-detail panel shared by both row types. */
 function TxDetail({
   colSpan,
   txid,
-  recipient,
-  fee,
-  memo,
+  timestamp,
   blockHeight,
+  direction,
+  amount,
+  fee,
+  fromAddress,
+  recipient,
+  memo,
+  signers,
+  contacts,
   error,
 }: {
   colSpan: number;
   txid?: string;
-  recipient?: string | null;
-  fee?: number | null;
-  memo?: string | null;
+  timestamp?: number | null;
   blockHeight?: number | null;
+  direction?: string;
+  amount?: number;
+  fee?: number | null;
+  fromAddress?: string | null;
+  recipient?: string | null;
+  memo?: string | null;
+  signers?: string[];
+  contacts?: ContactDto[];
   error?: string;
 }) {
+  const dateStr = timestamp
+    ? fmtDate(new Date(timestamp * 1000))
+    : blockHeight != null
+      ? `Block #${blockHeight.toLocaleString()} (time unavailable)`
+      : "Pending";
+
+  const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [];
+
+  rows.push({ label: "Date & Time", value: dateStr });
+  if (blockHeight != null) rows.push({ label: "Block", value: `#${blockHeight.toLocaleString()}` });
+  if (txid) rows.push({ label: "Transaction ID", value: txid, mono: true });
+  if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : direction === "send" ? "Sent" : "Consolidation" });
+  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : direction === "send" ? "−" : ""}${zec(amount)} ZEC` });
+  if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ZEC` });
+  if (fromAddress) rows.push({ label: "From", value: fromAddress, mono: true });
+  else if (direction === "receive") rows.push({ label: "From", value: "Shielded sender (private)" });
+  if (recipient) rows.push({ label: "To", value: recipient, mono: true });
+  else if (direction === "send") rows.push({ label: "To", value: "This group (consolidation)" });
+  if (memo) rows.push({ label: "Memo", value: memo });
+  if (signers && signers.length > 0 && contacts) {
+    rows.push({
+      label: "Signed by",
+      value: signers.map((pk) => signerLabel(pk, contacts)).join(", "),
+    });
+  }
+
   return (
     <tr>
       <td
         colSpan={colSpan}
         style={{ padding: "0 0 12px 0", background: "var(--bg-elevated)" }}
       >
-        <div style={{ padding: "8px 12px", fontSize: 13, display: "grid", gap: 6, overflow: "hidden" }}>
-          {txid && (
-            <div>
-              <label>Transaction ID</label>
-              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                {txid}
-              </div>
-            </div>
-          )}
-          {recipient && (
-            <div>
-              <label>Recipient</label>
-              <div className="mono" style={{ fontSize: 11, wordBreak: "break-all", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                {recipient}
-              </div>
-            </div>
-          )}
-          {fee != null && (
-            <div>
-              <label>Fee</label>
-              <div>{zec(fee)} ZEC</div>
-            </div>
-          )}
-          {blockHeight != null && (
-            <div>
-              <label>Block</label>
-              <div>#{blockHeight.toLocaleString()}</div>
-            </div>
-          )}
-          {memo && (
-            <div>
-              <label>Memo</label>
-              <div>{memo}</div>
-            </div>
-          )}
-          {error && (
-            <div>
-              <label>Error</label>
-              <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>
-            </div>
-          )}
+        <div style={{ padding: "8px 12px 4px", overflow: "hidden" }}>
+          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+            <tbody>
+              {rows.map(({ label, value, mono }) => (
+                <tr key={label}>
+                  <td style={{ color: "var(--fg-muted)", whiteSpace: "nowrap", paddingRight: 12, paddingBottom: 5, verticalAlign: "top", width: "120px" }}>
+                    {label}
+                  </td>
+                  <td style={{ paddingBottom: 5, verticalAlign: "top", wordBreak: "break-all", overflowWrap: "anywhere" }}
+                    className={mono ? "mono" : undefined}>
+                    {value}
+                  </td>
+                </tr>
+              ))}
+              {error && (
+                <tr>
+                  <td style={{ color: "var(--fg-muted)", whiteSpace: "nowrap", paddingRight: 12, paddingBottom: 5, verticalAlign: "top" }}>Error</td>
+                  <td style={{ color: "var(--danger)", paddingBottom: 5 }}>{error}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </td>
     </tr>
@@ -1812,10 +1851,14 @@ type PendingRow = CeremonyState & { id: string };
 
 function PendingTxRow({
   row,
+  contacts,
+  groupAddress,
   isExpanded,
   onToggle,
 }: {
   row: PendingRow;
+  contacts: ContactDto[];
+  groupAddress: string | null;
   isExpanded: boolean;
   onToggle: () => void;
 }) {
@@ -1872,8 +1915,15 @@ function PendingTxRow({
         <TxDetail
           colSpan={6}
           txid={row.txid}
-          recipient={isSelf ? undefined : meta?.recipient}
+          blockHeight={undefined}
+          direction={isSelf ? "self" : isUnshield ? "send" : "send"}
+          amount={meta?.amountZatoshis}
           fee={meta?.feeZatoshis}
+          fromAddress={groupAddress}
+          recipient={isSelf ? undefined : meta?.recipient}
+          memo={meta?.memo}
+          signers={meta?.signers}
+          contacts={contacts}
           error={row.error}
         />
       )}
@@ -1883,10 +1933,16 @@ function PendingTxRow({
 
 function OnchainTxRow({
   tx,
+  contacts,
+  groupAddress,
+  signers,
   isExpanded,
   onToggle,
 }: {
   tx: TxRecord;
+  contacts: ContactDto[];
+  groupAddress: string | null;
+  signers?: string[];
   isExpanded: boolean;
   onToggle: () => void;
 }) {
@@ -1900,9 +1956,11 @@ function OnchainTxRow({
         ? tx.recipient.slice(0, 10) + "…"
         : "—";
   const txHashDisplay = tx.txid.slice(0, 10) + "…";
-  const dateDisplay = tx.block_height != null
-    ? `Block #${tx.block_height.toLocaleString()}`
-    : "Pending";
+  const dateDisplay = tx.timestamp != null
+    ? fmtDate(new Date(tx.timestamp * 1000))
+    : tx.block_height != null
+      ? `Block #${tx.block_height.toLocaleString()}`
+      : "Pending";
 
   return (
     <>
@@ -1942,10 +2000,16 @@ function OnchainTxRow({
         <TxDetail
           colSpan={6}
           txid={tx.txid}
-          recipient={isSelf ? undefined : tx.recipient}
+          timestamp={tx.timestamp}
+          blockHeight={tx.block_height}
+          direction={isSelf ? "self" : tx.direction}
+          amount={tx.amount_zatoshis}
           fee={tx.fee_zatoshis}
+          fromAddress={isReceive ? null : groupAddress}
+          recipient={isSelf ? undefined : tx.recipient}
           memo={tx.memo}
-          blockHeight={tx.block_height ?? undefined}
+          signers={signers}
+          contacts={contacts}
         />
       )}
     </>

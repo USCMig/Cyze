@@ -807,6 +807,8 @@ pub struct TxRecord {
     pub txid: String,
     /// Block height when mined; `None` for pending/unconfirmed.
     pub block_height: Option<u64>,
+    /// Unix timestamp (seconds since epoch) from the mined block; `None` when unconfirmed.
+    pub timestamp: Option<i64>,
     /// `"receive"` or `"send"`.
     pub direction: String,
     /// Value in zatoshis (always positive; for sends this is the total value
@@ -862,7 +864,7 @@ pub fn wallet_history(
     {
         let mut stmt = conn
             .prepare(
-                "SELECT t.txid, t.mined_height, SUM(orn.value), \
+                "SELECT t.txid, t.mined_height, b.time, SUM(orn.value), \
                  ( SELECT orn2.memo \
                    FROM orchard_received_notes orn2 \
                    WHERE orn2.transaction_id = t.id_tx \
@@ -872,6 +874,7 @@ pub fn wallet_history(
                    LIMIT 1 ) \
                  FROM orchard_received_notes orn \
                  JOIN transactions t ON orn.transaction_id = t.id_tx \
+                 LEFT JOIN blocks b ON b.height = t.mined_height \
                  WHERE orn.account_id = ?1 AND orn.is_change = 0 \
                  GROUP BY t.id_tx \
                  HAVING SUM(orn.value) > 0 \
@@ -884,14 +887,15 @@ pub fn wallet_history(
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, Option<u64>>(1)?,
-                    row.get::<_, u64>(2)?,
-                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, Option<Vec<u8>>>(4)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute receive query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, amount, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, amount, memo_bytes) =
                 row.map_err(|e| CoreError::Crypto(format!("receive row: {e}")))?;
             // zcash_client_sqlite stores txid in internal byte order; the
             // conventional display representation (block explorers, CLI) is
@@ -900,6 +904,7 @@ pub fn wallet_history(
             records.push(TxRecord {
                 txid: hex::encode(&txid_bytes),
                 block_height,
+                timestamp,
                 direction: "receive".to_string(),
                 amount_zatoshis: amount,
                 fee_zatoshis: None,
@@ -918,7 +923,7 @@ pub fn wallet_history(
     {
         let mut stmt = conn
             .prepare(
-                "SELECT t.txid, t.mined_height, t.fee, SUM(sn.value), \
+                "SELECT t.txid, t.mined_height, b.time, t.fee, SUM(sn.value), \
                  MAX(sn.to_address), \
                  ( SELECT sn2.memo \
                    FROM sent_notes sn2 \
@@ -929,6 +934,7 @@ pub fn wallet_history(
                    LIMIT 1 ) \
                  FROM sent_notes sn \
                  JOIN transactions t ON sn.transaction_id = t.id_tx \
+                 LEFT JOIN blocks b ON b.height = t.mined_height \
                  WHERE sn.from_account_id = ?1 \
                  GROUP BY t.id_tx \
                  ORDER BY t.mined_height DESC NULLS LAST",
@@ -940,21 +946,23 @@ pub fn wallet_history(
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, Option<u64>>(1)?,
-                    row.get::<_, Option<u64>>(2)?,
-                    row.get::<_, u64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<u64>>(3)?,
+                    row.get::<_, u64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute send query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, fee, amount, to_address, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, fee, amount, to_address, memo_bytes) =
                 row.map_err(|e| CoreError::Crypto(format!("send row: {e}")))?;
             txid_bytes.reverse();
             records.push(TxRecord {
                 txid: hex::encode(&txid_bytes),
                 block_height,
+                timestamp,
                 direction: "send".to_string(),
                 amount_zatoshis: amount,
                 fee_zatoshis: fee,
