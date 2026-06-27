@@ -156,6 +156,7 @@ pub async fn wallet_prepare_send(
     group_id: String,
     recipient: String,
     amount_zatoshis: u64,
+    memo: Option<String>,
 ) -> AppResult<wallet::DraftTransaction> {
     let (network, url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
     Ok(wallet::prepare_send(
@@ -164,6 +165,7 @@ pub async fn wallet_prepare_send(
         network,
         &recipient,
         amount_zatoshis,
+        memo,
         &url,
     )
     .await?)

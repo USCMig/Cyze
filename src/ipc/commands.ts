@@ -155,16 +155,22 @@ export interface DraftTransaction {
   /** True when the recipient is a transparent address — this is an unshield
    *  (Orchard → transparent). The amount/recipient become public on-chain. */
   is_unshield: boolean;
+  /** Optional memo attached to the recipient's shielded output. Encrypted
+   *  on-chain; only readable with the recipient's viewing key. Null for
+   *  unshield transfers (transparent outputs carry no memo). */
+  memo: string | null;
 }
 export const walletPrepareSend = (
   groupId: string,
   recipient: string,
-  amountZatoshis: number
+  amountZatoshis: number,
+  memo?: string,
 ) =>
   invoke<DraftTransaction>("wallet_prepare_send", {
     groupId,
     recipient,
     amountZatoshis,
+    memo: memo ?? null,
   });
 
 /** Build, FROST-sign, and (next) broadcast a transfer. Returns the ceremony id;

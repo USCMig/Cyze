@@ -336,6 +336,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   const [recipient, setRecipient] = useState("");
   const [amountZec, setAmountZec] = useState("");
+  const [memo, setMemo] = useState("");
   const [draft, setDraft] = useState<DraftTransaction | null>(null);
   const [isConsolidation, setIsConsolidation] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -347,7 +348,12 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const recipientErr = validateRecipient(recipient, isMainnet, sendMode);
   const prepare = useMutation({
     mutationFn: () =>
-      walletPrepareSend(group.id, recipient.trim(), Math.round(Number(amountZec) * 1e8)),
+      walletPrepareSend(
+        group.id,
+        recipient.trim(),
+        Math.round(Number(amountZec) * 1e8),
+        sendMode === "shielded" && memo.trim() ? memo.trim() : undefined,
+      ),
     onSuccess: (d) => {
       setErr(null);
       setIsConsolidation(false);
@@ -432,6 +438,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         sighashHex: draft.sighash_hex,
         isConsolidation,
         isUnshield: draft.is_unshield,
+        memo: draft.memo ?? undefined,
       });
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -630,13 +637,13 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                   <div className="row" style={{ marginTop: 14, marginBottom: 12, gap: 8 }}>
                     <button
                       className={sendMode === "shielded" ? "" : "secondary"}
-                      onClick={() => { setSendMode("shielded"); setRecipient(""); setDraft(null); }}
+                      onClick={() => { setSendMode("shielded"); setRecipient(""); setMemo(""); setDraft(null); }}
                     >
                       Send (shielded)
                     </button>
                     <button
                       className={sendMode === "unshield" ? "" : "secondary"}
-                      onClick={() => { setSendMode("unshield"); setRecipient(""); setDraft(null); }}
+                      onClick={() => { setSendMode("unshield"); setRecipient(""); setMemo(""); setDraft(null); }}
                     >
                       Unshield → transparent
                     </button>
@@ -682,6 +689,24 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     value={amountZec}
                     onChange={(e) => setAmountZec(e.target.value)}
                   />
+                  {sendMode === "shielded" && (
+                    <>
+                      <label>Memo (optional)</label>
+                      <textarea
+                        placeholder="Message to the recipient — stored encrypted on-chain, visible only to them."
+                        value={memo}
+                        maxLength={512}
+                        rows={3}
+                        onChange={(e) => setMemo(e.target.value)}
+                        style={{ resize: "vertical", fontFamily: "monospace", fontSize: 13, width: "100%", boxSizing: "border-box" }}
+                      />
+                      {memo.length > 0 && (
+                        <div className="dim" style={{ fontSize: 11, textAlign: "right", marginTop: 2 }}>
+                          {memo.length}/512 characters
+                        </div>
+                      )}
+                    </>
+                  )}
                   <button
                     onClick={() => prepare.mutate()}
                     disabled={
@@ -752,6 +777,12 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                             <td>Sighash</td>
                             <td className="dim mono-cell">{draft.sighash_hex}</td>
                           </tr>
+                          {draft.memo && (
+                            <tr>
+                              <td>Memo</td>
+                              <td style={{ fontStyle: "italic", wordBreak: "break-word" }}>{draft.memo}</td>
+                            </tr>
+                          )}
                         </tbody>
                       </table>
 
@@ -952,6 +983,12 @@ function SendSessionPanel({
                 <td>Fee</td>
                 <td>{zec(meta.feeZatoshis)} ZEC</td>
               </tr>
+              {meta.memo && (
+                <tr>
+                  <td>Memo</td>
+                  <td style={{ fontStyle: "italic", wordBreak: "break-word" }}>{meta.memo}</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </>

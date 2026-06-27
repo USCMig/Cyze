@@ -25,6 +25,8 @@ export interface SendMeta {
   isConsolidation?: boolean;
   /** True when this moves shielded Orchard funds to a transparent address. */
   isUnshield?: boolean;
+  /** Optional memo attached to the recipient output (shielded sends only). */
+  memo?: string;
 }
 
 export interface CeremonyState {

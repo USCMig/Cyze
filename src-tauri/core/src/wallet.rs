@@ -147,6 +147,7 @@ use zcash_client_sqlite::{FsBlockDb, WalletDb};
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::memo::{Memo, MemoBytes};
 
 type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
 
@@ -521,6 +522,10 @@ pub struct DraftTransaction {
     /// transparent pool (an "unshield"). The group's Orchard spend is still
     /// FROST-signed exactly as a normal shielded send; only the output differs.
     pub is_unshield: bool,
+    /// Optional memo attached to the recipient's shielded output. Encrypted
+    /// on-chain; only the recipient's viewing key can decrypt it. Always None
+    /// for unshield transfers (transparent outputs carry no memo).
+    pub memo: Option<String>,
 }
 
 /// Build an unsigned Orchard transfer as a PCZT and return its sighash. Uses
@@ -539,6 +544,7 @@ pub async fn prepare_send(
     network: WalletNetwork,
     recipient: &str,
     amount_zatoshis: u64,
+    memo: Option<String>,
     lightwalletd_url: &str,
 ) -> Result<DraftTransaction, CoreError> {
     use zcash_keys::address::Address;
@@ -585,6 +591,18 @@ pub async fn prepare_send(
     let amount =
         Zatoshis::from_u64(amount_zatoshis).map_err(|e| CoreError::Crypto(format!("amount: {e}")))?;
 
+    // Memos are only valid for shielded (Orchard) outputs; transparent outputs
+    // carry no memo. Silently drop any memo supplied for an unshield.
+    let memo_bytes: Option<MemoBytes> = if is_unshield {
+        None
+    } else {
+        memo.as_deref().filter(|s| !s.is_empty()).map(|s| {
+            s.parse::<Memo>()
+                .map(|m| m.encode())
+                .unwrap_or_else(|_| MemoBytes::empty())
+        })
+    };
+
     let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
         &mut db,
         &params,
@@ -593,7 +611,7 @@ pub async fn prepare_send(
         ConfirmationsPolicy::default(),
         &to,
         amount,
-        None, // memo
+        memo_bytes,
         None, // change memo
         ShieldedProtocol::Orchard,
         None, // proposed tx version
@@ -629,6 +647,7 @@ pub async fn prepare_send(
         amount_zatoshis,
         recipient: recipient.to_string(),
         is_unshield,
+        memo: if is_unshield { None } else { memo.filter(|s| !s.is_empty()) },
     })
 }
 
