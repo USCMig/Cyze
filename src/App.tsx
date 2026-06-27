@@ -139,7 +139,7 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   },
   {
     title: "4 · Zcash",
-    links: [{ to: "/wallet", label: "Wallet" }],
+    links: [{ to: "/wallet", label: "Wallet Settings" }],
   },
 ];
 

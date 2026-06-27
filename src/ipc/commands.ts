@@ -195,6 +195,8 @@ export const listGroups = () => invoke<GroupSummary[]>("list_groups");
 export const groupOrchardKeys = (id: string) =>
   invoke<OrchardKeys | null>("group_orchard_keys", { id });
 export const removeGroup = (id: string) => invoke<void>("remove_group", { id });
+export const renameGroup = (id: string, description: string) =>
+  invoke<void>("rename_group", { id, description });
 
 // Server / sidecar
 export const getSettings = () => invoke<Settings>("get_settings");

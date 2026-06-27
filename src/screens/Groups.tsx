@@ -9,6 +9,7 @@ import {
   listContacts,
   listGroups,
   removeGroup,
+  renameGroup,
   walletGroupStatus,
   walletInitAccount,
   walletSync,
@@ -1283,22 +1284,92 @@ function ShareRepairGuide({ group }: { group: GroupSummary }) {
   );
 }
 
+/** Inline group name editor — pencil icon toggles a text input in place. */
+function GroupNameEditor({
+  group,
+  onRenamed,
+}: {
+  group: GroupSummary;
+  onRenamed: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(group.description);
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const open = () => {
+    setValue(group.description);
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+  const cancel = () => setEditing(false);
+  const save = async () => {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === group.description) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      await renameGroup(group.id, trimmed);
+      onRenamed();
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="row" style={{ gap: 6, alignItems: "center", flex: 1 }}>
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") cancel(); }}
+          style={{ flex: 1, margin: 0, fontSize: 20, fontWeight: 600, padding: "2px 8px" }}
+        />
+        <button onClick={save} disabled={saving} style={{ padding: "4px 12px" }}>
+          {saving ? "…" : "Save"}
+        </button>
+        <button className="secondary" onClick={cancel} style={{ padding: "4px 10px" }}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "center" }}>
+      <h3 style={{ margin: 0 }}>{group.description || "(unnamed group)"}</h3>
+      <button
+        className="secondary"
+        title="Edit group name"
+        onClick={open}
+        style={{ padding: "2px 7px", fontSize: 13, lineHeight: 1, border: "none", background: "none", cursor: "pointer", color: "var(--dim)" }}
+      >
+        ✏
+      </button>
+    </div>
+  );
+}
+
 export function GroupCard({
   group,
   identity,
   contacts,
   onRemove,
+  onRenamed,
 }: {
   group: GroupSummary;
   identity: Identity | undefined;
   contacts: ContactDto[] | undefined;
   onRemove: (id: string) => void;
+  onRenamed: () => void;
 }) {
   return (
     <div className="card">
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <h3 style={{ margin: 0 }}>{group.description || "(unnamed group)"}</h3>
-        <span className="badge blue">{group.ciphersuite}</span>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <GroupNameEditor group={group} onRenamed={onRenamed} />
+        <span className="badge blue" style={{ flexShrink: 0, marginLeft: 8 }}>{group.ciphersuite}</span>
       </div>
       <p>
         {group.threshold}-of-{group.num_participants} threshold
@@ -1346,7 +1417,7 @@ export function GroupCard({
   );
 }
 
-/** Shared data + remove mutation used by both the index and detail screens. */
+/** Shared data + remove/rename mutations used by both the index and detail screens. */
 function useGroupData() {
   const queryClient = useQueryClient();
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
@@ -1356,7 +1427,8 @@ function useGroupData() {
     mutationFn: removeGroup,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["groups"] }),
   });
-  return { groups, contacts, identity, remove };
+  const invalidateGroups = () => queryClient.invalidateQueries({ queryKey: ["groups"] });
+  return { groups, contacts, identity, remove, invalidateGroups };
 }
 
 /** `/groups` — pick a group (also reachable from the sidebar dropdown). */
@@ -1403,7 +1475,7 @@ export default function Groups() {
 export function GroupDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { groups, contacts, identity, remove } = useGroupData();
+  const { groups, contacts, identity, remove, invalidateGroups } = useGroupData();
   const group = groups.data?.find((g) => g.id === id);
 
   if (groups.isLoading) {
@@ -1422,8 +1494,8 @@ export function GroupDetail() {
 
   return (
     <div>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-        <h2 style={{ marginBottom: 0 }}>{group.description || "(unnamed group)"}</h2>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div>{/* spacer — name lives inside GroupCard */}</div>
         <div className="row" style={{ gap: 16 }}>
           <Link to="/sign">Start a Signing Session →</Link>
           {group.ciphersuite.includes("Pallas") && (
@@ -1435,6 +1507,7 @@ export function GroupDetail() {
         group={group}
         identity={identity.data}
         contacts={contacts.data}
+        onRenamed={invalidateGroups}
         onRemove={(gid) => {
           remove.mutate(gid);
           navigate("/groups");

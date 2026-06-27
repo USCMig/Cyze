@@ -30,6 +30,7 @@ pub fn run() {
             commands::groups::list_groups,
             commands::groups::group_orchard_keys,
             commands::groups::remove_group,
+            commands::groups::rename_group,
             commands::wallet::get_wallet_config,
             commands::wallet::set_wallet_config,
             commands::wallet::lightwalletd_info,

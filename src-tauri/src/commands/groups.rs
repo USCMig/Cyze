@@ -60,3 +60,20 @@ pub async fn remove_group(state: State<'_, AppState>, id: String) -> AppResult<(
         })
         .await
 }
+
+#[tauri::command]
+pub async fn rename_group(
+    state: State<'_, AppState>,
+    id: String,
+    description: String,
+) -> AppResult<()> {
+    state
+        .mutate_config(|config| {
+            config
+                .group
+                .get_mut(&id)
+                .map(|g| g.description = description.clone())
+                .ok_or_else(|| AppError::new("config", "group not found"))
+        })
+        .await
+}
