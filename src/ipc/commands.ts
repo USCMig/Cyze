@@ -180,6 +180,7 @@ export const walletSend = (args: {
   recipient: string;
   amount_zatoshis: number;
   signers: string[];
+  memo?: string | null;
 }) => invoke<string>("wallet_send", { args });
 
 // Contacts

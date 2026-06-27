@@ -426,6 +426,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         recipient: recipient.trim(),
         amount_zatoshis: Math.round(Number(amountZec) * 1e8),
         signers: [...signers],
+        memo: draft?.memo ?? null,
       }),
     onSuccess: (id) => {
       setErr(null);

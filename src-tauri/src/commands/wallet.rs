@@ -178,6 +178,8 @@ pub struct WalletSendArgs {
     pub amount_zatoshis: u64,
     /// Hex comm pubkeys of the group members who will sign (>= threshold).
     pub signers: Vec<String>,
+    /// Optional memo to attach to the recipient's shielded output.
+    pub memo: Option<String>,
 }
 
 /// Build, FROST-sign, and (next phase) broadcast an Orchard transfer. Builds the
@@ -201,6 +203,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
         network,
         &args.recipient,
         args.amount_zatoshis,
+        args.memo,
         &url,
     )
     .await?;
