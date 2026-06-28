@@ -1797,7 +1797,7 @@ function TxDetail({
   rows.push({ label: "Date & Time", value: dateStr });
   if (blockHeight != null) rows.push({ label: "Block", value: `#${blockHeight.toLocaleString()}` });
   if (txid) rows.push({ label: "Transaction ID", value: txid, mono: true });
-  if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : direction === "self" ? "Consolidation (self-transfer)" : "Sent" });
+  if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : "Sent" });
   if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ZEC` });
   if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ZEC` });
   if (direction === "receive") {
@@ -1807,8 +1807,6 @@ function TxDetail({
   }
   if (recipient) {
     rows.push({ label: "To", value: recipient, mono: true });
-  } else if (direction === "self") {
-    rows.push({ label: "To", value: "This group's wallet (self-transfer)" });
   }
   if (memo) rows.push({ label: "Memo", value: memo });
   if (signers && signers.length > 0 && contacts) {
@@ -1883,14 +1881,9 @@ function PendingTxRow({
   onToggle: () => void;
 }) {
   const meta = row.send;
-  const isSelf = meta?.isConsolidation;
   const isUnshield = meta?.isUnshield;
   const dateStr = row.startedAt ? fmtDate(new Date(row.startedAt)) : "—";
-  const addrDisplay = isSelf
-    ? "(self)"
-    : meta?.recipient
-      ? meta.recipient.slice(0, 10) + "…"
-      : "—";
+  const addrDisplay = meta?.recipient ? meta.recipient.slice(0, 10) + "…" : "—";
   const txHashDisplay = row.txid ? row.txid.slice(0, 10) + "…" : "—";
   // Yellow text for in-flight / broadcast-but-unconfirmed rows.
   const pendingColor = !row.failed ? "#facc15" : undefined;
@@ -1902,8 +1895,6 @@ function PendingTxRow({
         <td style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {row.failed ? (
             <span style={{ color: "var(--danger)", fontSize: 12 }}>✕ Failed</span>
-          ) : isSelf ? (
-            <span style={{ color: pendingColor, fontSize: 12 }}>⇄ Consolidation</span>
           ) : isUnshield ? (
             <span style={{ color: pendingColor, fontSize: 12 }}>⇲ Unshield</span>
           ) : (
@@ -1938,11 +1929,11 @@ function PendingTxRow({
           colSpan={6}
           txid={row.txid}
           blockHeight={undefined}
-          direction={isSelf ? "self" : isUnshield ? "send" : "send"}
+          direction={isUnshield ? "send" : "send"}
           amount={meta?.amountZatoshis}
           fee={meta?.feeZatoshis}
           fromAddress={groupAddress}
-          recipient={isSelf ? undefined : meta?.recipient}
+          recipient={meta?.recipient}
           memo={meta?.memo}
           signers={meta?.signers}
           contacts={contacts}
@@ -1972,15 +1963,11 @@ function OnchainTxRow({
   onToggle: () => void;
 }) {
   const isReceive = tx.direction === "receive";
-  const isSelf = tx.direction === "self";
-  const isSend = tx.direction === "send";
   const addrDisplay = isReceive
     ? "—"
-    : isSelf
-      ? "(self)"
-      : tx.recipient
-        ? tx.recipient.slice(0, 10) + "…"
-        : "—";
+    : tx.recipient
+      ? tx.recipient.slice(0, 10) + "…"
+      : "—";
   const txHashDisplay = tx.txid.slice(0, 10) + "…";
   const dateDisplay = tx.timestamp != null
     ? fmtDate(new Date(tx.timestamp * 1000))
@@ -1995,8 +1982,6 @@ function OnchainTxRow({
         <td style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {isReceive ? (
             <span style={{ color: "#4ade80", fontSize: 12 }}>↓ Received</span>
-          ) : isSelf ? (
-            <span className="dim" style={{ fontSize: 12 }}>⇄ Consolidation</span>
           ) : (
             <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
           )}
@@ -2032,7 +2017,7 @@ function OnchainTxRow({
           amount={tx.amount_zatoshis}
           fee={tx.fee_zatoshis}
           fromAddress={isReceive ? null : groupAddress}
-          recipient={isReceive ? groupAddress : (isSend || isSelf) ? (tx.recipient ?? groupAddress) : undefined}
+          recipient={isReceive ? groupAddress : (tx.recipient ?? undefined)}
           memo={tx.memo}
           signers={signers}
           contacts={contacts}
