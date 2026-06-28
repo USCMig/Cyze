@@ -29,11 +29,8 @@ import Wallet from "./screens/Wallet";
  *  whose page is currently active. */
 function GroupsNavItem() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
-  const [open, setOpen] = useState(true);
   const location = useLocation();
 
-  // Track which group id (if any) is expanded. Auto-update when the route
-  // changes so navigating via the main content stays in sync with the sidebar.
   const activeGroupId = useMemo(() => {
     const m = location.pathname.match(/^\/groups\/([^/]+)/);
     return m ? m[1] : null;
@@ -43,34 +40,17 @@ function GroupsNavItem() {
     if (activeGroupId) setExpandedId(activeGroupId);
   }, [activeGroupId]);
 
-  const hasGroups = !!groups.data?.length;
+  if (!groups.data?.length) return null;
   return (
-    <div className="nav-expandable">
-      <div className="nav-row">
-        <NavLink to="/groups" end>
-          Groups
-        </NavLink>
-        {hasGroups && (
-          <button
-            className="nav-caret"
-            onClick={() => setOpen((o) => !o)}
-            aria-label={open ? "Collapse groups" : "Expand groups"}
-          >
-            {open ? "▾" : "▸"}
-          </button>
-        )}
-      </div>
-      {open &&
-        groups.data?.map((g) => (
-          <GroupNavEntry
-            key={g.id}
-            g={g}
-            isOpen={expandedId === g.id}
-            onToggle={() =>
-              setExpandedId((prev) => (prev === g.id ? null : g.id))
-            }
-          />
-        ))}
+    <div>
+      {groups.data.map((g) => (
+        <GroupNavEntry
+          key={g.id}
+          g={g}
+          isOpen={expandedId === g.id}
+          onToggle={() => setExpandedId((prev) => (prev === g.id ? null : g.id))}
+        />
+      ))}
     </div>
   );
 }
@@ -121,19 +101,18 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
     links: [
       { to: "/server", label: "Server" },
       { to: "/contacts", label: "Contacts" },
+      { to: "/dkg", label: "New DKG" },
     ],
   },
   {
-    title: "2 · Keys",
+    title: "2 · Groups",
     links: [
-      { to: "/dkg", label: "New DKG" },
       { to: "/groups", label: "Groups" },
     ],
   },
   {
     title: "3 · Signing",
     links: [
-      { to: "/sign", label: "Sign" },
       { to: "/inbox", label: "Inbox" },
     ],
   },

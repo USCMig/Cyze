@@ -1102,31 +1102,34 @@ function isOrchard(group: GroupSummary): boolean {
   return group.ciphersuite.includes("Pallas");
 }
 
-/** Copyable labelled key/address row. */
-function KeyRow({ label, value }: { label: string; value: string }) {
+/** Copyable labelled key/address row. Pass masked=true to hide the value. */
+function KeyRow({ label, value, masked = false }: { label: string; value: string; masked?: boolean }) {
   const [copied, setCopied] = useState(false);
+  const display = masked ? "•".repeat(16) : value;
   return (
     <div style={{ marginTop: 8 }}>
       <label>{label}</label>
-      <div className="mono">{value}</div>
-      <button
-        className="secondary"
-        style={{ marginTop: 6 }}
-        onClick={async () => {
-          await navigator.clipboard.writeText(value);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        }}
-      >
-        {copied ? "Copied!" : "Copy"}
-      </button>
+      <div className="mono" style={{ letterSpacing: masked ? 2 : undefined }}>{display}</div>
+      {!masked && (
+        <button
+          className="secondary"
+          style={{ marginTop: 6 }}
+          onClick={async () => {
+            await navigator.clipboard.writeText(value);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      )}
     </div>
   );
 }
 
 /** The group's public key material and, for Orchard groups, its derived
  *  unified address and full viewing key. */
-export function GroupKeys({ group }: { group: GroupSummary }) {
+export function GroupKeys({ group, masked = false }: { group: GroupSummary; masked?: boolean }) {
   const orchard = isOrchard(group);
   const keys = useQuery({
     queryKey: ["orchard-keys", group.id],
@@ -1137,20 +1140,16 @@ export function GroupKeys({ group }: { group: GroupSummary }) {
 
   return (
     <div style={{ marginTop: 10 }}>
-      <KeyRow
-        label={
-          orchard
-            ? "Orchard spend validating key (ak) — public"
-            : "Group public verifying key"
-        }
-        value={group.id}
-      />
+      {!orchard && (
+        <KeyRow label="Group public verifying key" value={group.id} masked={masked} />
+      )}
       {orchard && keys.data && (
         <>
-          <KeyRow label="Orchard unified address" value={keys.data.address} />
+          <KeyRow label="Orchard unified address" value={keys.data.address} masked={masked} />
           <KeyRow
             label="Unified full viewing key (UFVK)"
             value={keys.data.ufvk}
+            masked={masked}
           />
           <div className="callout" style={{ marginTop: 10 }}>
             <span>
@@ -1404,17 +1403,28 @@ export function GroupCard({
   onRemove: (id: string) => void;
   onRenamed: () => void;
 }) {
+  const [keysVisible, setKeysVisible] = useState(true);
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <GroupNameEditor group={group} onRenamed={onRenamed} />
-        <span className="badge blue" style={{ flexShrink: 0, marginLeft: 8 }}>{group.ciphersuite}</span>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <button
+            className="secondary"
+            style={{ padding: "2px 10px", fontSize: 12 }}
+            onClick={() => setKeysVisible((v) => !v)}
+            title={keysVisible ? "Hide keys and addresses" : "Show keys and addresses"}
+          >
+            {keysVisible ? "Hide" : "Show"}
+          </button>
+          <span className="badge blue" style={{ flexShrink: 0 }}>{group.ciphersuite}</span>
+        </div>
       </div>
       <p>
         {group.threshold}-of-{group.num_participants} threshold
       </p>
 
-      <GroupKeys group={group} />
+      <GroupKeys group={group} masked={!keysVisible} />
 
       <div style={{ marginTop: 12 }}>
         <label>Participants</label>
@@ -1425,7 +1435,9 @@ export function GroupCard({
               return (
                 <tr key={pubkey}>
                   <td className={p.isSelf ? "ok" : undefined}>{p.label}</td>
-                  <td className="dim mono-cell">{p.pubkey}</td>
+                  <td className="dim mono-cell">
+                    {keysVisible ? p.pubkey : "•".repeat(16)}
+                  </td>
                 </tr>
               );
             })}
@@ -1533,15 +1545,11 @@ export function GroupDetail() {
 
   return (
     <div>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <div>{/* spacer — name lives inside GroupCard */}</div>
-        <div className="row" style={{ gap: 16 }}>
-          <Link to="/sign">Start a Signing Session →</Link>
-          {group.ciphersuite.includes("Pallas") && (
-            <Link to={`/groups/${group.id}/wallet`}>Build a Transaction →</Link>
-          )}
+      {group.ciphersuite.includes("Pallas") && (
+        <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
+          <Link to={`/groups/${group.id}/wallet`}>Build a Transaction →</Link>
         </div>
-      </div>
+      )}
       <GroupCard
         group={group}
         identity={identity.data}
@@ -1709,7 +1717,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
             <tr>
               <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Date & Time</th>
               <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Type</th>
-              <th style={{ textAlign: "right", paddingBottom: 6, fontWeight: 500 }}>Amount</th>
+              <th style={{ textAlign: "right", paddingBottom: 6, paddingRight: 12, fontWeight: 500 }}>Amount</th>
               <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Address</th>
               <th style={{ textAlign: "left", paddingBottom: 6, fontWeight: 500 }}>Tx Hash</th>
               <th />
@@ -1901,7 +1909,7 @@ function PendingTxRow({
             <span style={{ color: pendingColor, fontSize: 12 }}>↑ Sent</span>
           )}
         </td>
-        <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: pendingColor }}>
+        <td style={{ textAlign: "right", paddingRight: 12, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: pendingColor }}>
           {meta ? `−${zec(meta.amountZatoshis)} ZEC` : "—"}
         </td>
         <td className="mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: pendingColor ?? "var(--fg-muted)" }}>
@@ -1986,7 +1994,7 @@ function OnchainTxRow({
             <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
           )}
         </td>
-        <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+        <td style={{ textAlign: "right", paddingRight: 12, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
           <span style={{ color: isReceive ? "#4ade80" : undefined }}>
             {isReceive ? "+" : "−"}
             {zec(tx.amount_zatoshis)} ZEC
