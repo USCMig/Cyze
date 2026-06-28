@@ -1640,6 +1640,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
     enabled: group.ciphersuite.includes("Pallas"),
   });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity });
   const groupAddress = walletStatus.data?.address ?? null;
 
   // Pending / recently-completed sends not yet confirmed on-chain.
@@ -1722,6 +1723,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
                 row={row}
                 contacts={contacts.data ?? []}
                 groupAddress={groupAddress}
+                myPubkey={identity.data?.pubkey ?? undefined}
                 isExpanded={expandedKey === row.id}
                 onToggle={() => toggle(row.id)}
               />
@@ -1734,6 +1736,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
                 contacts={contacts.data ?? []}
                 groupAddress={groupAddress}
                 signers={txSigners[tx.txid]}
+                myPubkey={identity.data?.pubkey ?? undefined}
                 isExpanded={expandedKey === tx.txid}
                 onToggle={() => toggle(tx.txid)}
               />
@@ -1751,12 +1754,6 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
   );
 }
 
-/** Resolve a comm pubkey to a display name using the contacts list. */
-function signerLabel(pubkey: string, contacts: ContactDto[]): string {
-  const c = contacts.find((c) => c.pubkey === pubkey);
-  return c ? (c.alias ?? c.name ?? pubkey.slice(0, 8) + "…") : pubkey.slice(0, 8) + "…";
-}
-
 /** Expand-detail panel shared by both row types. */
 function TxDetail({
   colSpan,
@@ -1771,6 +1768,7 @@ function TxDetail({
   memo,
   signers,
   contacts,
+  myPubkey,
   error,
 }: {
   colSpan: number;
@@ -1785,6 +1783,7 @@ function TxDetail({
   memo?: string | null;
   signers?: string[];
   contacts?: ContactDto[];
+  myPubkey?: string;
   error?: string;
 }) {
   const dateStr = timestamp
@@ -1813,9 +1812,22 @@ function TxDetail({
   }
   if (memo) rows.push({ label: "Memo", value: memo });
   if (signers && signers.length > 0 && contacts) {
+    const identityObj = myPubkey ? { pubkey: myPubkey, username: null } : undefined;
     rows.push({
       label: "Signed by",
-      value: signers.map((pk) => signerLabel(pk, contacts)).join(", "),
+      value: (
+        <span>
+          {signers.map((pk, i) => {
+            const p = resolveParticipant(pk, identityObj, contacts);
+            return (
+              <span key={pk}>
+                {i > 0 ? ", " : ""}
+                <span style={{ color: p.isSelf ? "#4ade80" : undefined }}>{p.label}</span>
+              </span>
+            );
+          })}
+        </span>
+      ),
     });
   }
 
@@ -1859,12 +1871,14 @@ function PendingTxRow({
   row,
   contacts,
   groupAddress,
+  myPubkey,
   isExpanded,
   onToggle,
 }: {
   row: PendingRow;
   contacts: ContactDto[];
   groupAddress: string | null;
+  myPubkey?: string;
   isExpanded: boolean;
   onToggle: () => void;
 }) {
@@ -1878,29 +1892,31 @@ function PendingTxRow({
       ? meta.recipient.slice(0, 10) + "…"
       : "—";
   const txHashDisplay = row.txid ? row.txid.slice(0, 10) + "…" : "—";
+  // Yellow text for in-flight / broadcast-but-unconfirmed rows.
+  const pendingColor = !row.failed ? "#facc15" : undefined;
 
   return (
     <>
       <tr>
-        <td className="dim" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{dateStr}</td>
+        <td style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: pendingColor ?? "var(--fg-muted)" }}>{dateStr}</td>
         <td style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {row.failed ? (
             <span style={{ color: "var(--danger)", fontSize: 12 }}>✕ Failed</span>
           ) : isSelf ? (
-            <span className="dim" style={{ fontSize: 12 }}>⇄ Consolidation</span>
+            <span style={{ color: pendingColor, fontSize: 12 }}>⇄ Consolidation</span>
           ) : isUnshield ? (
-            <span style={{ color: "var(--accent)", fontSize: 12 }}>⇲ Unshield</span>
+            <span style={{ color: pendingColor, fontSize: 12 }}>⇲ Unshield</span>
           ) : (
-            <span style={{ color: "var(--accent)", fontSize: 12 }}>↑ Sent</span>
+            <span style={{ color: pendingColor, fontSize: 12 }}>↑ Sent</span>
           )}
         </td>
-        <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+        <td style={{ textAlign: "right", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: pendingColor }}>
           {meta ? `−${zec(meta.amountZatoshis)} ZEC` : "—"}
         </td>
-        <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
+        <td className="mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: pendingColor ?? "var(--fg-muted)" }}>
           {addrDisplay}
         </td>
-        <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
+        <td className="mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: pendingColor ?? "var(--fg-muted)" }}>
           {txHashDisplay}
           {!row.txid && !row.failed && (
             <span style={{ marginLeft: 4 }} title="Awaiting confirmation">⏳</span>
@@ -1930,6 +1946,7 @@ function PendingTxRow({
           memo={meta?.memo}
           signers={meta?.signers}
           contacts={contacts}
+          myPubkey={myPubkey}
           error={row.error}
         />
       )}
@@ -1942,6 +1959,7 @@ function OnchainTxRow({
   contacts,
   groupAddress,
   signers,
+  myPubkey,
   isExpanded,
   onToggle,
 }: {
@@ -1949,6 +1967,7 @@ function OnchainTxRow({
   contacts: ContactDto[];
   groupAddress: string | null;
   signers?: string[];
+  myPubkey?: string;
   isExpanded: boolean;
   onToggle: () => void;
 }) {
@@ -2017,6 +2036,7 @@ function OnchainTxRow({
           memo={tx.memo}
           signers={signers}
           contacts={contacts}
+          myPubkey={myPubkey}
         />
       )}
     </>
