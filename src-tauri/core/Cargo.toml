@@ -59,10 +59,10 @@ zcash_protocol = { version = "0.9", optional = true }
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-webpki-roots"] }
 # SQLCipher (bundled amalgamation) so the per-group wallet database is encrypted
 # at rest. Feature-unifies with zcash_client_sqlite's `bundled` rusqlite: the
-# single libsqlite3-sys build compiles the SQLCipher amalgamation. Links the
-# system OpenSSL (present on the build/CI host); switch to
-# `bundled-sqlcipher-vendored-openssl` for a fully self-contained release build.
-rusqlite = { version = "0.37", optional = true, features = ["bundled-sqlcipher"] }
+# single libsqlite3-sys build compiles the SQLCipher amalgamation. Uses vendored
+# OpenSSL (compiled from source) so no system libssl-dev / openssl headers are
+# required on the build machine — only a C toolchain + perl.
+rusqlite = { version = "0.37", optional = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 prost = { version = "0.14", optional = true }
 async-trait = { version = "0.1", optional = true }
 zcash_primitives = { version = "0.28", optional = true }
