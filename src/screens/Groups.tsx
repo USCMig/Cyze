@@ -19,7 +19,6 @@ import {
   AppError,
   DraftTransaction,
   TxRecord,
-  WalletStatus,
   ContactDto,
   GroupSummary,
   Identity,
@@ -205,65 +204,6 @@ function validateRecipient(
   return null;
 }
 
-/** Pool-awareness panel: the group holds & spends only Orchard. Surfaces the
- *  transparent/Sapling balances (normally 0) with a clear note that the
- *  threshold group cannot spend them — so users don't expect to. */
-function PoolsPanel({ status }: { status: WalletStatus }) {
-  const rows: { label: string; bal: number; spendable: boolean; note: string }[] = [
-    {
-      label: "Orchard (shielded)",
-      bal: status.orchard.total_zatoshis,
-      spendable: true,
-      note: "Spendable by the threshold group via FROST.",
-    },
-    {
-      label: "Sapling (shielded)",
-      bal: status.sapling.total_zatoshis,
-      spendable: false,
-      note: "Not held or spendable by the group (different signature scheme).",
-    },
-    {
-      label: "Transparent",
-      bal: status.transparent.total_zatoshis,
-      spendable: false,
-      note: "Not held or spendable by the group (needs threshold ECDSA).",
-    },
-  ];
-  return (
-    <div className="card" style={{ marginTop: 14, background: "var(--bg-elevated)" }}>
-      <h3 style={{ marginTop: 0 }}>Pools</h3>
-      <table className="participants">
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.label}>
-              <td>
-                {r.label}{" "}
-                {r.spendable ? (
-                  <span className="badge blue" style={{ marginLeft: 4 }}>
-                    group-spendable
-                  </span>
-                ) : (
-                  <span className="badge" style={{ marginLeft: 4 }}>
-                    not group-held
-                  </span>
-                )}
-                <div className="dim" style={{ fontSize: 12 }}>{r.note}</div>
-              </td>
-              <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                {zec(r.bal)} ZEC
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="dim" style={{ marginTop: 8, fontSize: 12 }}>
-        The group's key authorizes only Orchard spends. To move shielded funds
-        out to a transparent address, use <strong>Unshield</strong> below.
-      </p>
-    </div>
-  );
-}
-
 /** Receive / shield-into-group card: shows the group's Orchard unified address.
  *  "Shielding" into the group means sending funds to this address from a
  *  personal wallet — the group then holds them as spendable Orchard. */
@@ -296,7 +236,7 @@ function ReceiveShieldCard({ address }: { address: string | null }) {
   );
 }
 
-type WalletTab = "balance" | "receive" | "send";
+type WalletTab = "receive" | "send";
 
 /** Per-group Zcash wallet: view-only account, receive address, balance. */
 function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
@@ -307,7 +247,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     enabled: group.ciphersuite.includes("Pallas"),
   });
   const [err, setErr] = useState<string | null>(null);
-  const [walletTab, setWalletTab] = useState<WalletTab>("balance");
+  const [walletTab, setWalletTab] = useState<WalletTab>("receive");
 
   const init = useMutation({
     mutationFn: () => walletInitAccount(group.id),
@@ -482,7 +422,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       if (statusRef.current?.initialized && !cur.isPending && !autoSyncOffRef.current) {
         cur.mutate();
       }
-    }, 30_000);
+    }, 10_000);
     return () => clearInterval(t);
   }, []);
 
@@ -548,7 +488,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     )}
                   </span>
                 ) : (
-                  <span className="dim">Auto-syncing every 30s</span>
+                  <span className="dim">Auto-syncing every 10s</span>
                 )}
               </div>
             </div>
@@ -564,16 +504,14 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               flexWrap: "wrap",
             }}
           >
-            {(["balance", "receive", "send"] as WalletTab[]).map((tab) => {
+            {(["receive", "send"] as WalletTab[]).map((tab) => {
               const active = walletTab === tab;
               const label =
-                tab === "balance"
-                  ? "Balance & Pools"
-                  : tab === "receive"
-                    ? "Receive / Shield"
-                    : activeSend && !activeSend.done
-                      ? "Send / Unshield ●"
-                      : "Send / Unshield";
+                tab === "receive"
+                  ? "Receive / Shield"
+                  : activeSend && !activeSend.done
+                    ? "Send / Unshield ●"
+                    : "Send / Unshield";
               return (
                 <button
                   key={tab}
@@ -595,9 +533,6 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               );
             })}
           </div>
-
-          {/* Balance & Pools tab */}
-          {walletTab === "balance" && <PoolsPanel status={s} />}
 
           {/* Receive / Shield tab */}
           {walletTab === "receive" && <ReceiveShieldCard address={s.address} />}

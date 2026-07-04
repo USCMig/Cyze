@@ -1086,21 +1086,26 @@ pub fn wallet_history(
     }
 
     // ── Sent ────────────────────────────────────────────────────────────────
-    // Rows in `sent_notes` where our account was the sender. Group by
-    // transaction; summing values gives total sent (not including change, which
-    // is modelled as a received note with is_change = 1 and never appears in
-    // sent_notes). The recipient is `to_address`; NULL means the output went
-    // back to this same wallet (self-transfer / consolidation).
+    // Rows in `sent_notes` where our account was the sender. Each output the
+    // wallet created is a row here — including the change output that returns
+    // the remainder to this same wallet (to_account_id = our account). So the
+    // amount actually *sent to the recipient* is the sum of the EXTERNAL outputs
+    // only (to_account_id IS NULL); summing every row would wrongly add the
+    // change back in. `total_value` is kept as a fallback for pure self-
+    // transfers (consolidations) that have no external output at all.
     {
         let mut stmt = conn
             .prepare(
-                "SELECT t.txid, t.mined_height, b.time, t.fee, SUM(sn.value), \
-                 MAX(sn.to_address), \
+                "SELECT t.txid, t.mined_height, b.time, t.fee, \
+                 SUM(CASE WHEN sn.to_account_id IS NULL THEN sn.value ELSE 0 END) AS external_value, \
+                 SUM(sn.value) AS total_value, \
+                 MAX(CASE WHEN sn.to_account_id IS NULL THEN sn.to_address END) AS ext_address, \
                  MAX(CASE WHEN sn.to_account_id IS NULL THEN 1 ELSE 0 END) AS has_external, \
                  ( SELECT sn2.memo \
                    FROM sent_notes sn2 \
                    WHERE sn2.transaction_id = t.id_tx \
                      AND sn2.from_account_id = ?1 \
+                     AND sn2.to_account_id IS NULL \
                      AND sn2.memo IS NOT NULL \
                    LIMIT 1 ) \
                  FROM sent_notes sn \
@@ -1120,21 +1125,25 @@ pub fn wallet_history(
                     row.get::<_, Option<i64>>(2)?,
                     row.get::<_, Option<u64>>(3)?,
                     row.get::<_, u64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, Option<Vec<u8>>>(7)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute send query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, timestamp, fee, amount, to_address, has_external, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, fee, external_value, total_value, ext_address, has_external, memo_bytes) =
                 row.map_err(|e| CoreError::Crypto(format!("send row: {e}")))?;
             txid_bytes.reverse();
-            // has_external = 1 means at least one output went to an external recipient
-            // (to_account_id IS NULL). When false with a null to_address it's a
-            // true self-transfer (note consolidation within the same wallet).
-            let is_self_transfer = has_external == 0 && to_address.is_none();
+            // has_external = 1 means at least one output went to an external
+            // recipient. The displayed amount is what left the wallet to that
+            // recipient (external_value), not the change. With no external
+            // output it is a self-transfer (consolidation); fall back to the
+            // full value so the row isn't shown as "0 ZEC".
+            let is_self_transfer = has_external == 0;
+            let amount = if is_self_transfer { total_value } else { external_value };
             records.push(TxRecord {
                 txid: hex::encode(&txid_bytes),
                 block_height,
@@ -1143,7 +1152,7 @@ pub fn wallet_history(
                 amount_zatoshis: amount,
                 fee_zatoshis: fee,
                 memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
-                recipient: to_address,
+                recipient: ext_address,
             });
         }
     }
