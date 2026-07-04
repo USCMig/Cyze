@@ -287,6 +287,25 @@ impl KeystoreFile {
         self.slots.iter().any(|s| s.kind == KIND_RECOVERY)
     }
 
+    /// Derive a 32-byte subkey bound to `info` from the DEK, without exposing
+    /// the DEK itself. Used to key auxiliary encrypted stores (e.g. the per-
+    /// group SQLCipher wallet database). Deterministic for a given DEK+info, so
+    /// the same key is recovered on every unlock. The DEK is a uniformly random
+    /// 32-byte key, so `SHA-256(domain || dek || len(info) || info)` is a sound
+    /// PRF here; `info` is length-prefixed to avoid ambiguity between inputs.
+    pub fn derive_subkey(&self, info: &[u8]) -> Zeroizing<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"cyze-keystore-subkey-v1");
+        h.update(&self.dek[..]);
+        h.update((info.len() as u64).to_le_bytes());
+        h.update(info);
+        let digest = h.finalize();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&digest);
+        Zeroizing::new(key)
+    }
+
     /// Re-encrypt `plaintext` under the existing DEK and slots (new body nonce).
     pub fn reseal(&self, plaintext: &[u8]) -> Result<Vec<u8>, CoreError> {
         let mut body_nonce = [0u8; NONCE_LEN];
@@ -452,7 +471,36 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<(), CoreError> {
         path.file_name().unwrap_or_default().to_string_lossy()
     ));
     std::fs::write(&tmp, data)?;
+    // Restrict to owner-only before the rename so the final file is never
+    // momentarily world-readable. Sensitive files (keystore, settings) must not
+    // be left at the default umask on multi-user systems.
+    restrict_to_owner(&tmp)?;
     std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Set owner-only permissions (`0o600`) on a file. No-op on non-Unix platforms,
+/// where directory ACLs from the OS-specific data dir are relied upon instead.
+pub fn restrict_to_owner(path: &Path) -> Result<(), CoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Set owner-only permissions (`0o700`) on a directory. No-op on non-Unix.
+pub fn restrict_dir_to_owner(path: &Path) -> Result<(), CoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

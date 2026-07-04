@@ -79,8 +79,45 @@ fn normalize_endpoint(url: &str) -> String {
     }
 }
 
+/// True when the host component of a normalized URL is a loopback address —
+/// plaintext gRPC is only tolerated against a local node (regtest/dev), never
+/// against a remote lightwalletd where the traffic would cross the network.
+fn is_loopback_host(normalized_url: &str) -> bool {
+    let after_scheme = normalized_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(normalized_url);
+    let host = after_scheme
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]"
+}
+
+/// Reject a lightwalletd endpoint that would send wallet traffic in cleartext.
+/// `http://` is permitted only for loopback hosts (local regtest/dev); any
+/// remote plaintext endpoint is refused so compact-block sync, balances, and
+/// broadcasts are never exposed on the wire.
+pub fn validate_endpoint_security(url: &str) -> Result<(), CoreError> {
+    let normalized = normalize_endpoint(url);
+    if normalized.starts_with("http://") && !is_loopback_host(&normalized) {
+        return Err(CoreError::Connection(format!(
+            "refusing plaintext (http://) lightwalletd endpoint '{}': \
+             wallet traffic would be unencrypted. Use https:// (or a \
+             127.0.0.1 endpoint for local testing).",
+            url.trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Connect a gRPC client to a lightwalletd endpoint (TLS for `https://`).
 async fn connect(url: &str) -> Result<CompactTxStreamerClient<Channel>, CoreError> {
+    validate_endpoint_security(url)?;
     let url = normalize_endpoint(url);
     let mut endpoint = Channel::from_shared(url.clone())
         .map_err(|e| CoreError::Connection(format!("invalid lightwalletd URL: {e}")))?;
@@ -157,14 +194,131 @@ fn wallet_paths(data_dir: &Path, group_id: &str) -> (PathBuf, PathBuf) {
     (base.join("wallet.sqlite"), base.join("blocks"))
 }
 
-fn open_db(db_path: &Path, network: WalletNetwork) -> Result<GroupDb, CoreError> {
+/// Path of the on-disk record for a fully-signed transaction awaiting broadcast.
+/// Keeping the signed PCZT lets a failed broadcast be retried without repeating
+/// the whole FROST signing ceremony.
+fn pending_tx_path(data_dir: &Path, group_id: &str, ceremony_id: &str) -> PathBuf {
+    data_dir
+        .join("wallets")
+        .join(group_id)
+        .join("pending")
+        .join(format!("{ceremony_id}.pczt.hex"))
+}
+
+/// Persist a signed-but-not-broadcast PCZT so it can be re-broadcast later.
+pub fn save_pending_tx(
+    data_dir: &Path,
+    group_id: &str,
+    ceremony_id: &str,
+    signed_pczt_hex: &str,
+) -> Result<PathBuf, CoreError> {
+    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        let _ = crate::keystore::restrict_dir_to_owner(parent);
+    }
+    std::fs::write(&path, signed_pczt_hex.as_bytes())?;
+    let _ = crate::keystore::restrict_to_owner(&path);
+    Ok(path)
+}
+
+/// Load a previously-saved signed PCZT for re-broadcast.
+pub fn load_pending_tx(
+    data_dir: &Path,
+    group_id: &str,
+    ceremony_id: &str,
+) -> Result<String, CoreError> {
+    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    let hex = std::fs::read_to_string(&path).map_err(|e| {
+        CoreError::Config(format!("no pending transaction for {ceremony_id}: {e}"))
+    })?;
+    Ok(hex.trim().to_string())
+}
+
+/// Remove a pending transaction record once it has been broadcast.
+pub fn clear_pending_tx(data_dir: &Path, group_id: &str, ceremony_id: &str) {
+    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The `PRAGMA key` statement for a raw 32-byte SQLCipher key. Using the
+/// `x'<hex>'` blob form supplies the key material directly (no passphrase KDF).
+fn key_pragma(db_key: &[u8]) -> String {
+    format!("PRAGMA key = \"x'{}'\";", hex::encode(db_key))
+}
+
+/// Open a rusqlite connection and unlock it with the SQLCipher key, verifying
+/// that the key actually decrypts the database (a wrong key or a plaintext file
+/// fails here with `SQLITE_NOTADB`).
+fn open_keyed_connection(
+    db_path: &Path,
+    db_key: &[u8],
+) -> Result<rusqlite::Connection, CoreError> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    conn.execute_batch(&key_pragma(db_key))
+        .map_err(|e| CoreError::Crypto(format!("set wallet db key: {e}")))?;
+    // Force the cipher to engage; fails cleanly if the key is wrong.
+    conn.execute_batch("SELECT count(*) FROM sqlite_master;")
+        .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    Ok(conn)
+}
+
+/// True when the file begins with the standard plaintext SQLite header, i.e. it
+/// is an unencrypted database (an encrypted SQLCipher file has no such header).
+fn is_plaintext_sqlite(db_path: &Path) -> Result<bool, CoreError> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(db_path)?;
+    let mut magic = [0u8; 16];
+    match f.read(&mut magic) {
+        Ok(16) => Ok(&magic == b"SQLite format 3\0"),
+        _ => Ok(false),
+    }
+}
+
+/// One-time migration of a legacy plaintext wallet database to an encrypted
+/// SQLCipher database keyed by `db_key`, preserving all data. Exports the
+/// plaintext db into an attached encrypted copy, then atomically replaces the
+/// original. See <https://www.zetetic.net/sqlcipher/sqlcipher-api/#sqlcipher_export>.
+fn migrate_plaintext_to_encrypted(db_path: &Path, db_key: &[u8]) -> Result<(), CoreError> {
+    let tmp = db_path.with_extension("sqlite.enc-tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| CoreError::Crypto(format!("open plaintext wallet db: {e}")))?;
+    conn.execute_batch(&format!(
+        "ATTACH DATABASE '{}' AS encrypted KEY \"x'{}'\";\
+         SELECT sqlcipher_export('encrypted');\
+         DETACH DATABASE encrypted;",
+        tmp.to_string_lossy().replace('\'', "''"),
+        hex::encode(db_key),
+    ))
+    .map_err(|e| CoreError::Crypto(format!("encrypt wallet db: {e}")))?;
+    drop(conn);
+    std::fs::rename(&tmp, db_path)?;
+    let _ = crate::keystore::restrict_to_owner(db_path);
+    Ok(())
+}
+
+fn open_db(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<GroupDb, CoreError> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
+        // The wallet db holds the group's UFVK and transaction history, so lock
+        // the directory to the owner as defence in depth alongside encryption.
+        let _ = crate::keystore::restrict_dir_to_owner(parent);
     }
-    let mut db = WalletDb::for_path(db_path, network.params(), SystemClock, OsRng)
-        .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    // Transparently upgrade a pre-encryption plaintext db to SQLCipher so no
+    // history is lost when this version is first run.
+    if db_path.exists() && is_plaintext_sqlite(db_path)? {
+        migrate_plaintext_to_encrypted(db_path, db_key)?;
+    }
+    let conn = open_keyed_connection(db_path, db_key)?;
+    let mut db = WalletDb::from_connection(conn, network.params(), SystemClock, OsRng);
     init_wallet_db(&mut db, None)
         .map_err(|e| CoreError::Crypto(format!("init wallet db: {e}")))?;
+    // Restrict the sqlite file itself to owner-only.
+    if db_path.exists() {
+        let _ = crate::keystore::restrict_to_owner(db_path);
+    }
     Ok(db)
 }
 
@@ -207,6 +361,7 @@ pub fn group_status(
     group_id: &str,
     network: WalletNetwork,
     ufvk: &str,
+    db_key: &[u8],
 ) -> Result<WalletStatus, CoreError> {
     let (db_path, _) = wallet_paths(data_dir, group_id);
     let address = ufvk_default_address(network, ufvk).ok();
@@ -223,7 +378,7 @@ pub fn group_status(
             chain_tip_height: 0,
         });
     }
-    let db = open_db(&db_path, network)?;
+    let db = open_db(&db_path, network, db_key)?;
     let account_ids = db
         .get_account_ids()
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?;
@@ -319,9 +474,10 @@ pub async fn init_group_account(
     network: WalletNetwork,
     ufvk_str: &str,
     lightwalletd_url: &str,
+    db_key: &[u8],
 ) -> Result<u64, CoreError> {
     let (db_path, _) = wallet_paths(data_dir, group_id);
-    let mut db = open_db(&db_path, network)?;
+    let mut db = open_db(&db_path, network, db_key)?;
     if !db
         .get_account_ids()
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?
@@ -471,10 +627,11 @@ pub async fn sync_group(
     group_id: &str,
     network: WalletNetwork,
     lightwalletd_url: &str,
+    db_key: &[u8],
 ) -> Result<(), CoreError> {
     let (db_path, blocks_dir) = wallet_paths(data_dir, group_id);
     std::fs::create_dir_all(&blocks_dir)?;
-    let mut db = open_db(&db_path, network)?;
+    let mut db = open_db(&db_path, network, db_key)?;
 
     let mut inner = FsBlockDb::for_path(&blocks_dir)
         .map_err(|e| CoreError::Crypto(format!("block cache: {e}")))?;
@@ -546,6 +703,7 @@ pub async fn prepare_send(
     amount_zatoshis: u64,
     memo: Option<String>,
     lightwalletd_url: &str,
+    db_key: &[u8],
 ) -> Result<DraftTransaction, CoreError> {
     use zcash_keys::address::Address;
     use zcash_protocol::value::Zatoshis;
@@ -553,7 +711,7 @@ pub async fn prepare_send(
 
     let params = network.params();
     let (db_path, _) = wallet_paths(data_dir, group_id);
-    let mut db = open_db(&db_path, network)?;
+    let mut db = open_db(&db_path, network, db_key)?;
 
     // Anchor the expiry to the live chain tip, not whatever sync last recorded.
     let mut client = connect(lightwalletd_url).await?;
@@ -832,17 +990,25 @@ pub struct TxRecord {
 pub fn wallet_history(
     data_dir: &Path,
     group_id: &str,
+    db_key: &[u8],
 ) -> Result<Vec<TxRecord>, CoreError> {
     let (db_path, _) = wallet_paths(data_dir, group_id);
     if !db_path.exists() {
         return Ok(vec![]);
     }
 
+    // A pre-encryption plaintext db (not yet migrated by open_db) is read as-is;
+    // an encrypted db is unlocked with the SQLCipher key.
+    let plaintext = is_plaintext_sqlite(&db_path)?;
     let conn = rusqlite::Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    if !plaintext {
+        conn.execute_batch(&key_pragma(db_key))
+            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    }
 
     // There is at most one account per group wallet.
     use rusqlite::OptionalExtension;

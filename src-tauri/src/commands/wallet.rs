@@ -62,6 +62,11 @@ pub async fn set_wallet_config(
     let mut settings = state.load_settings();
     settings.wallet_network = Some(if network == "main" { "main" } else { "test" }.to_string());
     let url = lightwalletd_url.trim();
+    // Refuse to persist a plaintext (non-loopback http://) endpoint so wallet
+    // traffic is never silently downgraded off TLS.
+    if !url.is_empty() {
+        wallet::validate_endpoint_security(url)?;
+    }
     settings.lightwalletd_url = (!url.is_empty()).then(|| url.to_string());
     state.save_settings(&settings)?;
     Ok(resolve_config(&state))
@@ -115,7 +120,14 @@ pub async fn wallet_group_status(
     group_id: String,
 ) -> AppResult<WalletStatus> {
     let (network, _url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
-    Ok(wallet::group_status(&state.data_dir, &group_id, network, &ufvk)?)
+    let db_key = state.wallet_db_key(&group_id).await?;
+    Ok(wallet::group_status(
+        &state.data_dir,
+        &group_id,
+        network,
+        &ufvk,
+        db_key.as_ref(),
+    )?)
 }
 
 /// Import the group's UFVK as a view-only account (birthday = current chain
@@ -126,7 +138,16 @@ pub async fn wallet_init_account(
     group_id: String,
 ) -> AppResult<u64> {
     let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
-    Ok(wallet::init_group_account(&state.data_dir, &group_id, network, &ufvk, &url).await?)
+    let db_key = state.wallet_db_key(&group_id).await?;
+    Ok(wallet::init_group_account(
+        &state.data_dir,
+        &group_id,
+        network,
+        &ufvk,
+        &url,
+        db_key.as_ref(),
+    )
+    .await?)
 }
 
 /// Sync the group's wallet from lightwalletd, then return the updated status.
@@ -134,8 +155,15 @@ pub async fn wallet_init_account(
 #[tauri::command]
 pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppResult<WalletStatus> {
     let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
-    wallet::sync_group(&state.data_dir, &group_id, network, &url).await?;
-    Ok(wallet::group_status(&state.data_dir, &group_id, network, &ufvk)?)
+    let db_key = state.wallet_db_key(&group_id).await?;
+    wallet::sync_group(&state.data_dir, &group_id, network, &url, db_key.as_ref()).await?;
+    Ok(wallet::group_status(
+        &state.data_dir,
+        &group_id,
+        network,
+        &ufvk,
+        db_key.as_ref(),
+    )?)
 }
 
 /// On-chain transaction history for a group wallet: received funds and sent
@@ -145,7 +173,12 @@ pub async fn wallet_history(
     state: State<'_, AppState>,
     group_id: String,
 ) -> AppResult<Vec<wallet::TxRecord>> {
-    Ok(wallet::wallet_history(&state.data_dir, &group_id)?)
+    // Validate that `group_id` is a known RedPallas group before it is used as a
+    // filesystem path component (see wallet_paths). This mirrors the guard every
+    // other wallet command applies and prevents path traversal via the group id.
+    group_wallet_ctx(&state, &group_id).await?;
+    let db_key = state.wallet_db_key(&group_id).await?;
+    Ok(wallet::wallet_history(&state.data_dir, &group_id, db_key.as_ref())?)
 }
 
 /// Build (but do not sign or broadcast) an Orchard transfer, returning the
@@ -159,6 +192,7 @@ pub async fn wallet_prepare_send(
     memo: Option<String>,
 ) -> AppResult<wallet::DraftTransaction> {
     let (network, url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    let db_key = state.wallet_db_key(&group_id).await?;
     Ok(wallet::prepare_send(
         &state.data_dir,
         &group_id,
@@ -167,6 +201,7 @@ pub async fn wallet_prepare_send(
         amount_zatoshis,
         memo,
         &url,
+        db_key.as_ref(),
     )
     .await?)
 }
@@ -194,6 +229,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
 ) -> AppResult<Uuid> {
     let state = app.state::<AppState>();
     let (network, url, _ufvk) = group_wallet_ctx(&state, &args.group_id).await?;
+    let db_key = state.wallet_db_key(&args.group_id).await?;
 
     // 1. Build the unsigned transaction (refreshes the chain tip so the expiry
     //    is anchored to the live tip).
@@ -205,6 +241,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
         args.amount_zatoshis,
         args.memo,
         &url,
+        db_key.as_ref(),
     )
     .await?;
     if draft.spends.is_empty() {
@@ -286,6 +323,18 @@ pub async fn wallet_send<R: tauri::Runtime>(
     let task_app = app.clone();
     let pczt_hex = draft.pczt_hex.clone();
     let sighash_hex = draft.sighash_hex.clone();
+    let group_id = args.group_id.clone();
+    // Human-readable transaction context sent to co-signers so their approval
+    // gate shows what the sighash represents instead of opaque hex (C-1).
+    let send_context = serde_json::to_vec(&frost_app_core::events::SigningContext {
+        recipient: draft.recipient.clone(),
+        amount_zatoshis: draft.amount_zatoshis,
+        fee_zatoshis: draft.fee_zatoshis,
+        memo: draft.memo.clone(),
+        is_unshield: draft.is_unshield,
+        network: if matches!(network, WalletNetwork::Main) { "main" } else { "test" }.to_string(),
+    })
+    .unwrap_or_default();
     tauri::async_runtime::spawn(async move {
         let fail = |error: String| {
             let _ = task_app.emit(
@@ -327,6 +376,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
                         signers: signers.clone(),
                         self_key_package: self_key_package.clone(),
                         randomizer: Some(alpha), // this spend's α
+                        send_context: send_context.clone(),
                     };
                     match run_coordinator(suite, params, tx.clone(), cancel.clone()).await {
                         Ok(output) => signatures.push((index, hex::encode(&output.signature))),
@@ -367,6 +417,14 @@ pub async fn wallet_send<R: tauri::Runtime>(
                 Ok(hex) => hex,
                 Err(e) => return fail(e.to_string()),
             };
+        // Persist the fully-signed transaction before attempting broadcast. The
+        // ceremony is the expensive, un-repeatable part; if broadcast fails
+        // (endpoint down, transient network) the signed tx can be re-broadcast
+        // via wallet_rebroadcast without gathering signatures again.
+        let data_dir = task_app.state::<AppState>().data_dir.clone();
+        let ceremony_str = ceremony_id.to_string();
+        let _ = wallet::save_pending_tx(&data_dir, &group_id, &ceremony_str, &signed_pczt_hex);
+
         // Prove + broadcast. Surfaced as its own phase since the proof build is
         // the slow part (several seconds).
         let _ = task_app.emit(
@@ -376,8 +434,16 @@ pub async fn wallet_send<R: tauri::Runtime>(
                 "event": { "phase": "proving" },
             }),
         );
-        match wallet::broadcast_signed(&signed_pczt_hex, network, &url).await {
+        // Re-read the endpoint at broadcast time so a mid-ceremony settings
+        // change (or the earlier captured URL going stale) does not send to the
+        // wrong node.
+        let broadcast_url = group_wallet_ctx(&task_app.state::<AppState>(), &group_id)
+            .await
+            .map(|(_, u, _)| u)
+            .unwrap_or(url);
+        match wallet::broadcast_signed(&signed_pczt_hex, network, &broadcast_url).await {
             Ok(txid) => {
+                wallet::clear_pending_tx(&data_dir, &group_id, &ceremony_str);
                 let _ = task_app.emit(
                     "send:complete",
                     serde_json::json!({
@@ -387,9 +453,36 @@ pub async fn wallet_send<R: tauri::Runtime>(
                     }),
                 );
             }
-            Err(e) => fail(e.to_string()),
+            Err(e) => {
+                // Leave the pending record in place and tell the UI it can retry.
+                let _ = task_app.emit(
+                    "send:failed",
+                    serde_json::json!({
+                        "ceremony_id": ceremony_id,
+                        "error": e.to_string(),
+                        "retryable": true,
+                    }),
+                );
+            }
         }
     });
 
     Ok(ceremony_id)
+}
+
+/// Re-broadcast a previously-signed transaction whose first broadcast failed,
+/// without re-running the FROST ceremony. Reads the signed PCZT persisted by
+/// `wallet_send`, proves + broadcasts it against the current endpoint, and
+/// clears the pending record on success. Returns the broadcast txid.
+#[tauri::command]
+pub async fn wallet_rebroadcast(
+    state: State<'_, AppState>,
+    group_id: String,
+    ceremony_id: String,
+) -> AppResult<String> {
+    let (network, url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    let signed_pczt_hex = wallet::load_pending_tx(&state.data_dir, &group_id, &ceremony_id)?;
+    let txid = wallet::broadcast_signed(&signed_pczt_hex, network, &url).await?;
+    wallet::clear_pending_tx(&state.data_dir, &group_id, &ceremony_id);
+    Ok(txid)
 }

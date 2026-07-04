@@ -18,6 +18,25 @@ function hexToUtf8(hex: string): string {
   }
 }
 
+/** Transaction context the coordinator attaches to a signing request so the
+ *  approver sees what they are signing (mirrors core::events::SigningContext). */
+interface SigningContext {
+  recipient: string;
+  amount_zatoshis: number;
+  fee_zatoshis: number;
+  memo: string | null;
+  is_unshield: boolean;
+  network: string;
+}
+
+/** Format zatoshis as a ZEC amount (1 ZEC = 100,000,000 zatoshis). */
+function formatZec(zatoshis: number): string {
+  return `${(zatoshis / 1e8).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 8,
+  })} ZEC`;
+}
+
 export default function Inbox() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const sessions = useQuery({
@@ -72,6 +91,10 @@ export default function Inbox() {
             ceremony?.phase === "awaiting_approval"
               ? (ceremony.detail?.message_hex as string | undefined)
               : undefined;
+          const txContext =
+            ceremony?.phase === "awaiting_approval"
+              ? (ceremony.detail?.context as SigningContext | undefined)
+              : undefined;
           return (
             <div className="card" key={s.session_id}>
               <div className="row" style={{ justifyContent: "space-between" }}>
@@ -116,10 +139,77 @@ export default function Inbox() {
                   <p className="error" style={{ fontWeight: 600 }}>
                     Review carefully — approving produces your signature share.
                   </p>
-                  <label>Message (hex)</label>
-                  <div className="mono">{awaiting}</div>
-                  <label style={{ marginTop: 8 }}>Message (as UTF-8)</label>
-                  <div className="mono">{hexToUtf8(awaiting)}</div>
+
+                  {txContext ? (
+                    <>
+                      <label>You are approving this transaction</label>
+                      <table className="kv" style={{ width: "100%", marginTop: 4 }}>
+                        <tbody>
+                          <tr>
+                            <td className="dim">Type</td>
+                            <td>
+                              {txContext.is_unshield ? (
+                                <span className="badge" style={{ color: "#f4b728" }}>
+                                  Unshield → transparent (public)
+                                </span>
+                              ) : (
+                                <span className="badge">Shielded send</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="dim">Amount</td>
+                            <td style={{ fontWeight: 600 }}>
+                              {formatZec(txContext.amount_zatoshis)}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="dim">Fee</td>
+                            <td>{formatZec(txContext.fee_zatoshis)}</td>
+                          </tr>
+                          <tr>
+                            <td className="dim">To</td>
+                            <td className="mono" style={{ wordBreak: "break-all" }}>
+                              {txContext.recipient}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="dim">Network</td>
+                            <td>{txContext.network === "main" ? "Mainnet" : "Testnet"}</td>
+                          </tr>
+                          {txContext.memo && (
+                            <tr>
+                              <td className="dim">Memo</td>
+                              <td style={{ fontStyle: "italic", wordBreak: "break-word" }}>
+                                {txContext.memo}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                      <p className="dim" style={{ fontSize: 11, marginTop: 6 }}>
+                        Details are supplied by the coordinator. Approve only if
+                        they match what you agreed to sign.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="dim" style={{ fontSize: 12 }}>
+                      No transaction details were supplied with this request — you
+                      are signing a raw message. Only approve if you trust the
+                      coordinator and know what this signs.
+                    </p>
+                  )}
+
+                  <details style={{ marginTop: 8 }}>
+                    <summary className="dim" style={{ cursor: "pointer" }}>
+                      Raw message (sighash)
+                    </summary>
+                    <label style={{ marginTop: 6 }}>Message (hex)</label>
+                    <div className="mono" style={{ wordBreak: "break-all" }}>{awaiting}</div>
+                    <label style={{ marginTop: 8 }}>Message (as UTF-8)</label>
+                    <div className="mono">{hexToUtf8(awaiting)}</div>
+                  </details>
+
                   <div className="row" style={{ marginTop: 12 }}>
                     <button onClick={() => respondToSigning(ceremonyId, true)}>
                       Approve and sign

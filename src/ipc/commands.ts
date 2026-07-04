@@ -55,6 +55,8 @@ export interface TunnelStatus {
 
 // Keystore
 export const keystoreStatus = () => invoke<KeystoreStatus>("keystore_status");
+/** Defer the idle auto-lock; called on user activity (throttled). */
+export const recordActivity = () => invoke<void>("record_activity");
 /** Returns the one-time 12-word recovery phrase to back up. */
 export const createKeystore = (passphrase: string) =>
   invoke<string>("create_keystore", { passphrase });
@@ -184,6 +186,11 @@ export const walletSend = (args: {
   signers: string[];
   memo?: string | null;
 }) => invoke<string>("wallet_send", { args });
+
+/** Re-broadcast a signed transaction whose first broadcast failed, without
+ *  re-running the signing ceremony. Returns the broadcast txid. */
+export const walletRebroadcast = (groupId: string, ceremonyId: string) =>
+  invoke<string>("wallet_rebroadcast", { groupId, ceremonyId });
 
 // Contacts
 export const listContacts = () => invoke<ContactDto[]>("list_contacts");

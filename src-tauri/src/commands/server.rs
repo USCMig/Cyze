@@ -94,13 +94,21 @@ pub async fn cert_fingerprint_of(cert_pem: String) -> AppResult<String> {
 }
 
 #[tauri::command]
-pub async fn start_sidecar(app: AppHandle, port: Option<u16>) -> AppResult<SidecarStatus> {
+pub async fn start_sidecar(
+    app: AppHandle,
+    port: Option<u16>,
+    bind_lan: Option<bool>,
+) -> AppResult<SidecarStatus> {
     let state = app.state::<AppState>();
     let settings = state.load_settings();
     let port = port.or(settings.sidecar_port).unwrap_or(2744);
-    let status = sidecar::start(&app, port).await?;
+    // Explicit arg wins; otherwise fall back to the saved preference; default
+    // to loopback-only (false) so the LAN is never exposed without opt-in.
+    let bind_lan = bind_lan.or(settings.sidecar_bind_lan).unwrap_or(false);
+    let status = sidecar::start(&app, port, bind_lan).await?;
     let mut settings = state.load_settings();
     settings.sidecar_port = Some(port);
+    settings.sidecar_bind_lan = Some(bind_lan);
     state.save_settings(&settings)?;
     Ok(status)
 }

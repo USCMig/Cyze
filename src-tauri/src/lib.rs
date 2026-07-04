@@ -5,14 +5,56 @@ pub mod state;
 pub mod tunnel;
 
 use state::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+/// Poll interval for the idle auto-lock monitor.
+const AUTO_LOCK_POLL: std::time::Duration = std::time::Duration::from_secs(20);
+/// Default idle timeout (minutes) when the user has not configured one.
+const DEFAULT_AUTO_LOCK_MINUTES: u64 = 10;
+
+/// Background task: locks the keystore after the configured idle period, zeroing
+/// the in-memory key material and cancelling any running ceremonies. A value of
+/// `Some(0)` for `auto_lock_minutes` disables the timeout.
+async fn run_auto_lock_monitor<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    loop {
+        tokio::time::sleep(AUTO_LOCK_POLL).await;
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let minutes = state
+            .load_settings()
+            .auto_lock_minutes
+            .unwrap_or(DEFAULT_AUTO_LOCK_MINUTES);
+        if minutes == 0 {
+            continue; // auto-lock disabled
+        }
+        // Only act while unlocked and actually idle past the threshold.
+        if state.unlocked.read().await.is_none() {
+            continue;
+        }
+        if state.idle_millis() < (minutes as i64) * 60_000 {
+            continue;
+        }
+        for (_, handle) in state.ceremonies.lock().await.drain() {
+            handle.cancel.cancel();
+        }
+        *state.unlocked.write().await = None;
+        let _ = app.emit("keystore:auto-locked", minutes);
+    }
+}
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(run_auto_lock_monitor(handle));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::keystore::keystore_status,
+            commands::keystore::record_activity,
             commands::keystore::create_keystore,
             commands::keystore::import_upstream_config,
             commands::keystore::unlock_keystore,
@@ -40,6 +82,7 @@ pub fn run() {
             commands::wallet::wallet_history,
             commands::wallet::wallet_prepare_send,
             commands::wallet::wallet_send,
+            commands::wallet::wallet_rebroadcast,
             commands::server::get_settings,
             commands::server::set_server_url,
             commands::server::test_server_connection,

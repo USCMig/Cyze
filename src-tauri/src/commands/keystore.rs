@@ -13,6 +13,14 @@ pub struct KeystoreStatus {
     pub recovery_enabled: bool,
 }
 
+/// Defer the idle auto-lock: called by the frontend on user activity. Cheap and
+/// safe to call frequently (throttled on the frontend side).
+#[tauri::command]
+pub async fn record_activity(state: State<'_, AppState>) -> AppResult<()> {
+    state.touch_activity();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn keystore_status(state: State<'_, AppState>) -> AppResult<KeystoreStatus> {
     let ks = state.keystore();
@@ -35,6 +43,7 @@ pub async fn create_keystore(state: State<'_, AppState>, passphrase: String) -> 
     let toml = frost_app_core::config::serialize_config(&config)?;
     let (phrase, file) = state.keystore().create(toml.as_bytes(), &passphrase)?;
     *state.unlocked.write().await = Some(crate::state::UnlockedState { config, file });
+    state.touch_activity();
     Ok(phrase.to_string())
 }
 
@@ -60,6 +69,7 @@ pub async fn import_upstream_config(
     let config = frost_app_core::config::parse_config(&toml_str)?;
     let (phrase, file) = state.keystore().create(toml_str.as_bytes(), &passphrase)?;
     *state.unlocked.write().await = Some(crate::state::UnlockedState { config, file });
+    state.touch_activity();
     Ok(phrase.to_string())
 }
 
@@ -75,6 +85,7 @@ pub async fn unlock_keystore(state: State<'_, AppState>, passphrase: String) -> 
         let _ = state.keystore().save_file(&file, plaintext.as_slice());
     }
     *state.unlocked.write().await = Some(crate::state::UnlockedState { config, file });
+    state.touch_activity();
     Ok(())
 }
 
@@ -94,6 +105,7 @@ pub async fn recover_keystore(
         .map_err(|e| AppError::new("malformed_keystore", e.to_string()))?;
     let config = frost_app_core::config::parse_config(toml_str)?;
     *state.unlocked.write().await = Some(crate::state::UnlockedState { config, file });
+    state.touch_activity();
     Ok(())
 }
 

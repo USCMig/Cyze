@@ -58,6 +58,11 @@ pub struct CoordinatorParams {
     /// it here. When `None`, a fresh random α is generated for RedPallas (the
     /// default for standalone signing).
     pub randomizer: Option<Vec<u8>>,
+    /// Optional JSON-encoded [`crate::events::SigningContext`] describing the
+    /// transaction, forwarded to participants over the signing package's
+    /// `aux_msg` side channel so they can review it at the approval gate.
+    /// Empty for standalone (non-wallet) signing.
+    pub send_context: Vec<u8>,
 }
 
 pub struct SigningOutput {
@@ -206,33 +211,12 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
     // Merge external commitments with the coordinator's own.
     let (mut commitments_map, recipients) = if num_external > 0 {
         let (commitments, pubkeys) = state.commitments().map_err(cerr)?;
-        // Log the identifier←→pubkey mapping so a MissingCommitment can be
-        // diagnosed: each key here must equal the corresponding participant's
-        // key_package.identifier() when they try to sign.
-        for (pk, id) in &pubkeys {
-            eprintln!(
-                "[frost-sign] external signer pubkey={} → identifier={}",
-                hex::encode(&pk.0),
-                hex::encode(id.serialize()),
-            );
-        }
         (commitments[0].clone(), pubkeys.keys().cloned().collect::<Vec<_>>())
     } else {
         (std::collections::BTreeMap::new(), Vec::new())
     };
     if let (Some((id, _)), Some((_, commitment))) = (&self_signer, &self_round1) {
-        eprintln!(
-            "[frost-sign] coordinator self-signer identifier={}",
-            hex::encode(id.serialize()),
-        );
         commitments_map.insert(*id, *commitment);
-    }
-    // Log the full commitments map that will go into the signing package.
-    for id in commitments_map.keys() {
-        eprintln!(
-            "[frost-sign] signing package will include identifier={}",
-            hex::encode(id.serialize()),
-        );
     }
 
     // Build the signing package; RedPallas additionally needs a randomizer
@@ -254,7 +238,10 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
 
     let send_args = SendSigningPackageArgs::<C> {
         signing_package: vec![signing_package.clone()],
-        aux_msg: Default::default(),
+        // Carry the human-readable transaction context to participants so their
+        // approval gate can show what the sighash represents (C-1: no blind
+        // signing). Empty for standalone signing.
+        aux_msg: params.send_context.clone(),
         randomizer: randomizer.map(|r| vec![r]).unwrap_or_default(),
     };
     // Encrypted separately per recipient (the Noise sessions are pairwise).
@@ -459,11 +446,21 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
         .first()
         .ok_or_else(|| CoreError::Ceremony("empty signing package".into()))?;
 
+    // Decode the coordinator-supplied transaction context, if any, so the
+    // approval gate can show what the sighash represents rather than raw hex.
+    // Advisory only: malformed context is ignored (falls back to hex display).
+    let context = if send_args.aux_msg.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<crate::events::SigningContext>(&send_args.aux_msg).ok()
+    };
+
     // Approval gate: surface the message and wait for the user. No secret
     // material has been revealed yet — only nonce commitments.
     let _ = events
         .send(ParticipantEvent::AwaitingApproval {
             message_hex: hex::encode(signing_package.message()),
+            context,
         })
         .await;
     let approved = tokio::select! {
@@ -476,24 +473,6 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
     }
 
     // Round 2: produce and send the signature share.
-    // Log identifier state so MissingCommitment can be diagnosed: the
-    // participant's own identifier must appear in the signing package.
-    let own_id_hex = hex::encode(key_package.identifier().serialize());
-    eprintln!("[frost-sign] in-app participant key_package.identifier={}", own_id_hex);
-    let id_present = signing_package
-        .signing_commitment(key_package.identifier())
-        .is_some();
-    if !id_present {
-        // Log the full signing package as JSON so the coordinator-side identifiers
-        // can be compared against the participant's own identifier above.
-        let pkg_json = serde_json::to_string(signing_package).unwrap_or_else(|e| e.to_string());
-        eprintln!(
-            "[frost-sign] MissingCommitment about to occur: \
-             participant identifier={} is NOT in the signing package. \
-             Full signing package JSON: {}",
-            own_id_hex, pkg_json,
-        );
-    }
     let share = if !send_args.randomizer.is_empty() {
         frost_rerandomized::sign::<C>(
             signing_package,

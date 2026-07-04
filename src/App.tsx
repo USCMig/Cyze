@@ -9,9 +9,10 @@ import {
 } from "react-router-dom";
 import type { GroupSummary } from "./ipc/commands";
 import { useQuery } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
-import { lockKeystore, listGroups } from "./ipc/commands";
+import { lockKeystore, listGroups, recordActivity } from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
 import { Logo } from "./components/Logo";
 import Unlock from "./screens/Unlock";
@@ -125,6 +126,32 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
 function Layout() {
   const { unlocked, loaded, setUnlocked } = useKeystore();
   const dkgInProgress = useCeremonies(selectDkgInProgress);
+
+  // Auto-lock: reflect a backend-initiated idle lock in the UI, and report user
+  // activity (throttled) so the idle timer only fires when truly inactive.
+  useEffect(() => {
+    const unlisten = listen("keystore:auto-locked", () => setUnlocked(false));
+    let last = 0;
+    const onActivity = () => {
+      const now = Date.now();
+      // Throttle to at most one IPC call every 30s.
+      if (now - last < 30_000) return;
+      last = now;
+      void recordActivity();
+    };
+    const events: (keyof WindowEventMap)[] = [
+      "mousedown",
+      "keydown",
+      "wheel",
+      "touchstart",
+    ];
+    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
+    return () => {
+      void unlisten.then((f) => f());
+      events.forEach((e) => window.removeEventListener(e, onActivity));
+    };
+  }, [setUnlocked]);
+
   if (loaded && !unlocked) return <Navigate to="/unlock" replace />;
   return (
     <div className="layout">

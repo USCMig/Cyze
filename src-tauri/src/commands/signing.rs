@@ -114,6 +114,8 @@ pub async fn create_signing_session<R: tauri::Runtime>(
         // Standalone signing generates a fresh randomizer; the Orchard
         // transaction flow (phase 5) supplies the spend's α here instead.
         randomizer: None,
+        // Standalone signing has no wallet transaction context to show.
+        send_context: Vec::new(),
     };
 
     let ceremony_id = Uuid::new_v4();

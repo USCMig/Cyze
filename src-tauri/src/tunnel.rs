@@ -37,6 +37,20 @@ pub struct TunnelStatus {
     pub port: Option<u16>,
 }
 
+/// Resolve an executable name to its absolute path by scanning `PATH`, so the
+/// exact binary being launched can be surfaced to the user. Returns `None` if
+/// no executable match is found.
+fn resolve_binary_path(name: &str) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 /// Extract a `https://<sub>.trycloudflare.com` URL from a log line, if present.
 fn parse_tunnel_url(line: &str) -> Option<String> {
     let start = line.find("https://")?;
@@ -83,6 +97,21 @@ pub async fn start(app: &AppHandle, port: u16) -> AppResult<TunnelStatus> {
     if state.tunnel.lock().await.is_some() {
         return Err(AppError::new("tunnel", "a tunnel is already running"));
     }
+
+    // `cloudflared` is an external binary resolved from PATH; make it explicit
+    // which binary is being launched (so a PATH hijack is visible in the log)
+    // and warn loudly that opening the tunnel exposes the embedded server to the
+    // public internet.
+    let resolved = resolve_binary_path("cloudflared");
+    let _ = app.emit(
+        "tunnel:log",
+        format!(
+            "⚠ Opening a public tunnel: the embedded frostd server will be reachable \
+             from the internet via *.trycloudflare.com until you stop the tunnel. \
+             Launching cloudflared from: {}",
+            resolved.as_deref().unwrap_or("cloudflared (unresolved on PATH)"),
+        ),
+    );
 
     let mut child = Command::new("cloudflared")
         .args([
