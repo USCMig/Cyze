@@ -261,6 +261,11 @@ fn open_keyed_connection(
     // Force the cipher to engage; fails cleanly if the key is wrong.
     conn.execute_batch("SELECT count(*) FROM sqlite_master;")
         .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    // WalletDb::for_path normally registers this virtual table for `WHERE x IN
+    // rarray(?)` queries used internally by zcash_client_sqlite/backend; since
+    // we build the connection ourselves (to key it first), register it here too.
+    rusqlite::vtab::array::load_module(&conn)
+        .map_err(|e| CoreError::Crypto(format!("load rarray module: {e}")))?;
     Ok(conn)
 }
 
