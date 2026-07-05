@@ -1086,21 +1086,29 @@ pub fn wallet_history(
     }
 
     // ── Sent ────────────────────────────────────────────────────────────────
-    // Rows in `sent_notes` where our account was the sender. Each output the
-    // wallet created is a row here — including the change output that returns
-    // the remainder to this same wallet (to_account_id = our account). So the
-    // amount actually *sent to the recipient* is the sum of the EXTERNAL outputs
-    // only (to_account_id IS NULL); summing every row would wrongly add the
-    // change back in. `total_value` is kept as a fallback for pure self-
-    // transfers (consolidations) that have no external output at all.
+    // `sent_notes` only gets a row for the external recipient's output if this
+    // wallet's *outgoing viewing key* successfully re-decrypts it during chain
+    // scanning — that's best-effort and not always true (it depends on when the
+    // account was imported/rescanned). Deriving the sent amount by summing
+    // `sent_notes` therefore silently falls back to just the change value when
+    // that recovery fails, which understates or (worse) overstates the amount.
+    //
+    // `v_transactions.account_balance_delta` has no such gap: it is the net
+    // change in this account's balance for the tx, built purely from notes we
+    // know we *spent* (nullifier-based) and notes we *received* as change
+    // (our own IVK) — both always reliable regardless of OVK recovery. Per
+    // that view's own documented contract (see the module doc comment in
+    // zcash_client_sqlite for `v_transactions`), for a single-account wallet
+    // the amount sent to addresses outside the wallet is
+    // `-(account_balance_delta) - fee_paid` when `account_balance_delta < 0`.
+    // The recipient address/memo are still opportunistically read from
+    // `sent_notes` when that OVK recovery *did* succeed; otherwise they're
+    // simply absent (shown as "-" by the UI) rather than causing a wrong amount.
     {
         let mut stmt = conn
             .prepare(
-                "SELECT t.txid, t.mined_height, b.time, t.fee, \
-                 SUM(CASE WHEN sn.to_account_id IS NULL THEN sn.value ELSE 0 END) AS external_value, \
-                 SUM(sn.value) AS total_value, \
-                 MAX(CASE WHEN sn.to_account_id IS NULL THEN sn.to_address END) AS ext_address, \
-                 MAX(CASE WHEN sn.to_account_id IS NULL THEN 1 ELSE 0 END) AS has_external, \
+                "SELECT vt.txid, vt.mined_height, vt.block_time, vt.fee_paid, vt.account_balance_delta, \
+                 MAX(sn.to_address) AS ext_address, \
                  ( SELECT sn2.memo \
                    FROM sent_notes sn2 \
                    WHERE sn2.transaction_id = t.id_tx \
@@ -1108,12 +1116,16 @@ pub fn wallet_history(
                      AND sn2.to_account_id IS NULL \
                      AND sn2.memo IS NOT NULL \
                    LIMIT 1 ) \
-                 FROM sent_notes sn \
-                 JOIN transactions t ON sn.transaction_id = t.id_tx \
-                 LEFT JOIN blocks b ON b.height = t.mined_height \
-                 WHERE sn.from_account_id = ?1 \
+                 FROM v_transactions vt \
+                 JOIN transactions t ON t.txid = vt.txid \
+                 LEFT JOIN sent_notes sn \
+                   ON sn.transaction_id = t.id_tx \
+                   AND sn.from_account_id = ?1 \
+                   AND sn.to_account_id IS NULL \
+                 WHERE vt.account_uuid = (SELECT uuid FROM accounts WHERE id = ?1) \
+                   AND vt.account_balance_delta < 0 \
                  GROUP BY t.id_tx \
-                 ORDER BY t.mined_height DESC NULLS LAST",
+                 ORDER BY vt.mined_height DESC NULLS LAST",
             )
             .map_err(|e| CoreError::Crypto(format!("prepare send query: {e}")))?;
 
@@ -1123,34 +1135,30 @@ pub fn wallet_history(
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, Option<u64>>(1)?,
                     row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, Option<u64>>(3)?,
-                    row.get::<_, u64>(4)?,
-                    row.get::<_, u64>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute send query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, timestamp, fee, external_value, total_value, ext_address, has_external, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, fee_paid, account_balance_delta, ext_address, memo_bytes) =
                 row.map_err(|e| CoreError::Crypto(format!("send row: {e}")))?;
             txid_bytes.reverse();
-            // has_external = 1 means at least one output went to an external
-            // recipient. The displayed amount is what left the wallet to that
-            // recipient (external_value), not the change. With no external
-            // output it is a self-transfer (consolidation); fall back to the
-            // full value so the row isn't shown as "0 ZEC".
-            let is_self_transfer = has_external == 0;
-            let amount = if is_self_transfer { total_value } else { external_value };
+            // account_balance_delta < 0 (guaranteed by the WHERE clause) is the
+            // total decrease in our balance: amount sent externally + fee.
+            let debit = account_balance_delta.unsigned_abs();
+            let fee = fee_paid.map(|f| f.max(0) as u64).unwrap_or(0);
+            let amount = debit.saturating_sub(fee);
             records.push(TxRecord {
                 txid: hex::encode(&txid_bytes),
                 block_height,
                 timestamp,
-                direction: if is_self_transfer { "self".to_string() } else { "send".to_string() },
+                direction: "send".to_string(),
                 amount_zatoshis: amount,
-                fee_zatoshis: fee,
+                fee_zatoshis: fee_paid.map(|f| f.max(0) as u64),
                 memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
                 recipient: ext_address,
             });
