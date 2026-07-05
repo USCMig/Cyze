@@ -53,6 +53,23 @@ pub struct Settings {
     /// (10 min); `Some(0)` disables auto-lock entirely.
     #[serde(default)]
     pub auto_lock_minutes: Option<u64>,
+    /// Rotating receive-address state per group (keyed by group id). Tracks the
+    /// diversifier index currently handed out and the received-note count when
+    /// it was issued, so the address rotates once it has plausibly been used.
+    #[serde(default)]
+    pub receive_state: HashMap<String, ReceiveState>,
+}
+
+/// Per-group rotating receive-address bookkeeping (#3). Non-secret; the actual
+/// address is derived on demand from the group's public `ak` at `index`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReceiveState {
+    /// Diversifier index of the address currently handed out for this group.
+    pub index: u32,
+    /// Orchard received-note count at the moment `index` was issued. When the
+    /// live count exceeds this, the shown address may have been paid and is
+    /// rotated to the next index.
+    pub baseline_notes: u64,
 }
 
 /// Keystore contents held in memory while unlocked. The unlocked

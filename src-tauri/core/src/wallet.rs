@@ -992,6 +992,37 @@ pub struct TxRecord {
 /// clean transaction-list API on `WalletRead`. The tables queried are stable
 /// parts of `zcash_client_sqlite`'s schema: `transactions`, `accounts`,
 /// `orchard_received_notes`, and `sent_notes`.
+/// Total number of Orchard notes this group has ever received. Used as a coarse
+/// "wallet activity" signal to decide when to rotate the receive address (#3):
+/// once the count grows, the currently-shown address may have been paid, so the
+/// next view hands out a fresh diversifier. Returns 0 when no wallet db exists.
+pub fn count_orchard_received_notes(
+    data_dir: &Path,
+    group_id: &str,
+    db_key: &[u8],
+) -> Result<u64, CoreError> {
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let plaintext = is_plaintext_sqlite(&db_path)?;
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    if !plaintext {
+        conn.execute_batch(&key_pragma(db_key))
+            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    }
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM orchard_received_notes", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| CoreError::Crypto(format!("count received notes: {e}")))?;
+    Ok(count.max(0) as u64)
+}
+
 pub fn wallet_history(
     data_dir: &Path,
     group_id: &str,

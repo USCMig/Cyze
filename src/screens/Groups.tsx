@@ -16,6 +16,8 @@ import {
   walletPrepareSend,
   walletSend,
   walletHistory,
+  walletReceiveAddress,
+  walletNewReceiveAddress,
   AppError,
   DraftTransaction,
   TxRecord,
@@ -204,11 +206,25 @@ function validateRecipient(
   return null;
 }
 
-/** Receive / shield-into-group card: shows the group's Orchard unified address.
- *  "Shielding" into the group means sending funds to this address from a
- *  personal wallet — the group then holds them as spendable Orchard. */
-function ReceiveShieldCard({ address }: { address: string | null }) {
+/** Receive / shield-into-group card: shows the group's *rotating* Orchard
+ *  unified address. Each address is a fresh diversifier of the same viewing key
+ *  (#3), so incoming payments aren't linkable by a reused address. The address
+ *  auto-advances once the group has received new notes; the user can also force
+ *  a fresh one. "Shielding" into the group means sending to this address from a
+ *  personal wallet — the group then holds the funds as spendable Orchard. */
+function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: string | null }) {
+  const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
+  const recv = useQuery({
+    queryKey: ["receive-address", groupId],
+    queryFn: () => walletReceiveAddress(groupId),
+  });
+  const rotate = useMutation({
+    mutationFn: () => walletNewReceiveAddress(groupId),
+    onSuccess: (r) => queryClient.setQueryData(["receive-address", groupId], r),
+  });
+
+  const address = recv.data?.address ?? fallback;
   if (!address) return null;
   return (
     <div className="card" style={{ marginTop: 14, background: "var(--bg-elevated)" }}>
@@ -219,19 +235,40 @@ function ReceiveShieldCard({ address }: { address: string | null }) {
         threshold. To <strong>shield</strong> transparent funds, send them here
         from a personal wallet — the receive itself is the shielding step.
       </p>
-      <label>Group Orchard unified address</label>
+      <label>
+        Group Orchard unified address
+        {recv.data != null && (
+          <span className="dim" style={{ fontWeight: 400 }}>
+            {" "}
+            — address #{recv.data.index + 1}
+          </span>
+        )}
+      </label>
       <div className="mono">{address}</div>
-      <button
-        className="secondary"
-        style={{ marginTop: 6 }}
-        onClick={async () => {
-          await navigator.clipboard.writeText(address);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        }}
-      >
-        {copied ? "Copied!" : "Copy address"}
-      </button>
+      <div className="row" style={{ gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+        <button
+          className="secondary"
+          onClick={async () => {
+            await navigator.clipboard.writeText(address);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? "Copied!" : "Copy address"}
+        </button>
+        <button
+          className="secondary"
+          onClick={() => rotate.mutate()}
+          disabled={rotate.isPending}
+        >
+          {rotate.isPending ? "Generating…" : "Generate fresh address"}
+        </button>
+      </div>
+      <p className="dim" style={{ fontSize: 12, marginTop: 8 }}>
+        For best privacy use a fresh address for each incoming payment — reusing a
+        shielded address lets an observer link your deposits. This address rotates
+        automatically once it has been paid.
+      </p>
     </div>
   );
 }
@@ -535,7 +572,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           </div>
 
           {/* Receive / Shield tab */}
-          {walletTab === "receive" && <ReceiveShieldCard address={s.address} />}
+          {walletTab === "receive" && (
+            <ReceiveShieldCard groupId={group.id} fallback={s.address} />
+          )}
 
           {/* Send / Unshield tab */}
           {walletTab === "send" && (

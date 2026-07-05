@@ -181,6 +181,62 @@ pub async fn wallet_history(
     Ok(wallet::wallet_history(&state.data_dir, &group_id, db_key.as_ref())?)
 }
 
+/// A rotating receive address plus the diversifier index it was derived at.
+#[derive(Serialize)]
+pub struct ReceiveAddress {
+    pub address: String,
+    pub index: u32,
+}
+
+/// Resolve the diversifier index to hand out for a group, rotating past the
+/// current one when the wallet has received new notes since it was issued (#3),
+/// then derive and return the corresponding Orchard receive address. When
+/// `force_new` is set, always advance to a fresh index.
+async fn resolve_receive_address(
+    state: &AppState,
+    group_id: &str,
+    force_new: bool,
+) -> AppResult<ReceiveAddress> {
+    let (network, _url, _ufvk) = group_wallet_ctx(state, group_id).await?;
+    let db_key = state.wallet_db_key(group_id).await?;
+    let current_notes =
+        wallet::count_orchard_received_notes(&state.data_dir, group_id, db_key.as_ref())?;
+
+    let mut settings = state.load_settings();
+    let entry = settings.receive_state.entry(group_id.to_string()).or_default();
+    // Rotate when explicitly asked, or when the address may have been used
+    // (received-note count grew since it was issued).
+    if force_new || current_notes > entry.baseline_notes {
+        entry.index = entry.index.saturating_add(1);
+        entry.baseline_notes = current_notes;
+    }
+    let index = entry.index;
+    state.save_settings(&settings)?;
+
+    let address =
+        frost_app_core::zcash::derive_orchard_address_at(group_id, network.network_type(), index)?;
+    Ok(ReceiveAddress { address, index })
+}
+
+/// The group's current rotating receive address. Advances automatically if the
+/// previous address has plausibly been paid since it was issued.
+#[tauri::command]
+pub async fn wallet_receive_address(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> AppResult<ReceiveAddress> {
+    resolve_receive_address(&state, &group_id, false).await
+}
+
+/// Force a brand-new receive address for the group (manual rotation).
+#[tauri::command]
+pub async fn wallet_new_receive_address(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> AppResult<ReceiveAddress> {
+    resolve_receive_address(&state, &group_id, true).await
+}
+
 /// Build (but do not sign or broadcast) an Orchard transfer, returning the
 /// draft PCZT and the sighash the group must FROST-sign. Moves no funds.
 #[tauri::command]

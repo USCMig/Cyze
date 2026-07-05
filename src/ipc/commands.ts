@@ -145,6 +145,17 @@ export interface TxRecord {
 export const walletHistory = (groupId: string) =>
   invoke<TxRecord[]>("wallet_history", { groupId });
 
+export interface ReceiveAddress {
+  address: string;
+  index: number;
+}
+/** The group's current rotating receive address (auto-advances after use). */
+export const walletReceiveAddress = (groupId: string) =>
+  invoke<ReceiveAddress>("wallet_receive_address", { groupId });
+/** Force a fresh receive address for the group (manual rotation). */
+export const walletNewReceiveAddress = (groupId: string) =>
+  invoke<ReceiveAddress>("wallet_new_receive_address", { groupId });
+
 export interface SpendToSign {
   index: number;
   alpha_hex: string;
