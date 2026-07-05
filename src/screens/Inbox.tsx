@@ -27,6 +27,14 @@ interface SigningContext {
   memo: string | null;
   is_unshield: boolean;
   network: string;
+  /** Shared across every note-signing round of one transaction (#2). */
+  plan_id?: string;
+  /** 1-based index of the note being signed within the transaction plan. */
+  spend_index?: number;
+  /** Total notes in this transaction plan. */
+  spend_total?: number;
+  /** The shared transaction sighash every note in the plan signs. */
+  tx_sighash?: string;
 }
 
 /** Format zatoshis as a ZEC amount (1 ZEC = 100,000,000 zatoshis). */
@@ -139,6 +147,34 @@ export default function Inbox() {
                   <p className="error" style={{ fontWeight: 600 }}>
                     Review carefully — approving produces your signature share.
                   </p>
+
+                  {txContext?.plan_id &&
+                    (txContext.spend_total ?? 1) > 1 && (
+                      <div
+                        className="card"
+                        style={{
+                          marginBottom: 10,
+                          padding: "8px 12px",
+                          background: "var(--bg-elevated)",
+                          fontSize: 12,
+                        }}
+                      >
+                        <div>
+                          <span className="badge blue">
+                            Note {txContext.spend_index} of {txContext.spend_total}
+                          </span>{" "}
+                          of one transaction
+                        </div>
+                        <div className="dim" style={{ marginTop: 4 }}>
+                          This transaction spends {txContext.spend_total} notes; you
+                          will receive one approval request per note. All share
+                          transaction plan{" "}
+                          <span className="mono">{txContext.plan_id.slice(0, 8)}…</span>{" "}
+                          and sign the same transaction — approve all of them, or
+                          none.
+                        </div>
+                      </div>
+                    )}
 
                   {txContext ? (
                     <>

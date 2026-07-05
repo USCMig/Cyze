@@ -24,6 +24,24 @@ pub struct SigningContext {
     pub is_unshield: bool,
     /// Zcash network the transaction targets ("test" or "main").
     pub network: String,
+    /// Transaction-plan identifier shared by every per-note signing round of a
+    /// single transaction. A multi-note spend runs one FROST round per note,
+    /// each in its own session; they all carry the same `plan_id` so a
+    /// participant can confirm the separate approval requests they receive all
+    /// belong to the *same* transaction rather than to unrelated spends.
+    #[serde(default)]
+    pub plan_id: String,
+    /// 1-based index of the note being signed within this transaction plan.
+    #[serde(default)]
+    pub spend_index: u32,
+    /// Total number of notes (spend-authorization rounds) in this plan.
+    #[serde(default)]
+    pub spend_total: u32,
+    /// The full transaction sighash (hex) that every note in this plan signs.
+    /// Identical across all rounds of the plan; lets a participant verify that
+    /// each request they approve is signing the one shared transaction.
+    #[serde(default)]
+    pub tx_sighash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
