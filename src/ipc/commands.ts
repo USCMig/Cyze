@@ -221,8 +221,8 @@ export const testServerConnection = (url: string) =>
   invoke<ConnectionTestResult>("test_server_connection", { url });
 export const trustServerCert = (url: string, certPem: string) =>
   invoke<string>("trust_server_cert", { url, certPem });
-export const startSidecar = (port: number | null) =>
-  invoke<SidecarStatus>("start_sidecar", { port });
+export const startSidecar = (port: number | null, bindLan?: boolean) =>
+  invoke<SidecarStatus>("start_sidecar", { port, bindLan: bindLan ?? null });
 export const stopSidecar = () => invoke<void>("stop_sidecar");
 export const sidecarStatus = () => invoke<SidecarStatus>("sidecar_status");
 export const exportSidecarCert = () => invoke<string>("export_sidecar_cert");

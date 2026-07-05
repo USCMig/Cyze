@@ -20,6 +20,7 @@ import Dashboard from "./screens/Dashboard";
 import Contacts from "./screens/Contacts";
 import Groups, { GroupDetail, GroupWalletPage } from "./screens/Groups";
 import ServerSettings from "./screens/ServerSettings";
+import SessionSetup from "./screens/SessionSetup";
 import DkgWizard from "./screens/DkgWizard";
 import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
@@ -100,6 +101,7 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   {
     title: "1 · Setup",
     links: [
+      { to: "/setup", label: "Session Setup" },
       { to: "/server", label: "Server" },
       { to: "/contacts", label: "Contacts" },
       { to: "/dkg", label: "New DKG" },
@@ -212,6 +214,7 @@ const router = createBrowserRouter([
       { path: "inbox", element: <Inbox /> },
       { path: "wallet", element: <Wallet /> },
       { path: "server", element: <ServerSettings /> },
+      { path: "setup", element: <SessionSetup /> },
     ],
   },
 ]);
