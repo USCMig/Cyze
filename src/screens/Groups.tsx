@@ -852,6 +852,82 @@ const SEND_PHASES: { key: string; label: string }[] = [
 /** Active signing session for a transaction: persisted session id (to convey to
  *  signers / find in their inbox) plus a live step-by-step status. Survives
  *  navigation because it reads from the ceremony store. */
+/** Session-visibility roster (#4): shows each selected signer for an active
+ *  send with their live status — waiting, joined (sent a round-1 commitment),
+ *  or approved (signed the transaction plan). The coordinator (this user) signs
+ *  locally and is shown distinctly. */
+function SessionParticipants({
+  signers,
+  participants,
+  done,
+}: {
+  signers: string[];
+  participants: Record<string, "joined" | "approved"> | undefined;
+  done: boolean;
+}) {
+  const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity });
+  const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  if (!signers.length) return null;
+
+  const badgeFor = (
+    status: "coordinator" | "waiting" | "joined" | "approved"
+  ): { label: string; cls: string } => {
+    switch (status) {
+      case "coordinator":
+        return { label: "Coordinator (you)", cls: "blue" };
+      case "joined":
+        return { label: "Joined", cls: "blue" };
+      case "approved":
+        return { label: "Approved ✓", cls: "green" };
+      default:
+        return { label: "Waiting…", cls: "" };
+    }
+  };
+
+  const approvedCount = signers.filter((pk) => {
+    const p = resolveParticipant(pk, identity.data, contacts.data);
+    return p.isSelf ? done : participants?.[pk] === "approved";
+  }).length;
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <label>
+        Participants{" "}
+        <span className="dim" style={{ fontWeight: 400 }}>
+          — {approvedCount}/{signers.length} approved
+        </span>
+      </label>
+      <table className="participants">
+        <tbody>
+          {signers.map((pubkey) => {
+            const p = resolveParticipant(pubkey, identity.data, contacts.data);
+            const status: "coordinator" | "waiting" | "joined" | "approved" =
+              p.isSelf
+                ? done
+                  ? "approved"
+                  : "coordinator"
+                : participants?.[pubkey] ?? "waiting";
+            const badge = badgeFor(status);
+            return (
+              <tr key={pubkey}>
+                <td style={{ color: p.isSelf ? "var(--ok)" : undefined }}>
+                  {p.label}
+                  <div className="dim mono" style={{ fontSize: 11 }}>
+                    {p.shortPubkey}
+                  </div>
+                </td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function SendSessionPanel({
   ceremonyId,
   ceremony,
@@ -953,6 +1029,14 @@ function SendSessionPanel({
         </>
       ) : (
         <div className="dim">Creating session…</div>
+      )}
+
+      {meta?.signers && meta.signers.length > 0 && (
+        <SessionParticipants
+          signers={meta.signers}
+          participants={ceremony.participants}
+          done={done}
+        />
       )}
 
       <label style={{ marginTop: 12 }}>Progress</label>

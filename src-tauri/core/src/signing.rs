@@ -197,7 +197,13 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
             let msg = cipher
                 .decrypt(msg)
                 .map_err(|e| CoreError::Crypto(e.to_string()))?;
+            // Attribute the round-1 commitment to its sender so the session-
+            // visibility UI can mark that participant as joined (#4).
+            let sender_hex = hex::encode(&msg.sender.0);
             state.recv(msg).map_err(cerr)?;
+            let _ = events
+                .send(CoordinatorEvent::ParticipantJoined { pubkey: sender_hex })
+                .await;
         }
         if state.has_commitments() {
             break;
@@ -287,7 +293,13 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
             let msg = cipher
                 .decrypt(msg)
                 .map_err(|e| CoreError::Crypto(e.to_string()))?;
+            // Attribute the round-2 share to its sender: they have approved and
+            // signed the pending transaction plan (#4).
+            let sender_hex = hex::encode(&msg.sender.0);
             state.recv(msg).map_err(cerr)?;
+            let _ = events
+                .send(CoordinatorEvent::ParticipantApproved { pubkey: sender_hex })
+                .await;
         }
         if state.has_signature_shares() {
             break;

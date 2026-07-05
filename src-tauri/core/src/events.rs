@@ -72,6 +72,14 @@ pub enum CoordinatorEvent {
     SigningPackageSent,
     WaitingForShares,
     Aggregating,
+    /// A selected signer sent their round-1 commitment — i.e. they have joined
+    /// the session and are participating. `pubkey` is their hex comm pubkey.
+    /// Used by the session-visibility UI to show live connection status.
+    ParticipantJoined { pubkey: String },
+    /// A selected signer sent their round-2 signature share — i.e. they have
+    /// approved and signed the pending transaction plan. `pubkey` is their hex
+    /// comm pubkey.
+    ParticipantApproved { pubkey: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

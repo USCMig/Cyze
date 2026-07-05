@@ -56,6 +56,11 @@ export interface CeremonyState {
    *  (1-based) and how many in total. Sticky across the per-spend ceremonies. */
   spendIndex?: number;
   spendTotal?: number;
+  /** Live per-participant status for the session-visibility UI (#4), keyed by
+   *  hex comm pubkey. "joined" = sent a round-1 commitment; "approved" = sent a
+   *  round-2 signature share (approved the transaction plan). Accumulated across
+   *  all parallel note rounds; never downgraded. */
+  participants?: Record<string, "joined" | "approved">;
   /** When the ceremony was started (ms epoch), for ordering history. */
   startedAt?: number;
 }
@@ -136,14 +141,36 @@ export const useCeremonies = create<CeremoniesStore>()(
       onProgress: (kind, payload) =>
         set((s) => {
           const prev = s.ceremonies[payload.ceremony_id];
+          const phase = payload.event?.phase;
+
+          // Accumulate per-participant status (#4). "approved" (round-2 share)
+          // outranks "joined" (round-1 commitment) and is never downgraded, so
+          // the roster only advances forward across the parallel note rounds.
+          let participants = prev?.participants;
+          if (phase === "participant_joined" || phase === "participant_approved") {
+            const pubkey = payload.event?.pubkey as string | undefined;
+            if (pubkey) {
+              const next = phase === "participant_approved" ? "approved" : "joined";
+              const cur = participants?.[pubkey];
+              if (cur !== "approved") {
+                participants = { ...(participants ?? {}), [pubkey]: next };
+              }
+            }
+          }
+
+          // Per-participant events are status pings, not real phase changes:
+          // keep the ceremony's displayed phase on the last substantive event.
+          const isParticipantPing =
+            phase === "participant_joined" || phase === "participant_approved";
           return {
             ceremonies: {
               ...s.ceremonies,
               [payload.ceremony_id]: {
                 ...prev,
                 kind,
-                phase: payload.event?.phase ?? "working",
-                detail: payload.event,
+                phase: isParticipantPing ? prev?.phase ?? "working" : phase ?? "working",
+                detail: isParticipantPing ? prev?.detail : payload.event,
+                participants,
                 // Keep the session id once it appears; later phases omit it.
                 sessionId: payload.event?.session_id ?? prev?.sessionId,
                 // Multi-spend marker is sticky across the per-spend ceremonies.
