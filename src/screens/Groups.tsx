@@ -16,6 +16,7 @@ import {
   walletPrepareSend,
   walletSend,
   walletHistory,
+  walletNotes,
   walletReceiveAddress,
   walletNewReceiveAddress,
   AppError,
@@ -273,7 +274,135 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
   );
 }
 
-type WalletTab = "receive" | "send";
+type WalletTab = "receive" | "send" | "notes";
+
+/** "Review Notes" tab: lists the unspent Orchard notes that make up the
+ *  balance. Because each note is one spend authorization (one FROST round per
+ *  signer), this also surfaces the round-cost of a full-balance send and offers
+ *  a one-click self-send consolidation to merge fragmented notes into one. */
+function ReviewNotesTab({
+  groupId,
+  onConsolidate,
+  consolidatePending,
+  disabledReason,
+}: {
+  groupId: string;
+  onConsolidate: () => void;
+  consolidatePending: boolean;
+  disabledReason: string | null;
+}) {
+  const notes = useQuery({
+    queryKey: ["wallet-notes", groupId],
+    queryFn: () => walletNotes(groupId),
+    refetchInterval: 15_000,
+  });
+  const list = notes.data ?? [];
+  const spendable = list.filter((n) => n.status === "spendable");
+  const pending = list.filter((n) => n.status !== "spendable");
+  const totalSpendable = spendable.reduce((a, n) => a + n.value_zatoshis, 0);
+  const rounds = spendable.length;
+  const canConsolidate = spendable.length >= 2 && !disabledReason;
+
+  const badge = (s: string) =>
+    s === "spendable"
+      ? { cls: "green", label: "spendable" }
+      : s === "spending"
+        ? { cls: "blue", label: "spending" }
+        : { cls: "", label: "pending" };
+
+  return (
+    <div className="card" style={{ marginTop: 14, background: "var(--bg-elevated)" }}>
+      <h3 style={{ marginTop: 0 }}>Notes in this wallet</h3>
+      {notes.isLoading ? (
+        <p className="dim">Loading notes…</p>
+      ) : list.length === 0 ? (
+        <p className="dim">
+          No notes yet — this wallet hasn't received any funds. Notes appear here
+          once a deposit confirms.
+        </p>
+      ) : (
+        <>
+          <p className="dim" style={{ marginTop: 0 }}>
+            Your balance is made of <strong>{spendable.length}</strong> spendable
+            note{spendable.length === 1 ? "" : "s"}
+            {pending.length > 0 && <> (plus {pending.length} pending)</>}, totalling{" "}
+            <strong>{zec(totalSpendable)} ZEC</strong> spendable. Each note is a
+            separate spend authorization, so a full-balance send needs{" "}
+            <strong>
+              {rounds} signing round{rounds === 1 ? "" : "s"}
+            </strong>{" "}
+            — one approval per note for every signer.
+          </p>
+
+          {spendable.length >= 2 && (
+            <div className="callout" style={{ marginBottom: 12 }}>
+              <span>
+                <strong>Consolidate</strong> merges these {spendable.length} notes
+                into a single note with one self-send to the group's own address.
+                Future transactions then need only one signing round. It costs a
+                small network fee and one signing ceremony now.
+              </span>
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={onConsolidate}
+                  disabled={!canConsolidate || consolidatePending}
+                >
+                  {consolidatePending
+                    ? "Preparing…"
+                    : `Consolidate ${spendable.length} notes → 1`}
+                </button>
+                {disabledReason && (
+                  <span className="dim" style={{ marginLeft: 10, fontSize: 12 }}>
+                    {disabledReason}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          <table className="participants" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Value</th>
+                <th style={{ textAlign: "left", paddingBottom: 6 }}>Status</th>
+                <th style={{ textAlign: "right", paddingBottom: 6 }}>Confirmations</th>
+                <th style={{ textAlign: "left", paddingBottom: 6, paddingLeft: 12 }}>
+                  From tx
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((n, i) => {
+                const b = badge(n.status);
+                return (
+                  <tr key={n.received_txid + i}>
+                    <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {zec(n.value_zatoshis)} ZEC
+                    </td>
+                    <td>
+                      <span className={`badge ${b.cls}`}>{b.label}</span>
+                      {n.is_change && (
+                        <span className="dim" style={{ fontSize: 11, marginLeft: 6 }}>
+                          change
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {n.status === "pending" ? "—" : n.confirmations}
+                    </td>
+                    <td className="dim mono" style={{ fontSize: 11, paddingLeft: 12 }}>
+                      {n.received_txid.slice(0, 12)}…
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** Per-group Zcash wallet: view-only account, receive address, balance. */
 function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
@@ -304,6 +433,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       setLastSynced(new Date());
       queryClient.setQueryData(["wallet-status", group.id], s);
       queryClient.invalidateQueries({ queryKey: ["wallet-history", group.id] });
+      queryClient.invalidateQueries({ queryKey: ["wallet-notes", group.id] });
     },
     onError: (e) => {
       setErr((e as unknown as AppError).message);
@@ -541,14 +671,16 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               flexWrap: "wrap",
             }}
           >
-            {(["receive", "send"] as WalletTab[]).map((tab) => {
+            {(["receive", "send", "notes"] as WalletTab[]).map((tab) => {
               const active = walletTab === tab;
               const label =
                 tab === "receive"
                   ? "Receive / Shield"
-                  : activeSend && !activeSend.done
-                    ? "Send / Unshield ●"
-                    : "Send / Unshield";
+                  : tab === "notes"
+                    ? "Review Notes"
+                    : activeSend && !activeSend.done
+                      ? "Send / Unshield ●"
+                      : "Send / Unshield";
               return (
                 <button
                   key={tab}
@@ -574,6 +706,25 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           {/* Receive / Shield tab */}
           {walletTab === "receive" && (
             <ReceiveShieldCard groupId={group.id} fallback={s.address} />
+          )}
+
+          {/* Review Notes tab */}
+          {walletTab === "notes" && (
+            <ReviewNotesTab
+              groupId={group.id}
+              onConsolidate={() => {
+                consolidate.mutate();
+                setWalletTab("send");
+              }}
+              consolidatePending={consolidate.isPending}
+              disabledReason={
+                activeSend && !activeSend.done
+                  ? "A transaction is already in progress."
+                  : (status.data?.spendable_zatoshis ?? 0) <= CONSOLIDATE_FEE_BUFFER
+                    ? "Balance too low to consolidate."
+                    : null
+              }
+            />
           )}
 
           {/* Send / Unshield tab */}

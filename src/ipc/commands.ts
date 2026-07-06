@@ -151,6 +151,20 @@ export interface TxRecord {
 export const walletHistory = (groupId: string) =>
   invoke<TxRecord[]>("wallet_history", { groupId });
 
+export interface NoteRecord {
+  received_txid: string;
+  value_zatoshis: number;
+  /** "spendable" | "pending" | "spending" */
+  status: string;
+  received_height: number | null;
+  confirmations: number;
+  is_change: boolean;
+  memo: string | null;
+}
+/** Unspent Orchard notes comprising the group's balance (Review Notes view). */
+export const walletNotes = (groupId: string) =>
+  invoke<NoteRecord[]>("wallet_notes", { groupId });
+
 export interface ReceiveAddress {
   address: string;
   index: number;

@@ -1023,6 +1023,127 @@ pub fn count_orchard_received_notes(
     Ok(count.max(0) as u64)
 }
 
+/// A single unspent Orchard note that makes up part of the group's balance.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteRecord {
+    /// Receiving transaction id (hex, display order) the note arrived in.
+    pub received_txid: String,
+    /// Note value in zatoshis.
+    pub value_zatoshis: u64,
+    /// `"spendable"` (confirmed, unspent), `"pending"` (unconfirmed incoming),
+    /// or `"spending"` (a broadcast-but-unmined send is consuming it).
+    pub status: String,
+    /// Block height the note was received at; `None` while unconfirmed.
+    pub received_height: Option<u64>,
+    /// Confirmations so far (chain tip − received height + 1); 0 if unconfirmed.
+    pub confirmations: u64,
+    /// True when this note is change returned to the group by one of its sends.
+    pub is_change: bool,
+    /// Decoded memo, if any.
+    pub memo: Option<String>,
+}
+
+/// List the unspent Orchard notes that comprise the group's balance, newest/
+/// largest first. Notes already spent in a mined transaction are excluded.
+/// Powers the "Review Notes" view: each note is one spend authorization, so the
+/// count is also the number of FROST signing rounds a full-balance send needs.
+pub fn wallet_notes(
+    data_dir: &Path,
+    group_id: &str,
+    db_key: &[u8],
+) -> Result<Vec<NoteRecord>, CoreError> {
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+    let plaintext = is_plaintext_sqlite(&db_path)?;
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    if !plaintext {
+        conn.execute_batch(&key_pragma(db_key))
+            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    }
+
+    use rusqlite::OptionalExtension;
+    let account_id: Option<i64> = conn
+        .query_row("SELECT id FROM accounts LIMIT 1", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| CoreError::Crypto(format!("get account id: {e}")))?;
+    let Some(account_id) = account_id else {
+        return Ok(vec![]);
+    };
+    let tip: Option<i64> = conn
+        .query_row("SELECT MAX(height) FROM blocks", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| CoreError::Crypto(format!("chain tip: {e}")))?
+        .flatten();
+    let tip = tip.unwrap_or(0);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.txid, orn.value, orn.is_change, orn.memo, t.mined_height, \
+             MAX(CASE WHEN spend_t.mined_height IS NOT NULL THEN 1 ELSE 0 END) AS spent_mined, \
+             MAX(CASE WHEN s.orchard_received_note_id IS NOT NULL THEN 1 ELSE 0 END) AS has_spend \
+             FROM orchard_received_notes orn \
+             JOIN transactions t ON orn.transaction_id = t.id_tx \
+             LEFT JOIN orchard_received_note_spends s ON s.orchard_received_note_id = orn.id \
+             LEFT JOIN transactions spend_t ON spend_t.id_tx = s.transaction_id \
+             WHERE orn.account_id = ?1 \
+             GROUP BY orn.id \
+             ORDER BY orn.value DESC",
+        )
+        .map_err(|e| CoreError::Crypto(format!("prepare notes query: {e}")))?;
+
+    let rows = stmt
+        .query_map([account_id], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, Option<u64>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(|e| CoreError::Crypto(format!("execute notes query: {e}")))?;
+
+    let mut notes = Vec::new();
+    for row in rows {
+        let (mut txid_bytes, value, is_change, memo_bytes, received_height, spent_mined, has_spend) =
+            row.map_err(|e| CoreError::Crypto(format!("note row: {e}")))?;
+        // A note spent in a mined transaction is gone — not part of the balance.
+        if spent_mined == 1 {
+            continue;
+        }
+        txid_bytes.reverse();
+        let confirmations = match received_height {
+            Some(h) if tip as u64 >= h => tip as u64 - h + 1,
+            _ => 0,
+        };
+        let status = if received_height.is_none() {
+            "pending" // incoming, not yet mined
+        } else if has_spend == 1 {
+            "spending" // a broadcast-but-unmined send is consuming it
+        } else {
+            "spendable"
+        };
+        notes.push(NoteRecord {
+            received_txid: hex::encode(&txid_bytes),
+            value_zatoshis: value,
+            status: status.to_string(),
+            received_height,
+            confirmations,
+            is_change: is_change != 0,
+            memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
+        });
+    }
+    Ok(notes)
+}
+
 pub fn wallet_history(
     data_dir: &Path,
     group_id: &str,

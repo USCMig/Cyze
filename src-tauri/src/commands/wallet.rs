@@ -181,6 +181,18 @@ pub async fn wallet_history(
     Ok(wallet::wallet_history(&state.data_dir, &group_id, db_key.as_ref())?)
 }
 
+/// The unspent Orchard notes that make up the group's balance (for the "Review
+/// Notes" view). Each note is one spend authorization / FROST signing round.
+#[tauri::command]
+pub async fn wallet_notes(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> AppResult<Vec<wallet::NoteRecord>> {
+    group_wallet_ctx(&state, &group_id).await?;
+    let db_key = state.wallet_db_key(&group_id).await?;
+    Ok(wallet::wallet_notes(&state.data_dir, &group_id, db_key.as_ref())?)
+}
+
 /// A rotating receive address plus the diversifier index it was derived at.
 #[derive(Serialize)]
 pub struct ReceiveAddress {
