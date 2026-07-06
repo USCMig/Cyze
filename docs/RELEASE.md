@@ -77,9 +77,14 @@ Review and publish the draft release in the GitHub UI.
 
 Unsigned builds run but trigger OS warnings (macOS Gatekeeper, Windows
 SmartScreen). To ship signed builds, add these repository **secrets** — the
-release workflow already wires them, and skips signing cleanly if they're unset.
+release workflow enables macOS signing automatically **only when
+`APPLE_CERTIFICATE` is set** (it builds unsigned otherwise; empty signing env
+vars would make Tauri attempt and fail a keychain import, so it's opt-in).
 
 ### macOS (notarized)
+
+Add all six as repository secrets; the `Enable Apple code signing` step turns
+signing on when `APPLE_CERTIFICATE` is present.
 
 | Secret | What it is |
 | --- | --- |

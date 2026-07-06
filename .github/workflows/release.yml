@@ -96,23 +96,29 @@ jobs:
           cp "target/${{ matrix.target }}/release/frostd${EXT}" \
              "$GITHUB_WORKSPACE/src-tauri/binaries/frostd-${{ matrix.target }}${EXT}"
 
-      # --- Bundle + sign + attach to the release --------------------------
+      # Enable Apple code signing + notarization ONLY when the certificate
+      # secret is actually configured. Passing empty APPLE_* env vars makes
+      # Tauri attempt (and fail) a keychain import, so we opt in explicitly and
+      # produce an unsigned build otherwise. See docs/RELEASE.md to set these.
+      - name: Enable Apple code signing
+        if: ${{ startsWith(matrix.os, 'macos') && secrets.APPLE_CERTIFICATE != '' }}
+        run: |
+          {
+            echo "APPLE_CERTIFICATE<<EOF"
+            echo "${{ secrets.APPLE_CERTIFICATE }}"
+            echo "EOF"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
+      # --- Bundle + attach to the release ---------------------------------
       - name: Build & bundle app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing + notarization. Unset -> an unsigned build is
-          # produced (fine for local/testing, Gatekeeper will warn). Set these
-          # repository secrets to ship a notarized .dmg/.app:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater signing key (optional; enables signed auto-updates).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.target }}
           tagName: ${{ github.ref_name }}
