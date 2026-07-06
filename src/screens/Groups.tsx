@@ -1233,10 +1233,16 @@ function SendSessionPanel({
       <label style={{ marginTop: 12 }}>Progress</label>
       {!done && !failed && (ceremony.spendTotal ?? 1) > 1 && (
         <p className="dim" style={{ marginTop: 0 }}>
-          Signing note {ceremony.spendIndex ?? 1} of {ceremony.spendTotal} — notes
-          are signed one at a time, each a separate session/approval in signers'
-          inboxes. The Session ID above is for the note currently being signed;
-          signers approve each note in turn.
+          <strong style={{ color: "var(--accent)" }}>
+            Signing note {ceremony.spendIndex ?? 1} of {ceremony.spendTotal}
+          </strong>{" "}
+          — notes are signed one at a time, each a separate session/approval in
+          signers' inboxes.{" "}
+          <strong style={{ color: "var(--accent)" }}>
+            Each note uses a new Session ID (shown above) that must be provided to
+            any FROST CLI signers for that note.
+          </strong>{" "}
+          Signers approve each note in turn.
         </p>
       )}
       {/* Stuck warning: shown after 10 minutes with no completion. */}
