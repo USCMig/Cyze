@@ -25,6 +25,10 @@ jobs:
           - os: macos-13 # Intel
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
+    env:
+      # `secrets` can't be used in a step `if:`, so surface whether the Apple
+      # signing cert is configured as a job-level boolean the steps can gate on.
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +105,7 @@ jobs:
       # Tauri attempt (and fail) a keychain import, so we opt in explicitly and
       # produce an unsigned build otherwise. See docs/RELEASE.md to set these.
       - name: Enable Apple code signing
-        if: ${{ startsWith(matrix.os, 'macos') && secrets.APPLE_CERTIFICATE != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.HAS_APPLE_CERT == 'true' }}
         run: |
           {
             echo "APPLE_CERTIFICATE<<EOF"
