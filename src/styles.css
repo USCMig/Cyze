@@ -610,8 +610,8 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .profile-slider {
   position: relative;
   display: flex;
-  width: calc(100% - 16px);
-  margin: 0 8px 16px;
+  width: calc(100% - 12px);
+  margin: 0 6px 16px;
   padding: 3px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -633,10 +633,13 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .profile-slider-opt {
   position: relative;
   z-index: 1;
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   text-align: center;
-  padding: 5px 4px;
-  font-size: 12px;
+  padding: 5px 2px;
+  font-size: 11px;
+  letter-spacing: -0.1px;
+  white-space: nowrap;
   color: var(--text-dim);
   transition: color 0.18s ease;
 }

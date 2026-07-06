@@ -1198,7 +1198,7 @@ function SendSessionPanel({
       )}
 
       {ceremony.groupId && (
-        <KeyRow label="Group ID (for CLI signers)" value={ceremony.groupId} />
+        <KeyRow label="Public Key (ak) / Group ID (for CLI signers)" value={ceremony.groupId} />
       )}
 
       <label style={{ marginTop: 12 }}>Session ID</label>
@@ -1355,7 +1355,7 @@ export function GroupKeys({ group, masked = false }: { group: GroupSummary; mask
     <div style={{ marginTop: 10 }}>
       {/* The group id is the group's public verifying key. CLI users need it to
        *  join this group's sessions, so surface it as a labeled, copyable row. */}
-      <KeyRow label="Group ID (share with CLI participants)" value={group.id} masked={masked} />
+      <KeyRow label="Public Key (ak) / Group ID" value={group.id} masked={masked} />
       {orchard && keys.data && (
         <>
           <KeyRow label="Orchard unified address" value={keys.data.address} masked={masked} />
