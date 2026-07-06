@@ -90,6 +90,15 @@ jobs:
           FROST_TOOLS_REV: 3d2985cfbc5df9314f3882a6d693bbe0d711051f
         run: |
           set -euxo pipefail
+          # This step runs under Git-bash so the script is cross-platform, but on
+          # Windows that puts Git's /usr/bin ahead of the MSVC toolchain on PATH.
+          # Rust invokes the linker as bare `link.exe`, which then resolves to
+          # GNU coreutils' `link` (a hardlink tool) instead of MSVC's link.exe,
+          # failing with "extra operand". Remove the coreutils shim so the MSVC
+          # linker (added by msvc-dev-cmd) wins.
+          case "${{ matrix.target }}" in
+            *windows*) rm -f /usr/bin/link /usr/bin/link.exe ;;
+          esac
           git clone --filter=blob:none https://github.com/ZcashFoundation/frost-tools.git "$RUNNER_TEMP/frost-tools"
           cd "$RUNNER_TEMP/frost-tools"
           git checkout "$FROST_TOOLS_REV"
