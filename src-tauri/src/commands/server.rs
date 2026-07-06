@@ -19,6 +19,32 @@ pub async fn set_server_url(state: State<'_, AppState>, url: String) -> AppResul
     state.save_settings(&settings)
 }
 
+/// Save the first-run/session configuration: the active role and, for a
+/// coordinator, how the server is exposed. Marks the session as configured so
+/// the first-run prompt is not shown again.
+#[tauri::command]
+pub async fn set_session_config(
+    state: State<'_, AppState>,
+    role: String,
+    exposure: Option<String>,
+) -> AppResult<()> {
+    let mut settings = state.load_settings();
+    settings.session_role = Some(role);
+    settings.coordinator_exposure = exposure.or(settings.coordinator_exposure);
+    settings.session_configured = Some(true);
+    state.save_settings(&settings)
+}
+
+/// Switch the active session profile (coordinator/participant) from the sidebar
+/// toggle, persisting the choice without altering the saved coordinator/
+/// participant details.
+#[tauri::command]
+pub async fn set_session_role(state: State<'_, AppState>, role: String) -> AppResult<()> {
+    let mut settings = state.load_settings();
+    settings.session_role = Some(role);
+    state.save_settings(&settings)
+}
+
 /// Determine trust for a given server URL: pinned certs for the embedded
 /// sidecar and any TOFU-imported external certs, system roots otherwise.
 pub async fn trust_for(state: &AppState, url: &str) -> ServerTrust {

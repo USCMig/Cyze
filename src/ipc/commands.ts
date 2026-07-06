@@ -32,6 +32,12 @@ export interface Settings {
   server_url: string | null;
   sidecar_port: number | null;
   trusted_certs: Record<string, string>;
+  /** Active session profile: "coordinator" | "participant". */
+  session_role: string | null;
+  /** Coordinator server exposure: "direct" | "tunnel" | "nginx". */
+  coordinator_exposure: string | null;
+  /** True once first-run Session Configuration has been saved. */
+  session_configured: boolean | null;
 }
 
 export interface SidecarStatus {
@@ -228,6 +234,12 @@ export const renameGroup = (id: string, description: string) =>
 // Server / sidecar
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setServerUrl = (url: string) => invoke<void>("set_server_url", { url });
+/** Save the first-run session configuration (role + coordinator exposure). */
+export const setSessionConfig = (role: string, exposure?: string | null) =>
+  invoke<void>("set_session_config", { role, exposure: exposure ?? null });
+/** Switch the active session profile (coordinator/participant). */
+export const setSessionRole = (role: string) =>
+  invoke<void>("set_session_role", { role });
 export const testServerConnection = (url: string) =>
   invoke<ConnectionTestResult>("test_server_connection", { url });
 export const trustServerCert = (url: string, certPem: string) =>

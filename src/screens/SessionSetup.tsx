@@ -11,6 +11,7 @@ import {
   startTunnel,
   stopTunnel,
   setServerUrl,
+  setSessionConfig,
   testServerConnection,
   trustServerCert,
   AppError,
@@ -56,33 +57,53 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 export default function SessionSetup() {
+  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  const savedRole = settings.data?.session_role as Role | null | undefined;
+  const configured = !!settings.data?.session_configured;
+
   const [role, setRole] = useState<Role | null>(null);
+  // Seed the selection from the saved profile once settings load.
+  const effectiveRole = role ?? savedRole ?? null;
 
   return (
     <div>
-      <h2>Session setup</h2>
-      <p className="dim" style={{ marginTop: 0 }}>
-        A FROST ceremony coordinates through one <span className="mono">frostd</span>{" "}
-        server. Set up your side of the session below.
-      </p>
+      <h2>Session Configuration</h2>
+      {!configured ? (
+        <div className="callout" style={{ marginBottom: 12 }}>
+          <span>
+            <strong>Welcome — let's configure your session.</strong> A FROST
+            ceremony coordinates through one <span className="mono">frostd</span>{" "}
+            server. Choose your role and how you'll connect below, then save it.
+            You can change this any time from <em>Zcash → Session Configuration</em>.
+          </span>
+        </div>
+      ) : (
+        <p className="dim" style={{ marginTop: 0 }}>
+          Your saved profile is{" "}
+          <strong>{savedRole === "participant" ? "Participant" : "Coordinator"}</strong>
+          . Update it below and save to change it.
+        </p>
+      )}
 
       <div className="row" style={{ gap: 12, marginTop: 16, flexWrap: "wrap" }}>
         <RoleCard
-          active={role === "coordinator"}
+          active={effectiveRole === "coordinator"}
           onClick={() => setRole("coordinator")}
           title="I'm coordinating"
           desc="Host the server and share how to reach it. You drive the DKG / signing."
         />
         <RoleCard
-          active={role === "participant"}
+          active={effectiveRole === "participant"}
           onClick={() => setRole("participant")}
           title="I'm joining"
           desc="Connect to a coordinator's server using the address they gave you."
         />
       </div>
 
-      {role === "coordinator" && <CoordinatorPath />}
-      {role === "participant" && <ParticipantPath />}
+      {effectiveRole === "coordinator" && (
+        <CoordinatorPath savedExposure={settings.data?.coordinator_exposure ?? null} />
+      )}
+      {effectiveRole === "participant" && <ParticipantPath />}
     </div>
   );
 }
@@ -122,12 +143,25 @@ function RoleCard({
 
 /* ── Coordinator ─────────────────────────────────────────────────────────── */
 
-function CoordinatorPath() {
+function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [bindLan, setBindLan] = useState(false);
-  const [exposure, setExposure] = useState<Exposure>("direct");
+  const [exposure, setExposure] = useState<Exposure>(
+    (savedExposure as Exposure) ?? "direct"
+  );
   const [cert, setCert] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const saveConfig = useMutation({
+    mutationFn: () => setSessionConfig("coordinator", exposure),
+    onSuccess: () => {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+      queryClient.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e) => setError((e as unknown as AppError).message),
+  });
 
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
   const tunnel = useQuery({ queryKey: ["tunnel"], queryFn: tunnelStatus });
@@ -193,47 +227,77 @@ function CoordinatorPath() {
       )}
 
       {running && (
-        <>
-          <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <button className="secondary" onClick={() => stop.mutate()}>
-              Stop server
-            </button>
-          </div>
-
-          <h3 style={{ marginTop: 24 }}>Step 2 — Choose how participants reach it</h3>
-          <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-            <ExposureTab active={exposure === "direct"} onClick={() => setExposure("direct")} label="Direct URL / IP" />
-            <ExposureTab active={exposure === "tunnel"} onClick={() => setExposure("tunnel")} label="Cloudflare Tunnel" />
-            <ExposureTab active={exposure === "nginx"} onClick={() => setExposure("nginx")} label="NGINX reverse proxy" />
-          </div>
-
-          {exposure === "direct" && (
-            <DirectExposure
-              sidecarUrl={sidecar.data?.url ?? null}
-              lanAddresses={sidecar.data?.lan_addresses ?? []}
-              port={port}
-              fingerprint={sidecar.data?.cert_fingerprint ?? null}
-              cert={cert}
-              onExportCert={async () => setCert(await exportSidecarCert())}
-              bindLan={bindLan}
-            />
-          )}
-
-          {exposure === "tunnel" && (
-            <TunnelExposure
-              running={tunnel.data?.running ?? false}
-              publicUrl={tunnel.data?.public_url ?? null}
-              onOpen={() => openTunnel.mutate()}
-              onClose={() => closeTunnel.mutate()}
-              pending={openTunnel.isPending}
-            />
-          )}
-
-          {exposure === "nginx" && <NginxExposure port={port} />}
-
-          <TransportSecurityNote />
-        </>
+        <div className="row" style={{ gap: 8, marginTop: 8 }}>
+          <button className="secondary" onClick={() => stop.mutate()}>
+            Stop server
+          </button>
+        </div>
       )}
+
+      <h3 style={{ marginTop: 24 }}>Step 2 — Choose how participants reach it</h3>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <ExposureTab active={exposure === "direct"} onClick={() => setExposure("direct")} label="Direct URL / IP" />
+        <ExposureTab active={exposure === "tunnel"} onClick={() => setExposure("tunnel")} label="Cloudflare Tunnel" />
+        <ExposureTab active={exposure === "nginx"} onClick={() => setExposure("nginx")} label="NGINX reverse proxy" />
+      </div>
+
+      {exposure === "direct" &&
+        (running ? (
+          <DirectExposure
+            sidecarUrl={sidecar.data?.url ?? null}
+            lanAddresses={sidecar.data?.lan_addresses ?? []}
+            port={port}
+            fingerprint={sidecar.data?.cert_fingerprint ?? null}
+            cert={cert}
+            onExportCert={async () => setCert(await exportSidecarCert())}
+            bindLan={bindLan}
+          />
+        ) : (
+          <p className="dim">
+            Start the server (Step 1) to see the URL, fingerprint, and certificate
+            to share with participants.
+          </p>
+        ))}
+
+      {exposure === "tunnel" &&
+        (running ? (
+          <TunnelExposure
+            running={tunnel.data?.running ?? false}
+            publicUrl={tunnel.data?.public_url ?? null}
+            onOpen={() => openTunnel.mutate()}
+            onClose={() => closeTunnel.mutate()}
+            pending={openTunnel.isPending}
+          />
+        ) : (
+          <p className="dim">
+            Start the server (Step 1), then open the public tunnel here.
+          </p>
+        ))}
+
+      {exposure === "nginx" && <NginxExposure port={port} />}
+
+      <TransportSecurityNote />
+
+      <div
+        style={{
+          marginTop: 18,
+          borderTop: "1px solid var(--border)",
+          paddingTop: 14,
+        }}
+      >
+        <button onClick={() => saveConfig.mutate()} disabled={saveConfig.isPending}>
+          {saveConfig.isPending ? "Saving…" : "Save this configuration"}
+        </button>
+        {saved && (
+          <span className="ok" style={{ marginLeft: 10 }}>
+            Saved ✓
+          </span>
+        )}
+        <p className="dim" style={{ fontSize: 12, marginTop: 6 }}>
+          Saves your <strong>Coordinator</strong> profile and the{" "}
+          <strong>{exposure}</strong> method so they're reused on the next launch.
+        </p>
+      </div>
     </div>
   );
 }
@@ -476,7 +540,12 @@ function ParticipantPath() {
   });
 
   const save = useMutation({
-    mutationFn: () => setServerUrl(url),
+    mutationFn: async () => {
+      await setServerUrl(url);
+      // Persist the Participant profile so it's remembered and the first-run
+      // prompt is cleared.
+      await setSessionConfig("participant", null);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       setStatus("Saved. You can now join sessions from your Inbox.");

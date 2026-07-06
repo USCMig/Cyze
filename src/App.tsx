@@ -8,11 +8,17 @@ import {
   useLocation,
 } from "react-router-dom";
 import type { GroupSummary } from "./ipc/commands";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
-import { lockKeystore, listGroups, recordActivity } from "./ipc/commands";
+import {
+  lockKeystore,
+  listGroups,
+  recordActivity,
+  getSettings,
+  setSessionRole,
+} from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
 import { Logo } from "./components/Logo";
 import Unlock from "./screens/Unlock";
@@ -101,7 +107,6 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   {
     title: "1 · Setup",
     links: [
-      { to: "/setup", label: "Session Setup" },
       { to: "/server", label: "Server" },
       { to: "/contacts", label: "Contacts" },
       { to: "/dkg", label: "New DKG" },
@@ -121,13 +126,53 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   },
   {
     title: "4 · Zcash",
-    links: [{ to: "/wallet", label: "Wallet Settings" }],
+    links: [
+      { to: "/setup", label: "Session Configuration" },
+      { to: "/wallet", label: "Wallet Settings" },
+    ],
   },
 ];
+
+/** Sidebar profile switch: a two-state slider toggling the active session
+ *  profile (Coordinator / Participant). Clicking anywhere flips it; the current
+ *  side is highlighted and bold. Persists the choice. */
+function ProfileSlider() {
+  const queryClient = useQueryClient();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  const role = settings.data?.session_role === "participant" ? "participant" : "coordinator";
+
+  const toggle = useMutation({
+    mutationFn: () => setSessionRole(role === "coordinator" ? "participant" : "coordinator"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
+  });
+
+  const isCoord = role === "coordinator";
+  return (
+    <button
+      className="profile-slider"
+      onClick={() => toggle.mutate()}
+      title="Switch session profile"
+      aria-label={`Session profile: ${role}. Click to switch.`}
+    >
+      <span
+        className="profile-slider-thumb"
+        style={{ left: isCoord ? "3px" : "calc(50% + 0px)" }}
+      />
+      <span className={`profile-slider-opt ${isCoord ? "on" : ""}`}>Coordinator</span>
+      <span className={`profile-slider-opt ${!isCoord ? "on" : ""}`}>Participant</span>
+    </button>
+  );
+}
 
 function Layout() {
   const { unlocked, loaded, setUnlocked } = useKeystore();
   const dkgInProgress = useCeremonies(selectDkgInProgress);
+  const location = useLocation();
+  const settings = useQuery({
+    queryKey: ["settings"],
+    queryFn: getSettings,
+    enabled: loaded && unlocked,
+  });
 
   // Auto-lock: reflect a backend-initiated idle lock in the UI, and report user
   // activity (throttled) so the idle timer only fires when truly inactive.
@@ -155,6 +200,18 @@ function Layout() {
   }, [setUnlocked]);
 
   if (loaded && !unlocked) return <Navigate to="/unlock" replace />;
+
+  // First run: once unlocked, if the session has never been configured, send the
+  // user to Session Configuration to set it up (and save it). Skip the redirect
+  // while already there so they can complete and save.
+  if (
+    settings.data &&
+    !settings.data.session_configured &&
+    location.pathname !== "/setup"
+  ) {
+    return <Navigate to="/setup" replace />;
+  }
+
   return (
     <div className="layout">
       <CeremonyListener />
@@ -162,6 +219,7 @@ function Layout() {
         <div className="sidebar-brand">
           <Logo markSize={24} showTagline />
         </div>
+        <ProfileSlider />
         {NAV_SECTIONS.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>

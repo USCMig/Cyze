@@ -58,6 +58,18 @@ pub struct Settings {
     /// it was issued, so the address rotates once it has plausibly been used.
     #[serde(default)]
     pub receive_state: HashMap<String, ReceiveState>,
+    /// Active session profile: "coordinator" or "participant". Toggled by the
+    /// sidebar profile switch; drives which saved configuration is in use.
+    #[serde(default)]
+    pub session_role: Option<String>,
+    /// How a coordinator exposes the embedded server: "direct", "tunnel", or
+    /// "nginx". Saved so it can be reused on future launches.
+    #[serde(default)]
+    pub coordinator_exposure: Option<String>,
+    /// True once the user has completed the first-run Session Configuration, so
+    /// they aren't prompted again unless they revisit it.
+    #[serde(default)]
+    pub session_configured: Option<bool>,
 }
 
 /// Per-group rotating receive-address bookkeeping (#3). Non-secret; the actual
