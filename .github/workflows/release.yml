@@ -109,4 +109,6 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Cyze ${{ github.ref_name }}"
           releaseDraft: true
-          prerelease: false
+          # Auto-flag semver pre-release tags (anything with a hyphen, e.g.
+          # v0.1.0-rc.1 / v0.1.0-beta.1) as a GitHub pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
