@@ -421,26 +421,29 @@ pub async fn wallet_send<R: tauri::Runtime>(
 
         let signing_result: Result<Vec<(usize, String)>, String> = {
             let total = spends.len();
-            // Announce that `total` note-signing rounds are running in parallel;
-            // each note appears as its own request in signers' inboxes, all bound
-            // to plan_id = this ceremony id.
-            let _ = task_app.emit(
-                "send:progress",
-                serde_json::json!({
-                    "ceremony_id": ceremony_id,
-                    "event": { "phase": "signing_parallel", "total": total },
-                }),
-            );
 
-            // Spawn one re-randomized FROST ceremony per note. They run
-            // concurrently (independent frostd sessions, independent nonces),
-            // all sharing `cancel`. Collecting them is atomic: the first failure
-            // cancels every other in-flight round and aborts the whole send, so
-            // no partially-signed transaction is ever produced.
+            // Sign each note in its own re-randomized FROST session, one note at
+            // a time. Each note is a distinct frostd session that every signer
+            // must approve; running them sequentially means only one session is
+            // live at a time, so the coordinator's shown session id always points
+            // at the note currently being signed and external (e.g. CLI) signers
+            // approve them in turn instead of having to find N simultaneous
+            // sessions. Every session carries the same plan_id + tx_sighash so a
+            // signer can confirm they all belong to this one transaction (#2).
+            // Atomic: the first note to fail/reject returns Err before any
+            // broadcast, so a partially-signed transaction is never produced.
             let signing_fut = async {
-                let mut set: tokio::task::JoinSet<Result<(usize, String), String>> =
-                    tokio::task::JoinSet::new();
+                let mut signatures: Vec<(usize, String)> = Vec::with_capacity(total);
                 for (i, (index, alpha)) in spends.into_iter().enumerate() {
+                    // Tell the UI which note is being signed; each is a separate
+                    // approval in signers' inboxes.
+                    let _ = task_app.emit(
+                        "send:progress",
+                        serde_json::json!({
+                            "ceremony_id": ceremony_id,
+                            "event": { "phase": "signing_spend", "spend": i + 1, "total": total },
+                        }),
+                    );
                     let send_context = serde_json::to_vec(&frost_app_core::events::SigningContext {
                         recipient: ctx_recipient.clone(),
                         amount_zatoshis: ctx_amount,
@@ -466,40 +469,12 @@ pub async fn wallet_send<R: tauri::Runtime>(
                         randomizer: Some(alpha), // this note's α
                         send_context,
                     };
-                    let tx = tx.clone();
-                    let cancel = cancel.clone();
-                    set.spawn(async move {
-                        run_coordinator(suite, params, tx, cancel)
-                            .await
-                            .map(|output| (index, hex::encode(&output.signature)))
-                            .map_err(|e| e.to_string())
-                    });
-                }
-
-                let mut signatures: Vec<(usize, String)> = Vec::with_capacity(total);
-                let mut first_err: Option<String> = None;
-                while let Some(joined) = set.join_next().await {
-                    match joined {
-                        Ok(Ok(sig)) => signatures.push(sig),
-                        Ok(Err(e)) => {
-                            // A note's round failed/was rejected: abort the rest.
-                            if first_err.is_none() {
-                                first_err = Some(e);
-                            }
-                            cancel.cancel();
-                        }
-                        Err(join_err) => {
-                            if first_err.is_none() {
-                                first_err = Some(format!("signing task failed: {join_err}"));
-                            }
-                            cancel.cancel();
-                        }
+                    match run_coordinator(suite, params, tx.clone(), cancel.clone()).await {
+                        Ok(output) => signatures.push((index, hex::encode(&output.signature))),
+                        Err(e) => return Err(e.to_string()), // abort remaining notes
                     }
                 }
-                match first_err {
-                    Some(e) => Err(e),
-                    None => Ok(signatures),
-                }
+                Ok(signatures)
             };
             match tokio::time::timeout(SIGNING_TIMEOUT, signing_fut).await {
                 Ok(result) => result,

@@ -1049,11 +1049,9 @@ const SEND_PHASES: { key: string; label: string }[] = [
 function SessionParticipants({
   signers,
   participants,
-  done,
 }: {
   signers: string[];
   participants: Record<string, "joined" | "approved"> | undefined;
-  done: boolean;
 }) {
   const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
@@ -1064,7 +1062,9 @@ function SessionParticipants({
   ): { label: string; cls: string } => {
     switch (status) {
       case "coordinator":
-        return { label: "Coordinator (you)", cls: "blue" };
+        // The coordinator signs locally with no approval gate, so it always
+        // contributes its share — show it as an implicit approval.
+        return { label: "Coordinator (you) ✓", cls: "green" };
       case "joined":
         return { label: "Joined", cls: "blue" };
       case "approved":
@@ -1074,9 +1074,11 @@ function SessionParticipants({
     }
   };
 
+  // The coordinator (self) auto-signs, so count it toward approvals; other
+  // signers count once they've sent a round-2 share.
   const approvedCount = signers.filter((pk) => {
     const p = resolveParticipant(pk, identity.data, contacts.data);
-    return p.isSelf ? done : participants?.[pk] === "approved";
+    return p.isSelf ? true : participants?.[pk] === "approved";
   }).length;
 
   return (
@@ -1092,11 +1094,7 @@ function SessionParticipants({
           {signers.map((pubkey) => {
             const p = resolveParticipant(pubkey, identity.data, contacts.data);
             const status: "coordinator" | "waiting" | "joined" | "approved" =
-              p.isSelf
-                ? done
-                  ? "approved"
-                  : "coordinator"
-                : participants?.[pubkey] ?? "waiting";
+              p.isSelf ? "coordinator" : participants?.[pubkey] ?? "waiting";
             const badge = badgeFor(status);
             return (
               <tr key={pubkey}>
@@ -1229,15 +1227,16 @@ function SendSessionPanel({
         <SessionParticipants
           signers={meta.signers}
           participants={ceremony.participants}
-          done={done}
         />
       )}
 
       <label style={{ marginTop: 12 }}>Progress</label>
       {!done && !failed && (ceremony.spendTotal ?? 1) > 1 && (
         <p className="dim" style={{ marginTop: 0 }}>
-          Signing input {ceremony.spendIndex ?? 1} of {ceremony.spendTotal} — each
-          input is a separate approval in signers' inboxes.
+          Signing note {ceremony.spendIndex ?? 1} of {ceremony.spendTotal} — notes
+          are signed one at a time, each a separate session/approval in signers'
+          inboxes. The Session ID above is for the note currently being signed;
+          signers approve each note in turn.
         </p>
       )}
       {/* Stuck warning: shown after 10 minutes with no completion. */}
