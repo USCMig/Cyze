@@ -18,7 +18,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: windows-latest
+          - os: windows-2022 # stable VS2022 toolchain (aws-lc-sys-friendly)
             target: x86_64-pc-windows-msvc
           - os: macos-latest # Apple Silicon
             target: aarch64-apple-darwin
@@ -45,8 +45,17 @@ jobs:
       # Vendored OpenSSL (openssl-src) needs NASM on Windows; Strawberry Perl
       # ships on the GitHub windows runner image.
       - name: Install NASM (Windows)
-        if: matrix.os == 'windows-latest'
+        if: startsWith(matrix.os, 'windows')
         uses: ilammy/setup-nasm@v1
+
+      # frostd pulls in aws-lc-sys (rustls' crypto backend), which builds native
+      # C via CMake and needs the MSVC developer environment (vcvars) — without
+      # it, CMake can't determine the Visual Studio generator. This exports the
+      # MSVC env to $GITHUB_ENV so both the frostd build and tauri-action inherit
+      # it.
+      - name: Set up MSVC developer environment (Windows)
+        if: startsWith(matrix.os, 'windows')
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
