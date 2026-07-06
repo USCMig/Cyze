@@ -100,6 +100,12 @@ export interface LightwalletdInfo {
   estimated_height: number;
   vendor: string;
   version: string;
+  /** Consensus branch id the node expects (lowercase hex). */
+  consensus_branch_id: string;
+  /** Branch id this wallet build would produce at the node's height. */
+  wallet_branch_id: string | null;
+  /** True when the wallet's branch id matches the node's (sends will validate). */
+  branch_supported: boolean | null;
 }
 export const getWalletConfig = () => invoke<WalletConfig>("get_wallet_config");
 export const setWalletConfig = (network: string, lightwalletdUrl: string) =>

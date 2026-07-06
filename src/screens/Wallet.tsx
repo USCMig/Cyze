@@ -240,8 +240,25 @@ export default function Wallet() {
               )}
               <br />
               <span className="dim">
-                {info.vendor} · lightwalletd {info.version}
+                {info.vendor} · lightwalletd {info.version} · branch{" "}
+                {info.consensus_branch_id || "?"}
               </span>
+            </span>
+          </div>
+        )}
+        {info && info.branch_supported === false && (
+          <div className="callout warn" style={{ marginTop: 10 }}>
+            <span>
+              <strong>⚠ Network upgrade mismatch — sends will be rejected.</strong>{" "}
+              This node expects consensus branch{" "}
+              <span className="mono">{info.consensus_branch_id}</span>, but this
+              wallet build produces{" "}
+              <span className="mono">{info.wallet_branch_id}</span>. The network
+              has activated an upgrade (e.g. Ironwood/NU7) whose branch id isn't
+              in this build's Zcash libraries yet. Transactions will FROST-sign
+              fine but fail at broadcast with "incorrect consensus branch id"
+              until the wallet is updated to Ironwood-aware Zcash crates.
+              Receiving and syncing are unaffected.
             </span>
           </div>
         )}

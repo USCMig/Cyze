@@ -82,7 +82,17 @@ pub async fn lightwalletd_info(
     let url = url
         .filter(|u| !u.trim().is_empty())
         .unwrap_or_else(|| resolve_config(&state).lightwalletd_url);
-    Ok(wallet::lightwalletd_info(&url).await?)
+    let mut info = wallet::lightwalletd_info(&url).await?;
+    // Compute the consensus branch id this build would use at the node's height
+    // and flag a mismatch (e.g. after a network upgrade like Ironwood the node
+    // expects a branch id this build doesn't yet know), so the UI can warn
+    // before a whole signing ceremony is spent on a tx the node will reject.
+    let network = network_from_str(&resolve_config(&state).network);
+    let wallet_branch = wallet::branch_id_for_height(network, info.block_height);
+    info.branch_supported = Some(!info.consensus_branch_id.is_empty()
+        && info.consensus_branch_id == wallet_branch);
+    info.wallet_branch_id = Some(wallet_branch);
+    Ok(info)
 }
 
 /// Resolve the wallet context for a RedPallas group: (network, lightwalletd

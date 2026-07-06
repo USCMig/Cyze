@@ -66,6 +66,29 @@ pub struct LightwalletdInfo {
     pub estimated_height: u64,
     pub vendor: String,
     pub version: String,
+    /// The consensus branch id the node currently expects, as lowercase hex
+    /// (e.g. `5437f330`). A transaction built for a different branch is rejected
+    /// with "incorrect consensus branch id".
+    pub consensus_branch_id: String,
+    /// The consensus branch id this wallet build would produce at the node's
+    /// current height, lowercase hex. Filled in by the command layer (which
+    /// knows the configured network). `None` when not computed.
+    #[serde(default)]
+    pub wallet_branch_id: Option<String>,
+    /// True when `wallet_branch_id` matches `consensus_branch_id` — i.e. this
+    /// build can create transactions the node will accept. `None` when unknown.
+    #[serde(default)]
+    pub branch_supported: Option<bool>,
+}
+
+/// The consensus branch id this build would use at `height` on `network`, as
+/// lowercase 8-digit hex. Compared against the node's expected branch id to
+/// detect a network-upgrade (e.g. Ironwood/NU7) mismatch before building a tx.
+pub fn branch_id_for_height(network: WalletNetwork, height: u64) -> String {
+    use zcash_protocol::consensus::{BlockHeight, BranchId};
+    let params = network.params();
+    let bid = BranchId::for_height(&params, BlockHeight::from_u32(height as u32));
+    format!("{:08x}", u32::from(bid))
 }
 
 /// Normalize an endpoint: a bare `host:port` (e.g. `tz.ombie.cash:443`) is
@@ -148,6 +171,9 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
         estimated_height: info.estimated_height,
         vendor: info.vendor,
         version: info.version,
+        consensus_branch_id: info.consensus_branch_id.trim().to_lowercase(),
+        wallet_branch_id: None,
+        branch_supported: None,
     })
 }
 
