@@ -96,9 +96,27 @@ jobs:
           cargo build --release -p frostd --target ${{ matrix.target }}
           EXT=""
           case "${{ matrix.target }}" in *windows*) EXT=".exe";; esac
-          mkdir -p "$GITHUB_WORKSPACE/src-tauri/binaries"
-          cp "target/${{ matrix.target }}/release/frostd${EXT}" \
-             "$GITHUB_WORKSPACE/src-tauri/binaries/frostd-${{ matrix.target }}${EXT}"
+          SRC="target/${{ matrix.target }}/release/frostd${EXT}"
+          DEST="$GITHUB_WORKSPACE/src-tauri/binaries/frostd-${{ matrix.target }}${EXT}"
+          ls -la "target/${{ matrix.target }}/release/" || true
+          test -f "$SRC"  # fail loudly here if the build didn't produce it
+          mkdir -p "$(dirname "$DEST")"
+          cp "$SRC" "$DEST"
+          chmod +x "$DEST" || true
+          echo "Sidecar placed at: $DEST"
+          ls -la "$(dirname "$DEST")"
+
+      # Guard: confirm the sidecar is present immediately before the app build,
+      # so a missing/removed binary is reported here (not as a confusing tauri
+      # "resource path doesn't exist" error).
+      - name: Verify sidecar present
+        shell: bash
+        run: |
+          EXT=""
+          case "${{ matrix.target }}" in *windows*) EXT=".exe";; esac
+          BIN="$GITHUB_WORKSPACE/src-tauri/binaries/frostd-${{ matrix.target }}${EXT}"
+          ls -la "$GITHUB_WORKSPACE/src-tauri/binaries/" || echo "binaries/ dir missing"
+          test -f "$BIN" || { echo "::error::sidecar missing at $BIN"; exit 1; }
 
       # Enable Apple code signing + notarization ONLY when the certificate
       # secret is actually configured. Passing empty APPLE_* env vars makes
