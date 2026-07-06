@@ -119,8 +119,8 @@ pub fn run() {
                         }
                     }
                     if let Ok(mut guard) = state.tunnel.try_lock() {
-                        if let Some(mut handle) = guard.take() {
-                            let _ = handle.child.start_kill();
+                        if let Some(handle) = guard.take() {
+                            let _ = handle.child.kill();
                         }
                     }
                 }

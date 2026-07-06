@@ -115,6 +115,33 @@ jobs:
           echo "Sidecar placed at: $DEST"
           ls -la "$(dirname "$DEST")"
 
+      # --- Fetch the cloudflared sidecar for this target -----------------
+      # cloudflared is bundled (Apache-2.0) so the optional Cloudflare quick
+      # tunnel works with zero user setup — no separate install or PATH entry.
+      # Cloudflare ships prebuilt binaries per OS/arch; macOS is a .tgz, the
+      # rest are raw executables.
+      - name: Fetch cloudflared sidecar
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu) ASSET=cloudflared-linux-amd64;     EXT="" ;;
+            x86_64-pc-windows-msvc)   ASSET=cloudflared-windows-amd64.exe; EXT=".exe" ;;
+            aarch64-apple-darwin)     ASSET=cloudflared-darwin-arm64.tgz; EXT="" ;;
+            x86_64-apple-darwin)      ASSET=cloudflared-darwin-amd64.tgz; EXT="" ;;
+            *) echo "::error::no cloudflared asset mapping for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          URL="https://github.com/cloudflare/cloudflared/releases/latest/download/$ASSET"
+          DEST="$GITHUB_WORKSPACE/src-tauri/binaries/cloudflared-${{ matrix.target }}${EXT}"
+          mkdir -p "$(dirname "$DEST")"
+          curl -fL "$URL" -o "$RUNNER_TEMP/cf-download"
+          case "$ASSET" in
+            *.tgz) tar -xzf "$RUNNER_TEMP/cf-download" -C "$RUNNER_TEMP"; cp "$RUNNER_TEMP/cloudflared" "$DEST" ;;
+            *)     cp "$RUNNER_TEMP/cf-download" "$DEST" ;;
+          esac
+          chmod +x "$DEST" || true
+          ls -la "$(dirname "$DEST")"
+
       # Guard: confirm the sidecar is present immediately before the app build,
       # so a missing/removed binary is reported here (not as a confusing tauri
       # "resource path doesn't exist" error).
@@ -123,9 +150,11 @@ jobs:
         run: |
           EXT=""
           case "${{ matrix.target }}" in *windows*) EXT=".exe";; esac
-          BIN="$GITHUB_WORKSPACE/src-tauri/binaries/frostd-${{ matrix.target }}${EXT}"
           ls -la "$GITHUB_WORKSPACE/src-tauri/binaries/" || echo "binaries/ dir missing"
-          test -f "$BIN" || { echo "::error::sidecar missing at $BIN"; exit 1; }
+          for NAME in frostd cloudflared; do
+            BIN="$GITHUB_WORKSPACE/src-tauri/binaries/${NAME}-${{ matrix.target }}${EXT}"
+            test -f "$BIN" || { echo "::error::sidecar missing at $BIN"; exit 1; }
+          done
 
       # Enable Apple code signing + notarization ONLY when the certificate
       # secret is actually configured. Passing empty APPLE_* env vars makes

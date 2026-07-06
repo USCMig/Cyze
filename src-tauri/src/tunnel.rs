@@ -8,24 +8,21 @@
 //! connect with system roots and skip the self-signed-cert trust step
 //! entirely.
 //!
-//! Unlike the frostd sidecar (a bundled binary spawned through the Tauri
-//! shell plugin), `cloudflared` is an external system binary, so we spawn it
-//! directly with `tokio::process` and own the child ourselves.
-
-use std::process::Stdio;
-use std::sync::Arc;
+//! `cloudflared` is bundled as a Tauri sidecar (like frostd) and spawned
+//! through the shell plugin, so users don't need to install it separately or
+//! have it on PATH.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::process::{Child, Command};
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub struct TunnelHandle {
-    pub child: Child,
+    pub child: CommandChild,
     pub public_url: String,
     pub port: u16,
 }
@@ -35,20 +32,6 @@ pub struct TunnelStatus {
     pub running: bool,
     pub public_url: Option<String>,
     pub port: Option<u16>,
-}
-
-/// Resolve an executable name to its absolute path by scanning `PATH`, so the
-/// exact binary being launched can be surfaced to the user. Returns `None` if
-/// no executable match is found.
-fn resolve_binary_path(name: &str) -> Option<String> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    None
 }
 
 /// Extract a `https://<sub>.trycloudflare.com` URL from a log line, if present.
@@ -67,90 +50,76 @@ fn parse_tunnel_url(line: &str) -> Option<String> {
     }
 }
 
-/// Drain one of cloudflared's output streams: forward each line to the
-/// frontend as a `tunnel:log` event, and on the first line that carries the
-/// public URL, send it through `url_tx` (once).
-fn spawn_reader<R>(
-    stream: R,
-    app: AppHandle,
-    url_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<String>>>>,
-) where
-    R: AsyncRead + Unpin + Send + 'static,
-{
-    tauri::async_runtime::spawn(async move {
-        let mut lines = BufReader::new(stream).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(url) = parse_tunnel_url(&line) {
-                if let Ok(mut slot) = url_tx.lock() {
-                    if let Some(tx) = slot.take() {
-                        let _ = tx.send(url);
-                    }
-                }
-            }
-            let _ = app.emit("tunnel:log", line);
-        }
-    });
-}
-
 pub async fn start(app: &AppHandle, port: u16) -> AppResult<TunnelStatus> {
     let state = app.state::<AppState>();
     if state.tunnel.lock().await.is_some() {
         return Err(AppError::new("tunnel", "a tunnel is already running"));
     }
 
-    // `cloudflared` is an external binary resolved from PATH; make it explicit
-    // which binary is being launched (so a PATH hijack is visible in the log)
-    // and warn loudly that opening the tunnel exposes the embedded server to the
+    // Warn loudly that opening the tunnel exposes the embedded server to the
     // public internet.
-    let resolved = resolve_binary_path("cloudflared");
     let _ = app.emit(
         "tunnel:log",
-        format!(
-            "⚠ Opening a public tunnel: the embedded frostd server will be reachable \
-             from the internet via *.trycloudflare.com until you stop the tunnel. \
-             Launching cloudflared from: {}",
-            resolved.as_deref().unwrap_or("cloudflared (unresolved on PATH)"),
-        ),
+        "⚠ Opening a public tunnel: the embedded frostd server will be reachable \
+         from the internet via *.trycloudflare.com until you stop the tunnel."
+            .to_string(),
     );
 
-    let mut child = Command::new("cloudflared")
+    let command = app
+        .shell()
+        .sidecar("cloudflared")
+        .map_err(|e| {
+            AppError::new(
+                "tunnel",
+                format!("bundled cloudflared binary not found: {e}"),
+            )
+        })?
         .args([
             "tunnel",
             "--url",
             &format!("https://localhost:{port}"),
             "--no-tls-verify",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| {
-            AppError::new(
-                "tunnel",
-                format!(
-                    "could not start cloudflared — is it installed and on PATH? ({e}). \
-                     Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
-                ),
-            )
-        })?;
+        ]);
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let (mut rx, child) = command.spawn().map_err(|e| {
+        AppError::new("tunnel", format!("could not start cloudflared: {e}"))
+    })?;
 
+    // Single task drains cloudflared's output: forward each line to the
+    // frontend, capture the public URL on the first line that carries it, and
+    // notify the UI when the process exits.
     let (url_tx, url_rx) = oneshot::channel::<String>();
-    let url_tx = Arc::new(std::sync::Mutex::new(Some(url_tx)));
-    if let Some(out) = stdout {
-        spawn_reader(out, app.clone(), url_tx.clone());
-    }
-    if let Some(err) = stderr {
-        spawn_reader(err, app.clone(), url_tx.clone());
-    }
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut url_tx = Some(url_tx);
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                    let line = String::from_utf8_lossy(&line).to_string();
+                    if let Some(url) = parse_tunnel_url(&line) {
+                        if let Some(tx) = url_tx.take() {
+                            let _ = tx.send(url);
+                        }
+                    }
+                    let _ = app_handle.emit("tunnel:log", line);
+                }
+                CommandEvent::Terminated(_) => {
+                    if let Some(st) = app_handle.try_state::<AppState>() {
+                        *st.tunnel.lock().await = None;
+                    }
+                    let _ = app_handle.emit("tunnel:exited", ());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
 
     // Wait (bounded) for cloudflared to report the assigned URL.
     let public_url = match tokio::time::timeout(std::time::Duration::from_secs(30), url_rx).await {
         Ok(Ok(url)) => url,
         _ => {
-            let _ = child.start_kill();
+            let _ = child.kill();
             return Err(AppError::new(
                 "tunnel",
                 "cloudflared did not report a public URL within 30 seconds",
@@ -159,34 +128,6 @@ pub async fn start(app: &AppHandle, port: u16) -> AppResult<TunnelStatus> {
     };
 
     let _ = app.emit("tunnel:ready", public_url.clone());
-
-    // Notice if cloudflared exits later so the UI can reflect it.
-    {
-        let app_handle = app.clone();
-        let pid = child.id();
-        tauri::async_runtime::spawn(async move {
-            // The child is owned by AppState; poll for disappearance instead
-            // of awaiting `wait()` (which needs &mut child).
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if let Some(st) = app_handle.try_state::<AppState>() {
-                    let mut guard = st.tunnel.lock().await;
-                    match guard.as_mut() {
-                        Some(h) if h.child.id() == pid => {
-                            if matches!(h.child.try_wait(), Ok(Some(_))) {
-                                *guard = None;
-                                let _ = app_handle.emit("tunnel:exited", ());
-                                break;
-                            }
-                        }
-                        _ => break, // replaced or stopped elsewhere
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    }
 
     *state.tunnel.lock().await = Some(TunnelHandle {
         child,
@@ -203,8 +144,8 @@ pub async fn start(app: &AppHandle, port: u16) -> AppResult<TunnelStatus> {
 
 pub async fn stop(state: &AppState) -> AppResult<()> {
     let mut guard = state.tunnel.lock().await;
-    if let Some(mut handle) = guard.take() {
-        let _ = handle.child.start_kill();
+    if let Some(handle) = guard.take() {
+        let _ = handle.child.kill();
     }
     Ok(())
 }

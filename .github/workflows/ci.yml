@@ -41,10 +41,11 @@ jobs:
       # Tauri's build.rs verifies the externalBin resource exists, even for
       # `cargo check`. CI only type-checks (never bundles), so a stub file at the
       # host triple's path is enough — no need to build the real frostd sidecar.
-      - name: Stub frostd sidecar for the resource check
+      - name: Stub sidecars for the resource check
         run: |
           mkdir -p src-tauri/binaries
           touch src-tauri/binaries/frostd-x86_64-unknown-linux-gnu
+          touch src-tauri/binaries/cloudflared-x86_64-unknown-linux-gnu
 
       - name: Rust workspace check
         working-directory: src-tauri

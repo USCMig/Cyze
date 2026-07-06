@@ -14,15 +14,23 @@ and the (optional) code-signing needed for distribution.
 | macOS | `.app`, `.dmg` (per-arch: Apple Silicon + Intel) |
 | Windows | `.msi` (WiX), `.exe` (NSIS) |
 
-Each bundle embeds the `frostd` sidecar (the local FROST coordination server)
-for that platform, so users don't install anything extra to host a session.
+Each bundle embeds two sidecars for that platform, so users don't install
+anything extra to host a session:
 
-## The `frostd` sidecar
+- **`frostd`** — the local FROST coordination server.
+- **`cloudflared`** — Cloudflare's tunnel client, used by the optional "public
+  tunnel" coordinator-exposure mode (Apache-2.0, redistributed unmodified). This
+  lets a coordinator expose the embedded server to remote participants with no
+  install or PATH setup on their end.
 
-Tauri resolves `bundle.externalBin: ["binaries/frostd"]` to a per-target file:
+## Sidecars
+
+Tauri resolves `bundle.externalBin: ["binaries/frostd", "binaries/cloudflared"]`
+to per-target files:
 
 ```
 src-tauri/binaries/frostd-<target-triple>[.exe]
+src-tauri/binaries/cloudflared-<target-triple>[.exe]
 ```
 
 The binary is built from the same pinned `frost-tools` revision the app links
@@ -39,7 +47,19 @@ mkdir -p "$OLDPWD/src-tauri/binaries"
 cp "target/release/frostd" "$OLDPWD/src-tauri/binaries/frostd-$TRIPLE"
 ```
 
-(A checked-in `frostd-x86_64-unknown-linux-gnu` already exists for local Linux dev.)
+For local dev you also need a matching `cloudflared` for your host triple, which
+CI downloads automatically for releases. To fetch it locally:
+
+```bash
+TRIPLE=$(rustc -vV | sed -n 's/host: //p')
+# pick the asset for your OS/arch (linux-amd64 shown):
+curl -fL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+  -o src-tauri/binaries/cloudflared-$TRIPLE
+chmod +x src-tauri/binaries/cloudflared-$TRIPLE
+```
+
+(macOS assets are `.tgz` — extract and copy the inner `cloudflared`. Windows is
+`cloudflared-windows-amd64.exe`, keep the `.exe` suffix on the destination.)
 
 ## Local build
 

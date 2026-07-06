@@ -273,8 +273,8 @@ export default function ServerSettings() {
             <p className="dim">
               Open a public HTTPS endpoint in front of the embedded server so
               participants on other networks can connect — no firewall changes
-              needed. Requires <span className="code-inline">cloudflared</span> to be
-              installed and on your PATH.
+              needed. The <span className="code-inline">cloudflared</span> tunnel
+              client is bundled with the app, so there's nothing to install.
             </p>
             <button
               onClick={() => openTunnel.mutate()}

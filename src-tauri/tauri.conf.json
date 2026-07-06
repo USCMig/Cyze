@@ -39,7 +39,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/frostd"],
+    "externalBin": ["binaries/frostd", "binaries/cloudflared"],
     "linux": {
       "deb": {
         "depends": []
