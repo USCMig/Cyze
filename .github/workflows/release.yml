@@ -1,0 +1,112 @@
+name: Release
+
+# Build signed, cross-platform installers on a version tag (e.g. v0.1.0) and
+# attach them to a draft GitHub Release. Also runnable manually.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest # Apple Silicon
+            target: aarch64-apple-darwin
+          - os: macos-13 # Intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Toolchains -----------------------------------------------------
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            file
+
+      # Vendored OpenSSL (openssl-src) needs NASM on Windows; Strawberry Perl
+      # ships on the GitHub windows runner image.
+      - name: Install NASM (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # --- Build the frostd sidecar for this target ----------------------
+      # The embedded server binary is built from the same pinned frost-tools
+      # revision the app links frost-client against, then placed under the
+      # Tauri externalBin naming convention: binaries/frostd-<target-triple>.
+      - name: Build frostd sidecar
+        shell: bash
+        env:
+          FROST_TOOLS_REV: 3d2985cfbc5df9314f3882a6d693bbe0d711051f
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none https://github.com/ZcashFoundation/frost-tools.git "$RUNNER_TEMP/frost-tools"
+          cd "$RUNNER_TEMP/frost-tools"
+          git checkout "$FROST_TOOLS_REV"
+          cargo build --release -p frostd --target ${{ matrix.target }}
+          EXT=""
+          case "${{ matrix.target }}" in *windows*) EXT=".exe";; esac
+          mkdir -p "$GITHUB_WORKSPACE/src-tauri/binaries"
+          cp "target/${{ matrix.target }}/release/frostd${EXT}" \
+             "$GITHUB_WORKSPACE/src-tauri/binaries/frostd-${{ matrix.target }}${EXT}"
+
+      # --- Bundle + sign + attach to the release --------------------------
+      - name: Build & bundle app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization. Unset -> an unsigned build is
+          # produced (fine for local/testing, Gatekeeper will warn). Set these
+          # repository secrets to ship a notarized .dmg/.app:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater signing key (optional; enables signed auto-updates).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "Cyze ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false

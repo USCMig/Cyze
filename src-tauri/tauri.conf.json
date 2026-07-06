@@ -25,8 +25,33 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
-    "icon": ["icons/icon.png"],
-    "externalBin": ["binaries/frostd"]
+    "targets": "all",
+    "category": "Finance",
+    "shortDescription": "Threshold FROST signing companion for Zcash",
+    "longDescription": "Cyze is a desktop companion for FROST threshold signing of Zcash Orchard transactions. A group holds a shared key split across members; a threshold must cooperate to sign, with no single member able to spend alone.",
+    "publisher": "Cyze",
+    "copyright": "Copyright © 2026 Cyze",
+    "homepage": "https://github.com/USCMig/Cyze",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/frostd"],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }
