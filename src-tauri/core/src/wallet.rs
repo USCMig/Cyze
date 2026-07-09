@@ -273,6 +273,37 @@ fn key_pragma(db_key: &[u8]) -> String {
     format!("PRAGMA key = \"x'{}'\";", hex::encode(db_key))
 }
 
+/// How long a connection waits for a competing lock before giving up with
+/// `SQLITE_BUSY` ("database is locked").
+///
+/// SQLite defaults this to zero, so the sync writer and the UI's periodic read
+/// queries (balances, notes, history) fail *immediately* the moment they
+/// overlap, rather than waiting out each other's short-lived locks. Every
+/// connection to a group wallet must set this.
+const DB_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Open a read-only connection to a group wallet, unlocking it with the
+/// SQLCipher key when the file is encrypted. A pre-encryption plaintext db (not
+/// yet migrated by [`open_db`]) is read as-is.
+fn open_readonly_connection(
+    db_path: &Path,
+    db_key: &[u8],
+) -> Result<rusqlite::Connection, CoreError> {
+    let plaintext = is_plaintext_sqlite(db_path)?;
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    conn.busy_timeout(DB_BUSY_TIMEOUT)
+        .map_err(|e| CoreError::Crypto(format!("set busy timeout: {e}")))?;
+    if !plaintext {
+        conn.execute_batch(&key_pragma(db_key))
+            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    }
+    Ok(conn)
+}
+
 /// Open a rusqlite connection and unlock it with the SQLCipher key, verifying
 /// that the key actually decrypts the database (a wrong key or a plaintext file
 /// fails here with `SQLITE_NOTADB`).
@@ -282,6 +313,10 @@ fn open_keyed_connection(
 ) -> Result<rusqlite::Connection, CoreError> {
     let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
+    // Sync writes while the UI reads on its refresh timers; wait out the other
+    // connection's lock instead of failing with "database is locked".
+    conn.busy_timeout(DB_BUSY_TIMEOUT)
+        .map_err(|e| CoreError::Crypto(format!("set busy timeout: {e}")))?;
     conn.execute_batch(&key_pragma(db_key))
         .map_err(|e| CoreError::Crypto(format!("set wallet db key: {e}")))?;
     // Force the cipher to engage; fails cleanly if the key is wrong.
@@ -1057,16 +1092,7 @@ pub fn count_orchard_received_notes(
     if !db_path.exists() {
         return Ok(0);
     }
-    let plaintext = is_plaintext_sqlite(&db_path)?;
-    let conn = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
-    if !plaintext {
-        conn.execute_batch(&key_pragma(db_key))
-            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
-    }
+    let conn = open_readonly_connection(&db_path, db_key)?;
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM orchard_received_notes", [], |row| {
             row.get(0)
@@ -1108,16 +1134,7 @@ pub fn wallet_notes(
     if !db_path.exists() {
         return Ok(vec![]);
     }
-    let plaintext = is_plaintext_sqlite(&db_path)?;
-    let conn = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
-    if !plaintext {
-        conn.execute_batch(&key_pragma(db_key))
-            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
-    }
+    let conn = open_readonly_connection(&db_path, db_key)?;
 
     use rusqlite::OptionalExtension;
     let account_id: Option<i64> = conn
@@ -1206,18 +1223,7 @@ pub fn wallet_history(
         return Ok(vec![]);
     }
 
-    // A pre-encryption plaintext db (not yet migrated by open_db) is read as-is;
-    // an encrypted db is unlocked with the SQLCipher key.
-    let plaintext = is_plaintext_sqlite(&db_path)?;
-    let conn = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
-    if !plaintext {
-        conn.execute_batch(&key_pragma(db_key))
-            .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
-    }
+    let conn = open_readonly_connection(&db_path, db_key)?;
 
     // There is at most one account per group wallet.
     use rusqlite::OptionalExtension;
