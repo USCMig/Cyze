@@ -531,9 +531,15 @@ fn pool_balance(b: &zcash_client_backend::data_api::Balance) -> PoolBalance {
     }
 }
 
-/// Import the group's UFVK as a view-only account, with its birthday set to the
-/// current chain tip (no prior funds). Idempotent: a no-op if already imported.
-/// Returns the birthday height. Touches the network (fetches a treestate).
+/// Import the group's UFVK as a view-only account and return the height its
+/// scanning starts from. Idempotent: returns 0 if the account already exists.
+/// Touches the network (fetches a treestate).
+///
+/// `birthday_height` is the first block to scan. Pass `None` for a brand-new
+/// group that cannot hold prior funds, and the account starts at the chain tip.
+/// Pass `Some(h)` to recover a group whose funds arrived at or after `h` — for
+/// example after rebuilding a wiped wallet database. Blocks before the birthday
+/// are never scanned, so a birthday set too late makes existing funds invisible.
 pub async fn init_group_account(
     data_dir: &Path,
     group_id: &str,
@@ -541,7 +547,10 @@ pub async fn init_group_account(
     ufvk_str: &str,
     lightwalletd_url: &str,
     db_key: &[u8],
+    birthday_height: Option<u64>,
 ) -> Result<u64, CoreError> {
+    use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
+
     let (db_path, _) = wallet_paths(data_dir, group_id);
     let mut db = open_db(&db_path, network, db_key)?;
     if !db
@@ -556,16 +565,32 @@ pub async fn init_group_account(
     let ufvk = UnifiedFullViewingKey::decode(&params, ufvk_str)
         .map_err(|e| CoreError::Crypto(format!("invalid UFVK: {e}")))?;
 
-    // Birthday = current chain tip; the account starts watching from now.
     let mut client = connect(lightwalletd_url).await?;
-    let tip = client
-        .get_latest_block(ChainSpec {})
-        .await
-        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
-        .into_inner();
+    let scan_from = match birthday_height {
+        // Orchard notes cannot exist before NU5, so never scan below it — that
+        // would only add millions of blocks that can hold nothing for us.
+        Some(h) => h.max(
+            params
+                .activation_height(NetworkUpgrade::Nu5)
+                .map_or(0, |a| u64::from(u32::from(a))),
+        ),
+        None => {
+            client
+                .get_latest_block(ChainSpec {})
+                .await
+                .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+                .into_inner()
+                .height
+        }
+    };
+
+    // `AccountBirthday::height()` is `prior_chain_state.block_height() + 1`, so
+    // request the frontier as of the block *before* the first one to scan.
+    // Fetching the treestate at `scan_from` itself would skip that block — and
+    // with it the transaction that funded the group.
     let treestate = client
         .get_tree_state(BlockId {
-            height: tip.height,
+            height: scan_from.saturating_sub(1),
             hash: vec![],
         })
         .await
@@ -576,7 +601,7 @@ pub async fn init_group_account(
 
     db.import_account_ufvk(group_id, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
         .map_err(|e| CoreError::Crypto(format!("import account: {e}")))?;
-    Ok(tip.height)
+    Ok(scan_from)
 }
 
 /// A `BlockCache` over `FsBlockDb`. `FsBlockDb` ships only `BlockSource`, so we

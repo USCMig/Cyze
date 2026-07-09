@@ -58,6 +58,13 @@ pub struct Settings {
     /// it was issued, so the address rotates once it has plausibly been used.
     #[serde(default)]
     pub receive_state: HashMap<String, ReceiveState>,
+    /// First block scanned for each group's wallet (keyed by group id). Recorded
+    /// here rather than only inside the wallet database, which lives under
+    /// `wallets/` and is deleted whenever the wallet is rebuilt. Without it a
+    /// rebuilt wallet re-imports its account at the current chain tip and never
+    /// scans the blocks that funded the group, so the balance reads zero.
+    #[serde(default)]
+    pub wallet_birthdays: HashMap<String, u64>,
     /// Active session profile: "coordinator" or "participant". Toggled by the
     /// sidebar profile switch; drives which saved configuration is in use.
     #[serde(default)]

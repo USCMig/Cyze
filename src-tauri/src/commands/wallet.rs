@@ -140,24 +140,49 @@ pub async fn wallet_group_status(
     )?)
 }
 
-/// Import the group's UFVK as a view-only account (birthday = current chain
-/// tip). Idempotent. Touches the network. Returns the birthday height.
+/// Import the group's UFVK as a view-only account. Idempotent. Touches the
+/// network. Returns the first block the wallet will scan (0 if already imported).
+///
+/// `birthday_height` selects that first block. When omitted, a birthday recorded
+/// from a previous import is reused — this is what lets a rebuilt wallet
+/// database recover its funds instead of starting at the chain tip — and
+/// otherwise the account starts at the tip, correct for a brand-new group.
 #[tauri::command]
 pub async fn wallet_init_account(
     state: State<'_, AppState>,
     group_id: String,
+    birthday_height: Option<u64>,
 ) -> AppResult<u64> {
     let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    Ok(wallet::init_group_account(
+
+    let recorded = state
+        .load_settings()
+        .wallet_birthdays
+        .get(&group_id)
+        .copied();
+    let requested = birthday_height.or(recorded);
+
+    let scan_from = wallet::init_group_account(
         &state.data_dir,
         &group_id,
         network,
         &ufvk,
         &url,
         db_key.as_ref(),
+        requested,
     )
-    .await?)
+    .await?;
+
+    // Remember where this wallet starts, so a later rebuild of the (deleted)
+    // wallet database scans from here again rather than from the chain tip.
+    // `scan_from == 0` means the account already existed; nothing was imported.
+    if scan_from > 0 && recorded != Some(scan_from) {
+        let mut settings = state.load_settings();
+        settings.wallet_birthdays.insert(group_id, scan_from);
+        state.save_settings(&settings)?;
+    }
+    Ok(scan_from)
 }
 
 /// Sync the group's wallet from lightwalletd, then return the updated status.

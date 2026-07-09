@@ -135,8 +135,16 @@ export interface WalletStatus {
 }
 export const walletGroupStatus = (groupId: string) =>
   invoke<WalletStatus>("wallet_group_status", { groupId });
-export const walletInitAccount = (groupId: string) =>
-  invoke<number>("wallet_init_account", { groupId });
+/** Import the group's view-only account; returns the first block it will scan.
+ *  `birthdayHeight` sets that first block. Omit it to reuse a previously
+ *  recorded birthday — this is what lets a rebuilt wallet database recover its
+ *  funds — or, for a brand-new group, to start at the chain tip. Blocks before
+ *  the birthday are never scanned. */
+export const walletInitAccount = (groupId: string, birthdayHeight?: number) =>
+  invoke<number>("wallet_init_account", {
+    groupId,
+    birthdayHeight: birthdayHeight ?? null,
+  });
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
 
