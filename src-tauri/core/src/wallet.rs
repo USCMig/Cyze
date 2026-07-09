@@ -531,15 +531,53 @@ fn pool_balance(b: &zcash_client_backend::data_api::Balance) -> PoolBalance {
     }
 }
 
+/// First block a new testnet group's wallet scans when no birthday is recorded
+/// or supplied. Sits comfortably before the NU6.3/Ironwood activation
+/// (4,134,000), so a group funded any time during Ironwood testing is found by
+/// a rebuilt wallet without the user having to supply a height.
+const DEFAULT_TESTNET_BIRTHDAY: u64 = 3_800_000;
+
+/// The birthday a brand-new wallet starts from when the caller gives no height
+/// and none was recorded for the group.
+///
+/// Mainnet deliberately has no constant: its chain tip is around 3.4M (NU6.2
+/// activated at 3,364,600), so any fixed height chosen for testnet would sit in
+/// mainnet's *future* — the treestate would not exist and the wallet would scan
+/// nothing. Mainnet therefore starts at the chain tip, which is correct for a
+/// newly created group that cannot hold prior funds.
+pub fn default_birthday_height(network: WalletNetwork) -> Option<u64> {
+    match network {
+        WalletNetwork::Test => Some(DEFAULT_TESTNET_BIRTHDAY),
+        WalletNetwork::Main => None,
+    }
+}
+
+/// Pick the first block to scan: the requested birthday held inside
+/// `[nu5, tip]`, or the tip when nothing was requested.
+///
+/// Both bounds matter. Below NU5 there can be no Orchard notes, so scanning
+/// there is pure cost. Above the tip there is no treestate to anchor the
+/// birthday to, and the wallet would scan nothing at all — which is how a
+/// testnet-shaped default silently breaks a mainnet wallet.
+fn resolve_scan_from(requested: Option<u64>, nu5: u64, tip: u64) -> u64 {
+    match requested {
+        Some(h) => h.max(nu5).min(tip),
+        None => tip,
+    }
+}
+
 /// Import the group's UFVK as a view-only account and return the height its
 /// scanning starts from. Idempotent: returns 0 if the account already exists.
-/// Touches the network (fetches a treestate).
+/// Touches the network (fetches the tip and a treestate).
 ///
-/// `birthday_height` is the first block to scan. Pass `None` for a brand-new
-/// group that cannot hold prior funds, and the account starts at the chain tip.
-/// Pass `Some(h)` to recover a group whose funds arrived at or after `h` — for
-/// example after rebuilding a wiped wallet database. Blocks before the birthday
-/// are never scanned, so a birthday set too late makes existing funds invisible.
+/// `birthday_height` is the first block to scan. Pass `Some(h)` to recover a
+/// group whose funds arrived at or after `h` — for example after rebuilding a
+/// wiped wallet database. Pass `None` to use [`default_birthday_height`].
+///
+/// Blocks before the birthday are never scanned, so a birthday set too late
+/// makes existing funds invisible. The height is clamped into
+/// `[NU5 activation, chain tip]`: Orchard notes cannot exist below NU5, and a
+/// birthday above the tip has no treestate to anchor to.
 pub async fn init_group_account(
     data_dir: &Path,
     group_id: &str,
@@ -566,23 +604,21 @@ pub async fn init_group_account(
         .map_err(|e| CoreError::Crypto(format!("invalid UFVK: {e}")))?;
 
     let mut client = connect(lightwalletd_url).await?;
-    let scan_from = match birthday_height {
-        // Orchard notes cannot exist before NU5, so never scan below it — that
-        // would only add millions of blocks that can hold nothing for us.
-        Some(h) => h.max(
-            params
-                .activation_height(NetworkUpgrade::Nu5)
-                .map_or(0, |a| u64::from(u32::from(a))),
-        ),
-        None => {
-            client
-                .get_latest_block(ChainSpec {})
-                .await
-                .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
-                .into_inner()
-                .height
-        }
-    };
+    let tip = client
+        .get_latest_block(ChainSpec {})
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .into_inner()
+        .height;
+
+    let nu5 = params
+        .activation_height(NetworkUpgrade::Nu5)
+        .map_or(0, |a| u64::from(u32::from(a)));
+    let scan_from = resolve_scan_from(
+        birthday_height.or_else(|| default_birthday_height(network)),
+        nu5,
+        tip,
+    );
 
     // `AccountBirthday::height()` is `prior_chain_state.block_height() + 1`, so
     // request the frontier as of the block *before* the first one to scan.
@@ -1489,5 +1525,50 @@ mod tests {
             let addr = ufvk_default_address(net, &keys.ufvk).unwrap();
             assert_eq!(addr, keys.address, "zcash_keys must agree on {net:?}");
         }
+    }
+
+    /// Mainnet activation heights, for readability in the tests below.
+    const MAIN_NU5: u64 = 1_687_104;
+    const TEST_NU5: u64 = 1_842_420;
+
+    #[test]
+    fn scan_from_defaults_to_the_tip_when_nothing_is_requested() {
+        assert_eq!(resolve_scan_from(None, MAIN_NU5, 3_400_000), 3_400_000);
+    }
+
+    #[test]
+    fn scan_from_honours_a_requested_birthday_inside_the_range() {
+        assert_eq!(
+            resolve_scan_from(Some(3_800_000), TEST_NU5, 4_200_000),
+            3_800_000
+        );
+    }
+
+    #[test]
+    fn scan_from_never_precedes_nu5() {
+        // Orchard notes cannot exist below NU5, so an earlier birthday is lifted.
+        assert_eq!(resolve_scan_from(Some(1000), MAIN_NU5, 3_400_000), MAIN_NU5);
+    }
+
+    #[test]
+    fn scan_from_never_exceeds_the_tip() {
+        // The testnet default (3.8M) sits above mainnet's tip (~3.4M). Without
+        // the clamp the treestate fetch would fail and the wallet would scan
+        // nothing; instead a mainnet wallet quietly starts at the tip.
+        let mainnet_tip = 3_400_000;
+        assert_eq!(
+            resolve_scan_from(Some(DEFAULT_TESTNET_BIRTHDAY), MAIN_NU5, mainnet_tip),
+            mainnet_tip
+        );
+    }
+
+    #[test]
+    fn default_birthday_is_testnet_only() {
+        assert_eq!(
+            default_birthday_height(WalletNetwork::Test),
+            Some(DEFAULT_TESTNET_BIRTHDAY)
+        );
+        // A fixed height would be in mainnet's future; it starts at the tip.
+        assert_eq!(default_birthday_height(WalletNetwork::Main), None);
     }
 }
