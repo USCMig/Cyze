@@ -772,6 +772,7 @@ pub async fn prepare_send(
     db_key: &[u8],
 ) -> Result<DraftTransaction, CoreError> {
     use zcash_keys::address::Address;
+    use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::value::Zatoshis;
     use zcash_protocol::ShieldedProtocol;
 
@@ -827,6 +828,17 @@ pub async fn prepare_send(
         })
     };
 
+    // Constrain the proposal to a version-5 transaction so it matches what the
+    // PCZT builder can actually construct.
+    //
+    // `create_pczt_from_proposal` hardcodes TxVersion::V5 and rejects any step
+    // that touches the Ironwood pool ("PCZT construction cannot yet produce an
+    // Ironwood bundle"). Left unconstrained (`None`), the proposal is free to
+    // route the payment or its change through Ironwood — which post-NU6.3 it
+    // will, since the Orchard pool is sealed — and the PCZT builder then fails
+    // with the opaque `ProposalNotSupported`. Passing the version here makes the
+    // proposal itself avoid Ironwood, so an unbuildable plan is rejected during
+    // proposal (with a specific reason) rather than after input selection.
     let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
         &mut db,
         &params,
@@ -838,7 +850,7 @@ pub async fn prepare_send(
         memo_bytes,
         None, // change memo
         ShieldedProtocol::Orchard,
-        None, // proposed tx version
+        Some(TxVersion::V5),
     )
     .map_err(|e| CoreError::Ceremony(format!("propose transfer: {e:?}")))?;
 
@@ -852,7 +864,21 @@ pub async fn prepare_send(
         &proposal,
         None, // target_expiry_height: use the proposal's default expiry
     )
-    .map_err(|e| CoreError::Ceremony(format!("create pczt: {e:?}")))?;
+    .map_err(|e| match e {
+        // The PCZT builder only emits version-5 transactions, so it refuses any
+        // plan that moves value through the Ironwood pool. Cyze signs via PCZT
+        // (FROST needs it to expose each spend's α and to apply the group's
+        // signature), so there is no fallback path until the Zcash crates can
+        // build Ironwood PCZTs.
+        zcash_client_backend::data_api::error::Error::ProposalNotSupported => CoreError::Ceremony(
+            "this transaction needs the Ironwood pool, which the Zcash PCZT builder \
+             cannot construct yet (it only builds version-5 transactions). Since \
+             NU6.3 sealed the Orchard pool, shielded sends and shielded change now \
+             require Ironwood. Unshielding to a transparent address may still work."
+                .to_string(),
+        ),
+        other => CoreError::Ceremony(format!("create pczt: {other:?}")),
+    })?;
 
     // Ironwood cohort: Pczt::serialize now consumes self and returns Result
     // (postcard EncodingError). Serialize a clone since `pczt` is still needed

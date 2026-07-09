@@ -453,6 +453,11 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // authoritative is_unshield flag from the decoded address.
   const [sendMode, setSendMode] = useState<SendMode>("shielded");
   const recipientErr = validateRecipient(recipient, isMainnet, sendMode);
+  // Balances are read from the local wallet database, which is empty (or stale)
+  // until the first sync finishes. Building a transaction before then selects
+  // from notes the wallet hasn't scanned yet and fails with a spurious
+  // "insufficient funds", so hold sends until that first sync succeeds.
+  const initialSyncDone = lastSynced !== null;
   const prepare = useMutation({
     mutationFn: () =>
       walletPrepareSend(
@@ -838,6 +843,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     onClick={() => prepare.mutate()}
                     disabled={
                       prepare.isPending ||
+                      !initialSyncDone ||
                       !recipient.trim() ||
                       !(Number(amountZec) > 0) ||
                       !!recipientErr
@@ -845,10 +851,19 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                   >
                     {prepare.isPending
                       ? "Building…"
-                      : sendMode === "unshield"
-                        ? "Prepare unshield transaction"
-                        : "Prepare draft transaction"}
+                      : !initialSyncDone
+                        ? "Syncing wallet…"
+                        : sendMode === "unshield"
+                          ? "Prepare unshield transaction"
+                          : "Prepare draft transaction"}
                   </button>
+                  {!initialSyncDone && (
+                    <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
+                      Waiting for the first sync to finish so the wallet knows
+                      which notes it can spend. Sending before this completes
+                      would fail with an incorrect “insufficient funds” error.
+                    </p>
+                  )}
                   {draft && (
                     <div
                       className="card"
