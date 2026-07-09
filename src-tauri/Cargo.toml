@@ -68,3 +68,11 @@ dirs = "5"
 tracing = "0.1"
 sha2 = "0.10"
 base64 = "0.22"
+
+# IRONWOOD/NU6.3 TESTNET SPIKE: the zecrocks librustzcash `ironwood-scan-model`
+# fork depends on explicit checkpoint-retention shardtree/incrementalmerkletree
+# (zcash/incrementalmerkletree main, not yet published), so a downstream consumer
+# must replicate the fork's patch. Remove once a published shardtree release cut.
+[patch.crates-io]
+shardtree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "decefc469dbf1e686b20b7e7dcaa7cb4f122125b" }
+incrementalmerkletree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "decefc469dbf1e686b20b7e7dcaa7cb4f122125b" }

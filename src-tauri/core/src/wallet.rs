@@ -815,10 +815,18 @@ pub async fn prepare_send(
         account_id,
         OvkPolicy::Sender,
         &proposal,
+        None, // target_expiry_height: use the proposal's default expiry
     )
     .map_err(|e| CoreError::Ceremony(format!("create pczt: {e:?}")))?;
 
-    let pczt_hex = hex::encode(pczt.serialize());
+    // Ironwood cohort: Pczt::serialize now consumes self and returns Result
+    // (postcard EncodingError). Serialize a clone since `pczt` is still needed
+    // below for the sighash and spend extraction.
+    let pczt_hex = hex::encode(
+        pczt.clone()
+            .serialize()
+            .map_err(|e| CoreError::Ceremony(format!("serialize pczt: {e:?}")))?,
+    );
 
     let sighash = pczt::roles::signer::Signer::new(pczt.clone())
         .map_err(|e| CoreError::Ceremony(format!("signer: {e:?}")))?
@@ -845,6 +853,7 @@ pub async fn prepare_send(
 fn orchard_spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
     use ff::PrimeField;
     use orchard::value::NoteValue;
+    use pczt::roles::low_level_signer::OrchardParseError;
 
     let mut spends = Vec::new();
     let mut parse_err: Option<String> = None;
@@ -859,9 +868,9 @@ fn orchard_spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreErro
                     });
                 }
             }
-            Ok::<_, orchard::pczt::ParseError>(())
+            Ok::<_, OrchardParseError>(())
         })
-        .map_err(|e: orchard::pczt::ParseError| {
+        .map_err(|e: OrchardParseError| {
             parse_err = Some(format!("{e:?}"));
         })
         .ok();
@@ -879,6 +888,7 @@ pub fn apply_orchard_signatures(
     signatures: Vec<(usize, String)>,
 ) -> Result<String, CoreError> {
     use orchard::primitives::redpallas::{Signature, SpendAuth};
+    use pczt::roles::low_level_signer::OrchardParseError;
 
     let pczt = pczt::Pczt::parse(
         &hex::decode(pczt_hex.trim()).map_err(|e| CoreError::Ceremony(format!("pczt hex: {e}")))?,
@@ -909,13 +919,16 @@ pub fn apply_orchard_signatures(
                     break;
                 }
             }
-            Ok::<_, orchard::pczt::ParseError>(())
+            Ok::<_, OrchardParseError>(())
         })
-        .map_err(|e: orchard::pczt::ParseError| CoreError::Ceremony(format!("apply: {e:?}")))?;
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply: {e:?}")))?;
     if let Some(e) = apply_err {
         return Err(CoreError::Ceremony(format!("invalid signature for {e}")));
     }
-    Ok(hex::encode(signer.finish().serialize()))
+    // Ironwood cohort: Pczt::serialize now returns Result (postcard EncodingError).
+    Ok(hex::encode(signer.finish().serialize().map_err(|e| {
+        CoreError::Ceremony(format!("serialize pczt: {e:?}"))
+    })?))
 }
 
 /// Prove, finalize, and broadcast a fully spend-auth-signed PCZT, returning the
@@ -940,13 +953,26 @@ pub async fn broadcast_signed(
     // Proving + finalize + extract is synchronous, CPU-bound work; keep it off
     // the async runtime so progress events and other tasks stay responsive.
     let (raw, txid) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), CoreError> {
-        use orchard::circuit::{ProvingKey, VerifyingKey};
+        use orchard::circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey};
         use pczt::roles::{
             prover::Prover, spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor,
         };
 
+        // Ironwood cohort: ProvingKey/VerifyingKey::build now take an
+        // OrchardCircuitVersion. Testnet has activated NU6.3, so Orchard-pool
+        // actions prove/verify against the post-NU6.3 circuit (ProtocolVersion
+        // V3 → PostNu6_3, the fixed circuit plus the disableCrossAddress
+        // constraint). A fully network-agnostic build would derive this from the
+        // PCZT's consensus branch id (as pczt's tx_extractor does via
+        // `bundle.bundle_version().circuit_version()`); pinned here for the
+        // testnet spike.
+        // TODO(ironwood-phase3): turnstile sends also populate an *Ironwood*
+        // output bundle that needs `Prover::create_ironwood_proof` with an
+        // ironwood_v3 ProvingKey; wire that once the send path targets Ironwood.
+        let circuit_version = OrchardCircuitVersion::PostNu6_3;
+
         // 1. Orchard zero-knowledge proof.
-        let pk = ProvingKey::build();
+        let pk = ProvingKey::build(circuit_version);
         let pczt = Prover::new(pczt)
             .create_orchard_proof(&pk)
             .map_err(|e| CoreError::Ceremony(format!("orchard proof: {e:?}")))?
@@ -958,7 +984,7 @@ pub async fn broadcast_signed(
             .map_err(|e| CoreError::Ceremony(format!("finalize spends: {e:?}")))?;
 
         // 3. Extract the final transaction (creates the binding signature).
-        let vk = VerifyingKey::build();
+        let vk = VerifyingKey::build(circuit_version);
         let tx = TransactionExtractor::new(pczt)
             .with_orchard(&vk)
             .extract()
