@@ -79,6 +79,7 @@ pub fn run() {
             commands::wallet::wallet_group_status,
             commands::wallet::wallet_init_account,
             commands::wallet::wallet_sync,
+            commands::wallet::wallet_sync_progress,
             commands::wallet::wallet_history,
             commands::wallet::wallet_notes,
             commands::wallet::wallet_receive_address,

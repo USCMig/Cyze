@@ -14,6 +14,7 @@ import {
   walletGroupStatus,
   walletInitAccount,
   walletSync,
+  walletSyncProgress,
   walletPrepareSend,
   walletSend,
   walletHistory,
@@ -483,6 +484,16 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     },
   });
 
+  // `walletSync` blocks for the entire catch-up, so the cached wallet status
+  // cannot move while it runs — a long rescan looks frozen. This read-only probe
+  // reads the height each scanned batch commits, so progress stays visible.
+  const progress = useQuery({
+    queryKey: ["sync-progress", group.id],
+    queryFn: () => walletSyncProgress(group.id),
+    enabled: sync.isPending,
+    refetchInterval: sync.isPending ? 2000 : false,
+  });
+
   const [recipient, setRecipient] = useState("");
   const [amountZec, setAmountZec] = useState("");
   const [memo, setMemo] = useState("");
@@ -642,6 +653,12 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   if (!group.ciphersuite.includes("Pallas")) return null;
   const s = status.data;
+  // Prefer the live probe while a sync is running; the cached status is stale
+  // until the whole catch-up returns.
+  const live = sync.isPending ? progress.data : undefined;
+  const syncedHeight = live?.[0] ?? s?.synced_height ?? 0;
+  const tipHeight = live?.[1] ?? s?.chain_tip_height ?? 0;
+  const blocksRemaining = Math.max(0, tipHeight - syncedHeight);
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
@@ -680,8 +697,11 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
             </div>
             <div className="sync-box">
               <div className="dim" style={{ fontSize: 12 }}>
-                Block {s.synced_height.toLocaleString()}
-                {s.chain_tip_height > 0 && <> / {s.chain_tip_height.toLocaleString()}</>}
+                Block {syncedHeight.toLocaleString()}
+                {tipHeight > 0 && <> / {tipHeight.toLocaleString()}</>}
+                {sync.isPending && blocksRemaining > 0 && (
+                  <> · {blocksRemaining.toLocaleString()} to go</>
+                )}
               </div>
               <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
                 {sync.isPending ? (

@@ -185,6 +185,25 @@ pub async fn wallet_init_account(
     Ok(scan_from)
 }
 
+/// Scan progress as `[fully_scanned_height, chain_tip_height]`, read without the
+/// wallet's write lock so it can be polled *while* `wallet_sync` is running.
+/// `wallet_sync` blocks for the whole catch-up, so this is the only way to see a
+/// long sync advance rather than appear frozen.
+#[tauri::command]
+pub async fn wallet_sync_progress(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> AppResult<(u64, u64)> {
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    let db_key = state.wallet_db_key(&group_id).await?;
+    Ok(wallet::sync_progress(
+        &state.data_dir,
+        &group_id,
+        network,
+        db_key.as_ref(),
+    )?)
+}
+
 /// Sync the group's wallet from lightwalletd, then return the updated status.
 /// Long-running. Touches the network.
 #[tauri::command]

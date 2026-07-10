@@ -147,6 +147,10 @@ export const walletInitAccount = (groupId: string, birthdayHeight?: number) =>
   });
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
+/** `[fullyScannedHeight, chainTipHeight]`, readable while a sync is running.
+ *  `walletSync` blocks for the whole catch-up, so poll this to show progress. */
+export const walletSyncProgress = (groupId: string) =>
+  invoke<[number, number]>("wallet_sync_progress", { groupId });
 
 export interface TxRecord {
   txid: string;

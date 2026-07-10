@@ -143,7 +143,18 @@ async fn connect(url: &str) -> Result<CompactTxStreamerClient<Channel>, CoreErro
     validate_endpoint_security(url)?;
     let url = normalize_endpoint(url);
     let mut endpoint = Channel::from_shared(url.clone())
-        .map_err(|e| CoreError::Connection(format!("invalid lightwalletd URL: {e}")))?;
+        .map_err(|e| CoreError::Connection(format!("invalid lightwalletd URL: {e}")))?
+        // Syncing streams compact blocks for minutes at a time. Without
+        // keep-alive, a connection that dies silently — a NAT idle timeout, a
+        // server restart, a dropped VPN — leaves the stream waiting forever with
+        // no error and no progress. HTTP/2 pings detect the dead peer and fail
+        // the request so the caller can retry. Note there is deliberately no
+        // request `timeout()`: that would abort healthy long block streams.
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
+        .http2_keep_alive_interval(std::time::Duration::from_secs(20))
+        .keep_alive_timeout(std::time::Duration::from_secs(20))
+        .keep_alive_while_idle(true);
     if url.starts_with("https://") {
         endpoint = endpoint
             .tls_config(ClientTlsConfig::new().with_webpki_roots())
@@ -301,7 +312,41 @@ fn open_readonly_connection(
         conn.execute_batch(&key_pragma(db_key))
             .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
     }
+    // Same `WHERE x IN rarray(?)` support the writable connection registers;
+    // zcash_client_sqlite's read queries rely on it too.
+    rusqlite::vtab::array::load_module(&conn)
+        .map_err(|e| CoreError::Crypto(format!("load rarray module: {e}")))?;
     Ok(conn)
+}
+
+/// Scan progress as `(fully_scanned_height, chain_tip_height)`.
+///
+/// Deliberately opens a *read-only* connection rather than reusing
+/// [`group_status`], which takes the writable one: this is polled while
+/// `sync_group` holds the writer for the whole catch-up, and a second writer
+/// would simply block. Each scanned batch is committed, so the height observed
+/// here advances during a sync that would otherwise look frozen.
+pub fn sync_progress(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    db_key: &[u8],
+) -> Result<(u64, u64), CoreError> {
+    let (db_path, _) = wallet_paths(data_dir, group_id);
+    if !db_path.exists() {
+        return Ok((0, 0));
+    }
+    let conn = open_readonly_connection(&db_path, db_key)?;
+    let db = WalletDb::from_connection(&conn, network.params(), SystemClock, OsRng);
+    let summary = db
+        .get_wallet_summary(ConfirmationsPolicy::default())
+        .map_err(|e| CoreError::Crypto(format!("wallet summary: {e}")))?;
+    Ok(summary.map_or((0, 0), |s| {
+        (
+            u64::from(s.fully_scanned_height()),
+            u64::from(s.chain_tip_height()),
+        )
+    }))
 }
 
 /// Open a rusqlite connection and unlock it with the SQLCipher key, verifying
