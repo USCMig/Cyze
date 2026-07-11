@@ -72,7 +72,14 @@ base64 = "0.22"
 # IRONWOOD/NU6.3 TESTNET SPIKE: the zecrocks librustzcash `ironwood-scan-model`
 # fork depends on explicit checkpoint-retention shardtree/incrementalmerkletree
 # (zcash/incrementalmerkletree main, not yet published), so a downstream consumer
-# must replicate the fork's patch. Remove once a published shardtree release cut.
+# must replicate the fork's patch.
+#
+# Pinned to a59d6ce ("shardtree: clear flags across a folded leaf instead of
+# panicking"), NOT the fork's original decefc4: decefc4 panics with "Tree state
+# inconsistent with checkpoints" (prunable.rs) while scanning. a59d6ce is the
+# last 0.6.x commit before the shardtree 0.7.0 release, so it carries the fix
+# without the version bump that would break the fork's `^0.6` requirement.
+# Remove this whole section once the fork moves to a published shardtree.
 [patch.crates-io]
-shardtree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "decefc469dbf1e686b20b7e7dcaa7cb4f122125b" }
-incrementalmerkletree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "decefc469dbf1e686b20b7e7dcaa7cb4f122125b" }
+shardtree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "a59d6cead254cc5ee90b2143e56fe7258cb8d8a7" }
+incrementalmerkletree = { git = "https://github.com/zcash/incrementalmerkletree", rev = "a59d6cead254cc5ee90b2143e56fe7258cb8d8a7" }

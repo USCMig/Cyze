@@ -2663,7 +2663,7 @@ dependencies = [
 [[package]]
 name = "incrementalmerkletree"
 version = "0.8.2"
-source = "git+https://github.com/zcash/incrementalmerkletree?rev=decefc469dbf1e686b20b7e7dcaa7cb4f122125b#decefc469dbf1e686b20b7e7dcaa7cb4f122125b"
+source = "git+https://github.com/zcash/incrementalmerkletree?rev=a59d6cead254cc5ee90b2143e56fe7258cb8d8a7#a59d6cead254cc5ee90b2143e56fe7258cb8d8a7"
 dependencies = [
  "either",
 ]
@@ -5115,7 +5115,7 @@ dependencies = [
 [[package]]
 name = "shardtree"
 version = "0.6.2"
-source = "git+https://github.com/zcash/incrementalmerkletree?rev=decefc469dbf1e686b20b7e7dcaa7cb4f122125b#decefc469dbf1e686b20b7e7dcaa7cb4f122125b"
+source = "git+https://github.com/zcash/incrementalmerkletree?rev=a59d6cead254cc5ee90b2143e56fe7258cb8d8a7#a59d6cead254cc5ee90b2143e56fe7258cb8d8a7"
 dependencies = [
  "bitflags 2.13.0",
  "either",
