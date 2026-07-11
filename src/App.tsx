@@ -6,8 +6,8 @@ import {
   NavLink,
   Navigate,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
-import type { GroupSummary } from "./ipc/commands";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useKeystore } from "./stores/keystore";
@@ -32,69 +32,56 @@ import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
 import Wallet from "./screens/Wallet";
 
-/** Expandable Groups nav entry: accordion — at most one group's sub-links
- *  visible at a time to keep the sidebar uncluttered. Auto-opens the group
- *  whose page is currently active. */
+/** Groups nav entry: a single-select dropdown so exactly one group ("active
+ *  wallet") is shown at a time, with only that group's links below it. Keeps
+ *  the sidebar quiet no matter how many groups exist. Follows the current
+ *  route, and switching the picker navigates into the chosen group. */
 function GroupsNavItem() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const location = useLocation();
+  const navigate = useNavigate();
 
   const activeGroupId = useMemo(() => {
     const m = location.pathname.match(/^\/groups\/([^/]+)/);
     return m ? m[1] : null;
   }, [location.pathname]);
-  const [expandedId, setExpandedId] = useState<string | null>(activeGroupId);
+  const [selectedId, setSelectedId] = useState<string | null>(activeGroupId);
   useEffect(() => {
-    if (activeGroupId) setExpandedId(activeGroupId);
+    if (activeGroupId) setSelectedId(activeGroupId);
   }, [activeGroupId]);
 
-  if (!groups.data?.length) return null;
-  return (
-    <div>
-      {groups.data.map((g) => (
-        <GroupNavEntry
-          key={g.id}
-          g={g}
-          isOpen={expandedId === g.id}
-          onToggle={() => setExpandedId((prev) => (prev === g.id ? null : g.id))}
-        />
-      ))}
-    </div>
-  );
-}
+  const list = groups.data ?? [];
+  if (!list.length) return null;
 
-/** A single group in the sidebar. Controlled open state is lifted to the
- *  parent so only one group can be expanded at a time. */
-function GroupNavEntry({
-  g,
-  isOpen,
-  onToggle,
-}: {
-  g: GroupSummary;
-  isOpen: boolean;
-  onToggle: () => void;
-}) {
+  // Always resolve to one real group so the panel shows a single active wallet.
+  const current =
+    list.find((g) => g.id === selectedId) ?? list[0];
+
   return (
     <div className="nav-group">
-      <button
-        className="nav-group-name"
-        onClick={onToggle}
-        title={g.description || g.id}
+      <select
+        className="nav-group-select group-pick"
+        value={current.id}
+        title={current.description || current.id}
+        aria-label="Active group"
+        onChange={(e) => {
+          setSelectedId(e.target.value);
+          navigate(`/groups/${e.target.value}`);
+        }}
       >
-        <span className="nav-group-caret">{isOpen ? "▾" : "▸"}</span>
-        {g.description || `${g.id.slice(0, 10)}…`}
-      </button>
-      {isOpen && (
-        <>
-          <NavLink to={`/groups/${g.id}`} end className="nav-subsubitem">
-            Details
-          </NavLink>
-          {g.ciphersuite.includes("Pallas") && (
-            <NavLink to={`/groups/${g.id}/wallet`} className="nav-subsubitem">
-              Wallet
-            </NavLink>
-          )}
-        </>
+        {list.map((g) => (
+          <option key={g.id} value={g.id}>
+            {g.description || `${g.id.slice(0, 10)}…`}
+          </option>
+        ))}
+      </select>
+      <NavLink to={`/groups/${current.id}`} end className="nav-subsubitem">
+        Details
+      </NavLink>
+      {current.ciphersuite.includes("Pallas") && (
+        <NavLink to={`/groups/${current.id}/wallet`} className="nav-subsubitem">
+          Wallet
+        </NavLink>
       )}
     </div>
   );

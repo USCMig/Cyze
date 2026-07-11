@@ -91,6 +91,37 @@ pub fn branch_id_for_height(network: WalletNetwork, height: u64) -> String {
     format!("{:08x}", u32::from(bid))
 }
 
+/// The NU6.3 / Ironwood consensus branch id (little-endian u32, printed as
+/// 8-digit hex). Orchard actions mined under this upgrade prove against the
+/// `PostNu6_3` circuit (the fixed circuit plus the `disableCrossAddress`
+/// constraint). Testnet activated it at 4,134,000; mainnet has not (yet).
+const NU6_3_BRANCH_ID: &str = "37a5165b";
+
+/// The Orchard proving/verifying circuit version to use for a transaction mined
+/// at `height` on `network`. This MUST match the consensus branch active at that
+/// height, or the proof is rejected by the network:
+///
+/// - Post-NU6.3 (Ironwood, currently testnet only) → `PostNu6_3`.
+/// - Post-NU6.2 (mainnet's current activation) → `FixedPostNu6_2`.
+///
+/// Deriving it from the live branch id — rather than hardcoding one network's
+/// value — is what lets the same build produce valid transactions on both
+/// networks, and automatically switches mainnet over once it activates NU6.3.
+/// Both live networks are past NU6.2, so `FixedPostNu6_2` is the correct floor;
+/// the historical `InsecurePreNu6_2` circuit is never used for new sends.
+#[cfg(feature = "wallet")]
+fn orchard_circuit_version_for_height(
+    network: WalletNetwork,
+    height: u64,
+) -> orchard::circuit::OrchardCircuitVersion {
+    use orchard::circuit::OrchardCircuitVersion;
+    if branch_id_for_height(network, height) == NU6_3_BRANCH_ID {
+        OrchardCircuitVersion::PostNu6_3
+    } else {
+        OrchardCircuitVersion::FixedPostNu6_2
+    }
+}
+
 /// Normalize an endpoint: a bare `host:port` (e.g. `tz.ombie.cash:443`) is
 /// assumed to be TLS and gets an `https://` scheme.
 fn normalize_endpoint(url: &str) -> String {
@@ -1108,7 +1139,7 @@ pub fn apply_orchard_signatures(
 /// creates the binding signature), and submit it to lightwalletd.
 pub async fn broadcast_signed(
     signed_pczt_hex: &str,
-    _network: WalletNetwork,
+    network: WalletNetwork,
     url: &str,
 ) -> Result<String, CoreError> {
     let pczt = pczt::Pczt::parse(
@@ -1117,26 +1148,31 @@ pub async fn broadcast_signed(
     )
     .map_err(|e| CoreError::Ceremony(format!("parse pczt: {e:?}")))?;
 
+    // Select the Orchard circuit from the consensus branch active at the live
+    // chain tip, so the proof matches what THIS network's validators expect
+    // (PostNu6_3 on Ironwood testnet, FixedPostNu6_2 on mainnet-NU6.2). A stale
+    // or hardcoded circuit produces a proof the network rejects. This runs
+    // seconds before broadcast, so the tip is effectively the tx's mined branch.
+    let mut client = connect(url).await?;
+    let tip_height = client
+        .get_latest_block(ChainSpec {})
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .into_inner()
+        .height;
+    let circuit_version = orchard_circuit_version_for_height(network, tip_height);
+
     // Proving + finalize + extract is synchronous, CPU-bound work; keep it off
     // the async runtime so progress events and other tasks stay responsive.
     let (raw, txid) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), CoreError> {
-        use orchard::circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey};
+        use orchard::circuit::{ProvingKey, VerifyingKey};
         use pczt::roles::{
             prover::Prover, spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor,
         };
 
-        // Ironwood cohort: ProvingKey/VerifyingKey::build now take an
-        // OrchardCircuitVersion. Testnet has activated NU6.3, so Orchard-pool
-        // actions prove/verify against the post-NU6.3 circuit (ProtocolVersion
-        // V3 → PostNu6_3, the fixed circuit plus the disableCrossAddress
-        // constraint). A fully network-agnostic build would derive this from the
-        // PCZT's consensus branch id (as pczt's tx_extractor does via
-        // `bundle.bundle_version().circuit_version()`); pinned here for the
-        // testnet spike.
         // TODO(ironwood-phase3): turnstile sends also populate an *Ironwood*
         // output bundle that needs `Prover::create_ironwood_proof` with an
         // ironwood_v3 ProvingKey; wire that once the send path targets Ironwood.
-        let circuit_version = OrchardCircuitVersion::PostNu6_3;
 
         // 1. Orchard zero-knowledge proof.
         let pk = ProvingKey::build(circuit_version);
@@ -1166,8 +1202,7 @@ pub async fn broadcast_signed(
     .await
     .map_err(|e| CoreError::Ceremony(format!("proving task panicked: {e}")))??;
 
-    // 4. Submit to lightwalletd.
-    let mut client = connect(url).await?;
+    // 4. Submit to lightwalletd (reusing the connection opened above).
     let resp = client
         .send_transaction(zcash_client_backend::proto::service::RawTransaction { data: raw, height: 0 })
         .await

@@ -307,6 +307,14 @@ td { padding: 8px; border-top: 1px solid var(--border); vertical-align: top; }
 }
 .nav-group-name:hover { background: var(--bg); color: var(--text); filter: none; }
 .nav-group-caret { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; }
+.nav-group-select {
+  width: 100%;
+  margin: 4px 0 2px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  padding: 5px 10px;
+  border-radius: 6px;
+}
 .sidebar a.nav-subsubitem {
   font-size: 13px;
   padding: 5px 12px 5px 34px;
