@@ -56,6 +56,18 @@ impl WalletNetwork {
             WalletNetwork::Main => "https://zec.rocks:443",
         }
     }
+
+    /// On-disk directory name for this network's wallet data. Testnet and
+    /// mainnet keep entirely separate databases, blocks caches, and pending
+    /// transactions, so switching networks never shows one network's balance
+    /// while pointed at the other's chain (and testnet data can't corrupt a
+    /// mainnet db, or vice versa).
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            WalletNetwork::Test => "testnet",
+            WalletNetwork::Main => "mainnet",
+        }
+    }
 }
 
 /// Chain info reported by a lightwalletd server (a connectivity probe).
@@ -256,19 +268,30 @@ use zcash_protocol::memo::{Memo, MemoBytes};
 
 type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
 
-/// `(wallet.sqlite path, fsblockdb dir)` for a group.
-fn wallet_paths(data_dir: &Path, group_id: &str) -> (PathBuf, PathBuf) {
-    let base = data_dir.join("wallets").join(group_id);
+/// `(wallet.sqlite path, fsblockdb dir)` for a group on a given network.
+/// Scoped by network (`.../<group_id>/<network>/...`) so testnet and mainnet
+/// each keep their own db, blocks cache, and balance — they never share state.
+fn wallet_paths(data_dir: &Path, group_id: &str, network: WalletNetwork) -> (PathBuf, PathBuf) {
+    let base = data_dir
+        .join("wallets")
+        .join(group_id)
+        .join(network.dir_name());
     (base.join("wallet.sqlite"), base.join("blocks"))
 }
 
 /// Path of the on-disk record for a fully-signed transaction awaiting broadcast.
 /// Keeping the signed PCZT lets a failed broadcast be retried without repeating
-/// the whole FROST signing ceremony.
-fn pending_tx_path(data_dir: &Path, group_id: &str, ceremony_id: &str) -> PathBuf {
+/// the whole FROST signing ceremony. Network-scoped like [`wallet_paths`].
+fn pending_tx_path(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    ceremony_id: &str,
+) -> PathBuf {
     data_dir
         .join("wallets")
         .join(group_id)
+        .join(network.dir_name())
         .join("pending")
         .join(format!("{ceremony_id}.pczt.hex"))
 }
@@ -277,10 +300,11 @@ fn pending_tx_path(data_dir: &Path, group_id: &str, ceremony_id: &str) -> PathBu
 pub fn save_pending_tx(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     ceremony_id: &str,
     signed_pczt_hex: &str,
 ) -> Result<PathBuf, CoreError> {
-    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    let path = pending_tx_path(data_dir, group_id, network, ceremony_id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         let _ = crate::keystore::restrict_dir_to_owner(parent);
@@ -294,9 +318,10 @@ pub fn save_pending_tx(
 pub fn load_pending_tx(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     ceremony_id: &str,
 ) -> Result<String, CoreError> {
-    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    let path = pending_tx_path(data_dir, group_id, network, ceremony_id);
     let hex = std::fs::read_to_string(&path).map_err(|e| {
         CoreError::Config(format!("no pending transaction for {ceremony_id}: {e}"))
     })?;
@@ -304,8 +329,8 @@ pub fn load_pending_tx(
 }
 
 /// Remove a pending transaction record once it has been broadcast.
-pub fn clear_pending_tx(data_dir: &Path, group_id: &str, ceremony_id: &str) {
-    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+pub fn clear_pending_tx(data_dir: &Path, group_id: &str, network: WalletNetwork, ceremony_id: &str) {
+    let path = pending_tx_path(data_dir, group_id, network, ceremony_id);
     let _ = std::fs::remove_file(path);
 }
 
@@ -363,7 +388,7 @@ pub fn sync_progress(
     network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<(u64, u64), CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok((0, 0));
     }
@@ -505,7 +530,7 @@ pub fn group_status(
     ufvk: &str,
     db_key: &[u8],
 ) -> Result<WalletStatus, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let address = ufvk_default_address(network, ufvk).ok();
     if !db_path.exists() {
         return Ok(WalletStatus {
@@ -665,7 +690,7 @@ pub async fn init_group_account(
 ) -> Result<u64, CoreError> {
     use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
 
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let mut db = open_db(&db_path, network, db_key)?;
     if !db
         .get_account_ids()
@@ -832,7 +857,7 @@ pub async fn sync_group(
     lightwalletd_url: &str,
     db_key: &[u8],
 ) -> Result<(), CoreError> {
-    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id);
+    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
     std::fs::create_dir_all(&blocks_dir)?;
     let mut db = open_db(&db_path, network, db_key)?;
 
@@ -914,7 +939,7 @@ pub async fn prepare_send(
     use zcash_protocol::ShieldedProtocol;
 
     let params = network.params();
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let mut db = open_db(&db_path, network, db_key)?;
 
     // Anchor the expiry to the live chain tip, not whatever sync last recorded.
@@ -1253,9 +1278,10 @@ pub struct TxRecord {
 pub fn count_orchard_received_notes(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<u64, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok(0);
     }
@@ -1295,9 +1321,10 @@ pub struct NoteRecord {
 pub fn wallet_notes(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<Vec<NoteRecord>, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok(vec![]);
     }
@@ -1383,9 +1410,10 @@ pub fn wallet_notes(
 pub fn wallet_history(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<Vec<TxRecord>, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok(vec![]);
     }

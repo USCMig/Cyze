@@ -35,9 +35,14 @@ import {
   type CeremonyState,
 } from "../stores/ceremonies";
 
-/** ZEC display from zatoshis (1 ZEC = 1e8 zatoshis). */
+/** Amount display from zatoshis (1 unit = 1e8 zatoshis). */
 function zec(zats: number): string {
   return (zats / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
+}
+
+/** The currency ticker for the active network: ZEC on mainnet, TAZ on testnet. */
+function unit(isMainnet: boolean): string {
+  return isMainnet ? "ZEC" : "TAZ";
 }
 
 /** Full-page overlay confirmation required before broadcasting a mainnet send.
@@ -325,11 +330,13 @@ type WalletTab = "receive" | "send" | "notes";
  *  a one-click self-send consolidation to merge fragmented notes into one. */
 function ReviewNotesTab({
   groupId,
+  isMainnet,
   onConsolidate,
   consolidatePending,
   disabledReason,
 }: {
   groupId: string;
+  isMainnet: boolean;
   onConsolidate: () => void;
   consolidatePending: boolean;
   disabledReason: string | null;
@@ -369,7 +376,7 @@ function ReviewNotesTab({
             Your balance is made of <strong>{spendable.length}</strong> spendable
             note{spendable.length === 1 ? "" : "s"}
             {pending.length > 0 && <> (plus {pending.length} pending)</>}, totalling{" "}
-            <strong>{zec(totalSpendable)} ZEC</strong> spendable. Each note is a
+            <strong>{zec(totalSpendable)} {unit(isMainnet)}</strong> spendable. Each note is a
             separate spend authorization, so a full-balance send needs{" "}
             <strong>
               {rounds} signing round{rounds === 1 ? "" : "s"}
@@ -420,7 +427,7 @@ function ReviewNotesTab({
                 return (
                   <tr key={n.received_txid + i}>
                     <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-                      {zec(n.value_zatoshis)} ZEC
+                      {zec(n.value_zatoshis)} {unit(isMainnet)}
                     </td>
                     <td>
                       <span className={`badge ${b.cls}`}>{b.label}</span>
@@ -538,7 +545,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       const spendable = status.data?.spendable_zatoshis ?? 0;
       if (!addr) throw new Error("wallet address not available — try syncing first");
       if (spendable <= CONSOLIDATE_FEE_BUFFER)
-        throw new Error("balance too low to consolidate (need > 0.001 ZEC above fees)");
+        throw new Error(`balance too low to consolidate (need > 0.001 ${unit(isMainnet)} above fees)`);
       return walletPrepareSend(group.id, addr, spendable - CONSOLIDATE_FEE_BUFFER);
     },
     onSuccess: (d) => {
@@ -683,16 +690,16 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               <div>
                 <label>Spendable (Orchard)</label>
                 <div style={{ fontSize: 18, color: "var(--accent)" }}>
-                  {zec(s.orchard.spendable_zatoshis)} ZEC
+                  {zec(s.orchard.spendable_zatoshis)} {unit(isMainnet)}
                 </div>
               </div>
               <div>
                 <label>Pending</label>
-                <div style={{ fontSize: 18 }}>{zec(s.orchard.pending_zatoshis)} ZEC</div>
+                <div style={{ fontSize: 18 }}>{zec(s.orchard.pending_zatoshis)} {unit(isMainnet)}</div>
               </div>
               <div>
                 <label>Total</label>
-                <div style={{ fontSize: 18 }}>{zec(s.orchard.total_zatoshis)} ZEC</div>
+                <div style={{ fontSize: 18 }}>{zec(s.orchard.total_zatoshis)} {unit(isMainnet)}</div>
               </div>
             </div>
             <div className="sync-box">
@@ -779,6 +786,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           {walletTab === "notes" && (
             <ReviewNotesTab
               groupId={group.id}
+              isMainnet={isMainnet}
               onConsolidate={() => {
                 consolidate.mutate();
                 setWalletTab("send");
@@ -807,6 +815,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     setIsConsolidation(false);
                     setShowConfirm(false);
                   }}
+                  isMainnet={isMainnet}
                 />
               ) : (
                 <>
@@ -876,7 +885,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       {recipientErr}
                     </div>
                   )}
-                  <label>Amount (ZEC)</label>
+                  <label>Amount ({unit(isMainnet)})</label>
                   <input
                     type="text"
                     placeholder="0.001"
@@ -951,7 +960,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       {!isConsolidation && draft.is_unshield && (
                         <div className="callout warn" style={{ marginBottom: 12 }}>
                           <span>
-                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} ZEC</strong> from
+                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</strong> from
                             the group's shielded Orchard pool to a transparent address. The amount
                             and recipient will be <strong>publicly visible on-chain</strong>.
                           </span>
@@ -967,15 +976,15 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                           </tr>
                           <tr>
                             <td>Amount to send</td>
-                            <td>{zec(draft.amount_zatoshis)} ZEC</td>
+                            <td>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</td>
                           </tr>
                           <tr>
                             <td>Fee</td>
-                            <td>{zec(draft.fee_zatoshis)} ZEC</td>
+                            <td>{zec(draft.fee_zatoshis)} {unit(isMainnet)}</td>
                           </tr>
                           <tr>
                             <td>Total</td>
-                            <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} ZEC</td>
+                            <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} {unit(isMainnet)}</td>
                           </tr>
                           <tr>
                             <td>Sighash</td>
@@ -1197,10 +1206,12 @@ function SendSessionPanel({
   ceremonyId,
   ceremony,
   onDismiss,
+  isMainnet,
 }: {
   ceremonyId: string;
   ceremony: CeremonyState;
   onDismiss: () => void;
+  isMainnet: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -1249,7 +1260,7 @@ function SendSessionPanel({
             <tbody>
               <tr>
                 <td>{meta.isUnshield ? "Unshielding" : "Sending"}</td>
-                <td>{zec(meta.amountZatoshis)} ZEC</td>
+                <td>{zec(meta.amountZatoshis)} {unit(isMainnet)}</td>
               </tr>
               <tr>
                 <td>To</td>
@@ -1259,7 +1270,7 @@ function SendSessionPanel({
               </tr>
               <tr>
                 <td>Fee</td>
-                <td>{zec(meta.feeZatoshis)} ZEC</td>
+                <td>{zec(meta.feeZatoshis)} {unit(isMainnet)}</td>
               </tr>
               {meta.memo && (
                 <tr>
@@ -1916,7 +1927,7 @@ export function GroupWalletPage() {
       <div className="card">
         <GroupWallet group={group} isMainnet={isMainnet} />
       </div>
-      <WalletTxHistory group={group} />
+      <WalletTxHistory group={group} isMainnet={isMainnet} />
     </div>
   );
 }
@@ -1930,7 +1941,7 @@ export function GroupWalletPage() {
  *
  *  Columns: Date & Time | Type | Amount | Address | Tx Hash | [+]
  */
-function WalletTxHistory({ group }: { group: GroupSummary }) {
+function WalletTxHistory({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
   const history = useQuery({
     queryKey: ["wallet-history", group.id],
     queryFn: () => walletHistory(group.id),
@@ -2029,6 +2040,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
                 myPubkey={identity.data?.pubkey ?? undefined}
                 isExpanded={expandedKey === row.id}
                 onToggle={() => toggle(row.id)}
+                isMainnet={isMainnet}
               />
             ))}
             {/* On-chain confirmed rows from SQLite */}
@@ -2042,6 +2054,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
                 myPubkey={identity.data?.pubkey ?? undefined}
                 isExpanded={expandedKey === tx.txid}
                 onToggle={() => toggle(tx.txid)}
+                isMainnet={isMainnet}
               />
             ))}
           </tbody>
@@ -2073,6 +2086,7 @@ function TxDetail({
   contacts,
   myPubkey,
   error,
+  isMainnet,
 }: {
   colSpan: number;
   txid?: string;
@@ -2088,6 +2102,7 @@ function TxDetail({
   contacts?: ContactDto[];
   myPubkey?: string;
   error?: string;
+  isMainnet: boolean;
 }) {
   const dateStr = timestamp
     ? fmtDate(new Date(timestamp * 1000))
@@ -2101,8 +2116,8 @@ function TxDetail({
   if (blockHeight != null) rows.push({ label: "Block", value: `#${blockHeight.toLocaleString()}` });
   if (txid) rows.push({ label: "Transaction ID", value: txid, mono: true });
   if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : "Sent" });
-  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ZEC` });
-  if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ZEC` });
+  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ${unit(isMainnet)}` });
+  if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ${unit(isMainnet)}` });
   if (direction === "receive") {
     rows.push({ label: "From", value: "Shielded sender (private)" });
   } else if (fromAddress) {
@@ -2175,6 +2190,7 @@ function PendingTxRow({
   myPubkey,
   isExpanded,
   onToggle,
+  isMainnet,
 }: {
   row: PendingRow;
   contacts: ContactDto[];
@@ -2182,6 +2198,7 @@ function PendingTxRow({
   myPubkey?: string;
   isExpanded: boolean;
   onToggle: () => void;
+  isMainnet: boolean;
 }) {
   const meta = row.send;
   const isUnshield = meta?.isUnshield;
@@ -2205,7 +2222,7 @@ function PendingTxRow({
           )}
         </td>
         <td style={{ textAlign: "right", paddingRight: 12, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: pendingColor }}>
-          {meta ? `−${zec(meta.amountZatoshis)} ZEC` : "—"}
+          {meta ? `−${zec(meta.amountZatoshis)} ${unit(isMainnet)}` : "—"}
         </td>
         <td className="mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: pendingColor ?? "var(--fg-muted)" }}>
           {addrDisplay}
@@ -2230,6 +2247,7 @@ function PendingTxRow({
       {isExpanded && (
         <TxDetail
           colSpan={6}
+          isMainnet={isMainnet}
           txid={row.txid}
           blockHeight={undefined}
           direction={isUnshield ? "send" : "send"}
@@ -2256,6 +2274,7 @@ function OnchainTxRow({
   myPubkey,
   isExpanded,
   onToggle,
+  isMainnet,
 }: {
   tx: TxRecord;
   contacts: ContactDto[];
@@ -2264,6 +2283,7 @@ function OnchainTxRow({
   myPubkey?: string;
   isExpanded: boolean;
   onToggle: () => void;
+  isMainnet: boolean;
 }) {
   const isReceive = tx.direction === "receive";
   const addrDisplay = isReceive
@@ -2292,7 +2312,7 @@ function OnchainTxRow({
         <td style={{ textAlign: "right", paddingRight: 12, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
           <span style={{ color: isReceive ? "#4ade80" : undefined }}>
             {isReceive ? "+" : "−"}
-            {zec(tx.amount_zatoshis)} ZEC
+            {zec(tx.amount_zatoshis)} {unit(isMainnet)}
           </span>
         </td>
         <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
@@ -2313,6 +2333,7 @@ function OnchainTxRow({
       {isExpanded && (
         <TxDetail
           colSpan={6}
+          isMainnet={isMainnet}
           txid={tx.txid}
           timestamp={tx.timestamp}
           blockHeight={tx.block_height}

@@ -114,6 +114,18 @@ export default function Wallet() {
       setUrl(null);
       setInfo(null);
       queryClient.setQueryData(["wallet-config"], cfg);
+      // Each network has its own wallet db, so balances/notes/history/addresses
+      // must be re-read after switching — otherwise the previous network's
+      // numbers linger. Invalidate by prefix so every group's queries refetch.
+      for (const key of [
+        "wallet-status",
+        "wallet-history",
+        "wallet-notes",
+        "sync-progress",
+        "receive-address",
+      ]) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
     },
   });
 

@@ -230,9 +230,9 @@ pub async fn wallet_history(
     // Validate that `group_id` is a known RedPallas group before it is used as a
     // filesystem path component (see wallet_paths). This mirrors the guard every
     // other wallet command applies and prevents path traversal via the group id.
-    group_wallet_ctx(&state, &group_id).await?;
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    Ok(wallet::wallet_history(&state.data_dir, &group_id, db_key.as_ref())?)
+    Ok(wallet::wallet_history(&state.data_dir, &group_id, network, db_key.as_ref())?)
 }
 
 /// The unspent Orchard notes that make up the group's balance (for the "Review
@@ -242,9 +242,9 @@ pub async fn wallet_notes(
     state: State<'_, AppState>,
     group_id: String,
 ) -> AppResult<Vec<wallet::NoteRecord>> {
-    group_wallet_ctx(&state, &group_id).await?;
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    Ok(wallet::wallet_notes(&state.data_dir, &group_id, db_key.as_ref())?)
+    Ok(wallet::wallet_notes(&state.data_dir, &group_id, network, db_key.as_ref())?)
 }
 
 /// A rotating receive address plus the diversifier index it was derived at.
@@ -266,7 +266,7 @@ async fn resolve_receive_address(
     let (network, _url, _ufvk) = group_wallet_ctx(state, group_id).await?;
     let db_key = state.wallet_db_key(group_id).await?;
     let current_notes =
-        wallet::count_orchard_received_notes(&state.data_dir, group_id, db_key.as_ref())?;
+        wallet::count_orchard_received_notes(&state.data_dir, group_id, network, db_key.as_ref())?;
 
     let mut settings = state.load_settings();
     let entry = settings.receive_state.entry(group_id.to_string()).or_default();
@@ -568,7 +568,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
         // via wallet_rebroadcast without gathering signatures again.
         let data_dir = task_app.state::<AppState>().data_dir.clone();
         let ceremony_str = ceremony_id.to_string();
-        let _ = wallet::save_pending_tx(&data_dir, &group_id, &ceremony_str, &signed_pczt_hex);
+        let _ = wallet::save_pending_tx(&data_dir, &group_id, network, &ceremony_str, &signed_pczt_hex);
 
         // Prove + broadcast. Surfaced as its own phase since the proof build is
         // the slow part (several seconds).
@@ -588,7 +588,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
             .unwrap_or(url);
         match wallet::broadcast_signed(&signed_pczt_hex, network, &broadcast_url).await {
             Ok(txid) => {
-                wallet::clear_pending_tx(&data_dir, &group_id, &ceremony_str);
+                wallet::clear_pending_tx(&data_dir, &group_id, network, &ceremony_str);
                 let _ = task_app.emit(
                     "send:complete",
                     serde_json::json!({
@@ -626,8 +626,8 @@ pub async fn wallet_rebroadcast(
     ceremony_id: String,
 ) -> AppResult<String> {
     let (network, url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
-    let signed_pczt_hex = wallet::load_pending_tx(&state.data_dir, &group_id, &ceremony_id)?;
+    let signed_pczt_hex = wallet::load_pending_tx(&state.data_dir, &group_id, network, &ceremony_id)?;
     let txid = wallet::broadcast_signed(&signed_pczt_hex, network, &url).await?;
-    wallet::clear_pending_tx(&state.data_dir, &group_id, &ceremony_id);
+    wallet::clear_pending_tx(&state.data_dir, &group_id, network, &ceremony_id);
     Ok(txid)
 }
