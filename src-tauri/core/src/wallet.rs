@@ -349,9 +349,44 @@ fn key_pragma(db_key: &[u8]) -> String {
 /// connection to a group wallet must set this.
 const DB_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Open a read-only connection to a group wallet, unlocking it with the
-/// SQLCipher key when the file is encrypted. A pre-encryption plaintext db (not
-/// yet migrated by [`open_db`]) is read as-is.
+/// Put a group wallet into WAL mode. Must run *after* the SQLCipher key pragma.
+///
+/// In SQLite's default rollback-journal mode, every reader holds a SHARED lock,
+/// and a writer can only commit once it upgrades to EXCLUSIVE — which requires
+/// that no SHARED locks are held. The UI polls this db while a sync runs (scan
+/// progress every 2s, notes every 15s, history every 35s), so a long catch-up
+/// sync is starved out of the EXCLUSIVE lock, blows past `DB_BUSY_TIMEOUT`, and
+/// dies with "database is locked" mid-way through a commitment-tree write.
+///
+/// WAL lets readers and the single writer proceed concurrently, so the sync
+/// commits regardless of how often the UI reads. The mode is persisted in the
+/// database header, so it only has to be set once per file.
+///
+/// `journal_mode` reports the mode actually in effect: a filesystem that cannot
+/// support WAL (some network mounts) keeps the old mode rather than failing.
+/// That is degraded but still correct, so don't turn it into a hard error.
+fn set_wal_mode(conn: &rusqlite::Connection) -> Result<(), CoreError> {
+    let _mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL;", [], |r| r.get(0))
+        .map_err(|e| CoreError::Crypto(format!("set journal mode: {e}")))?;
+    // Safe under WAL: a crash can lose the last commits but cannot corrupt the
+    // db, and it keeps the block-scan write path from fsyncing on every batch.
+    conn.execute_batch("PRAGMA synchronous = NORMAL;")
+        .map_err(|e| CoreError::Crypto(format!("set synchronous: {e}")))?;
+    Ok(())
+}
+
+/// Open a connection used only for reads (balances, notes, history, scan
+/// progress), unlocking it with the SQLCipher key when the file is encrypted. A
+/// pre-encryption plaintext db (not yet migrated by [`open_db`]) is read as-is.
+///
+/// Read-only by *convention*, not by open flag: this deliberately does NOT pass
+/// `SQLITE_OPEN_READ_ONLY`. Under WAL (see [`set_wal_mode`]) a reader needs the
+/// `-shm` shared-memory index, and a strictly read-only handle cannot create it
+/// — so if the last connection closed cleanly (which removes `-wal`/`-shm`), a
+/// read-only open of a WAL db fails outright with `SQLITE_CANTOPEN`. A writable
+/// handle can materialize the index; callers here still only issue SELECTs, and
+/// a read that takes no write lock cannot block the sync writer under WAL.
 fn open_readonly_connection(
     db_path: &Path,
     db_key: &[u8],
@@ -359,7 +394,7 @@ fn open_readonly_connection(
     let plaintext = is_plaintext_sqlite(db_path)?;
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
     conn.busy_timeout(DB_BUSY_TIMEOUT)
@@ -423,6 +458,7 @@ fn open_keyed_connection(
     // Force the cipher to engage; fails cleanly if the key is wrong.
     conn.execute_batch("SELECT count(*) FROM sqlite_master;")
         .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    set_wal_mode(&conn)?;
     // WalletDb::for_path normally registers this virtual table for `WHERE x IN
     // rarray(?)` queries used internally by zcash_client_sqlite/backend; since
     // we build the connection ourselves (to key it first), register it here too.
