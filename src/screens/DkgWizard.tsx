@@ -14,6 +14,7 @@ import { useCeremonies } from "../stores/ceremonies";
 
 const DKG_PHASES: Record<string, string> = {
   connecting: "Connecting to server",
+  connected: "Connection established",
   session_ready: "Session established",
   round1: "Round 1: exchanging commitments",
   round1_broadcast: "Round 1: verifying echo broadcast",

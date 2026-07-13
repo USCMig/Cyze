@@ -75,22 +75,50 @@ pub async fn client_for(state: &AppState, url: &str) -> AppResult<FrostdClient> 
 pub struct ConnectionTestResult {
     pub ok: bool,
     pub error: Option<String>,
+    /// The server actually reached (host:port, or a tunnel hostname).
+    pub server: String,
+    /// How its certificate was trusted: "pinned" (self-signed, imported) or
+    /// "public" (a real CA — what a Cloudflare tunnel presents).
+    pub tls: String,
+    /// Round-trip time of the challenge request, in milliseconds.
+    pub latency_ms: Option<u64>,
 }
 
+/// Probe a server by fetching an auth challenge from it. Reports *how* it was
+/// reached (endpoint, certificate trust, latency) so a participant handed a URL
+/// can confirm they connected to the server they expected before joining a
+/// ceremony — and gets an actionable reason when they didn't.
 #[tauri::command]
 pub async fn test_server_connection(
     state: State<'_, AppState>,
     url: String,
 ) -> AppResult<ConnectionTestResult> {
+    let host_port = url
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .to_string();
+    let tls = match trust_for(&state, &host_port).await {
+        ServerTrust::PinnedCertificate(_) => "pinned",
+        ServerTrust::SystemRoots => "public",
+    }
+    .to_string();
+
     let client = client_for(&state, &url).await?;
+    let started = std::time::Instant::now();
     match client.challenge().await {
         Ok(_) => Ok(ConnectionTestResult {
             ok: true,
             error: None,
+            server: host_port,
+            tls,
+            latency_ms: Some(started.elapsed().as_millis() as u64),
         }),
         Err(e) => Ok(ConnectionTestResult {
             ok: false,
             error: Some(e.to_string()),
+            server: host_port,
+            tls,
+            latency_ms: None,
         }),
     }
 }

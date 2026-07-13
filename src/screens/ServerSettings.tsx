@@ -313,7 +313,16 @@ export default function ServerSettings() {
               try {
                 const r = await testServerConnection(effectiveUrl);
                 setTestOk(r.ok);
-                setTestResult(r.ok ? "Connection OK" : (r.error ?? "failed"));
+                // Name what we reached and how it was trusted: a participant is
+                // usually handed an opaque tunnel URL, so "OK" alone doesn't tell
+                // them they're on the right server.
+                setTestResult(
+                  r.ok
+                    ? `✓ Connection established — ${r.server} · certificate: ${
+                        r.tls === "pinned" ? "pinned (self-signed)" : "public CA"
+                      }${r.latency_ms != null ? ` · ${r.latency_ms} ms` : ""}`
+                    : (r.error ?? "failed"),
+                );
               } catch (e) {
                 setTestOk(false);
                 setTestResult((e as AppError).message);

@@ -46,6 +46,10 @@ export interface CeremonyState {
    *  no longer carry it. Coordinators share this; participants find it in
    *  their inbox. */
   sessionId?: string;
+  /** The server this ceremony actually connected to (host:port, or a tunnel
+   *  hostname), from the `connected` event. Sticky, like `sessionId`. Lets a
+   *  signer confirm which server they reached before approving anything. */
+  server?: string;
   /** Send-only: the signed PCZT produced once the group signature is applied. */
   signedPcztHex?: string;
   /** Send-only: the broadcast transaction id, once on-chain. */
@@ -173,6 +177,9 @@ export const useCeremonies = create<CeremoniesStore>()(
                 participants,
                 // Keep the session id once it appears; later phases omit it.
                 sessionId: payload.event?.session_id ?? prev?.sessionId,
+                // Sticky like the session id: the `connected` event names the
+                // server we actually reached, and later phases omit it.
+                server: (payload.event?.server as string | undefined) ?? prev?.server,
                 // Multi-spend marker is sticky across the per-spend ceremonies.
                 spendIndex:
                   (payload.event?.spend as number | undefined) ?? prev?.spendIndex,

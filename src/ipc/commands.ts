@@ -51,6 +51,12 @@ export interface SidecarStatus {
 export interface ConnectionTestResult {
   ok: boolean;
   error: string | null;
+  /** The server actually reached (host:port, or a tunnel hostname). */
+  server: string;
+  /** "pinned" (self-signed cert imported) or "public" (real CA, e.g. a tunnel). */
+  tls: string;
+  /** Round-trip time of the probe, in milliseconds. */
+  latency_ms: number | null;
 }
 
 export interface TunnelStatus {

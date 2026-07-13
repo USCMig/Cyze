@@ -203,10 +203,12 @@ async fn connect(url: &str) -> Result<CompactTxStreamerClient<Channel>, CoreErro
             .tls_config(ClientTlsConfig::new().with_webpki_roots())
             .map_err(|e| CoreError::Connection(format!("TLS config: {e}")))?;
     }
+    // tonic renders a failed connect as the bare string "transport error"; the
+    // DNS/refused/TLS cause is only reachable through the source chain.
     let channel = endpoint
         .connect()
         .await
-        .map_err(|e| CoreError::Connection(format!("connecting to {url}: {e}")))?;
+        .map_err(|e| crate::neterr::connection_error("connecting to lightwalletd", &url, &e))?;
     Ok(CompactTxStreamerClient::new(channel))
 }
 
