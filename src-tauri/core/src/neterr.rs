@@ -56,6 +56,16 @@ fn is_quick_tunnel(host: &str) -> bool {
     host.ends_with(".trycloudflare.com")
 }
 
+/// True when `url` names an *ephemeral* server — one whose address is not stable
+/// across restarts, so it must never be treated as a durable address for a group.
+///
+/// Today that means a TryCloudflare quick tunnel. Persisting one of these (e.g.
+/// as the server a group was created on) bakes in an address that is guaranteed
+/// to stop resolving the next time the coordinator restarts the tunnel.
+pub fn is_ephemeral_server(url: &str) -> bool {
+    is_quick_tunnel(host_of(url))
+}
+
 /// What went wrong at the network layer, inferred from the flattened chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -165,6 +175,16 @@ mod tests {
     fn quick_tunnel_hostnames_are_recognized() {
         assert!(is_quick_tunnel("san-times-certain-alerts.trycloudflare.com"));
         assert!(!is_quick_tunnel("zec.rocks"));
+    }
+
+    #[test]
+    fn ephemeral_servers_are_recognized_in_any_url_shape() {
+        // A stored quick-tunnel URL must never pin a group to a dead address.
+        assert!(is_ephemeral_server("https://san-times-certain-alerts.trycloudflare.com"));
+        assert!(is_ephemeral_server("skiing-broadcasting-mirrors-import.trycloudflare.com:443"));
+        // Stable addresses must keep winning over the live setting.
+        assert!(!is_ephemeral_server("https://frost.example.com:2744"));
+        assert!(!is_ephemeral_server("127.0.0.1:2744"));
     }
 
     #[test]
