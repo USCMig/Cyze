@@ -208,12 +208,38 @@ pub async fn wallet_sync_progress(
 }
 
 /// Sync the group's wallet from lightwalletd, then return the updated status.
-/// Long-running. Touches the network.
+/// Long-running. Touches the network. Cancellable via [`wallet_cancel_sync`].
 #[tauri::command]
 pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppResult<WalletStatus> {
     let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    wallet::sync_group(&state.data_dir, &group_id, network, &url, db_key.as_ref()).await?;
+
+    // Register a fresh cancellation token for this group, tripping (and replacing)
+    // any prior one so at most one sync per group is ever live. "Sync Now" cancels
+    // the previous run before this one starts, avoiding two writers on one db.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let mut cancels = state.sync_cancels.lock().await;
+        if let Some(prev) = cancels.insert(group_id.clone(), cancel.clone()) {
+            prev.cancel();
+        }
+    }
+
+    let result = wallet::sync_group(
+        &state.data_dir, &group_id, network, &url, db_key.as_ref(), &cancel,
+    )
+    .await;
+
+    // Tidy the registry. If our token was cancelled, either a newer sync replaced
+    // us (its token is now the registry entry — leave it) or a cancel request did
+    // (the next sync's insert will clear it) — either way, don't touch the map. If
+    // we finished uncancelled, no newer sync can have started (that would have
+    // cancelled us), so the entry is ours to remove.
+    if !cancel.is_cancelled() {
+        state.sync_cancels.lock().await.remove(&group_id);
+    }
+
+    result?;
     Ok(wallet::group_status(
         &state.data_dir,
         &group_id,
@@ -221,6 +247,17 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
         &ufvk,
         db_key.as_ref(),
     )?)
+}
+
+/// Cancel the in-flight sync for a group, if any. The current `wallet_sync`
+/// returns promptly with a "cancelled" error, freeing the wallet for a fresh
+/// sync. Safe to call when nothing is syncing (a no-op).
+#[tauri::command]
+pub async fn wallet_cancel_sync(state: State<'_, AppState>, group_id: String) -> AppResult<()> {
+    if let Some(token) = state.sync_cancels.lock().await.get(&group_id) {
+        token.cancel();
+    }
+    Ok(())
 }
 
 /// On-chain transaction history for a group wallet: received funds and sent

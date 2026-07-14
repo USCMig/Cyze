@@ -153,6 +153,10 @@ export const walletInitAccount = (groupId: string, birthdayHeight?: number) =>
   });
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
+/** Cancel a group's in-flight sync (if any). The running `walletSync` returns
+ *  promptly, freeing the wallet for a fresh sync. No-op if nothing is syncing. */
+export const walletCancelSync = (groupId: string) =>
+  invoke<void>("wallet_cancel_sync", { groupId });
 /** `[fullyScannedHeight, chainTipHeight]`, readable while a sync is running.
  *  `walletSync` blocks for the whole catch-up, so poll this to show progress. */
 export const walletSyncProgress = (groupId: string) =>

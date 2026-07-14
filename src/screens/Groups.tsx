@@ -14,6 +14,7 @@ import {
   walletGroupStatus,
   walletInitAccount,
   walletSync,
+  walletCancelSync,
   walletSyncProgress,
   walletPrepareSend,
   walletSend,
@@ -504,7 +505,12 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       queryClient.invalidateQueries({ queryKey: ["wallet-notes", group.id] });
     },
     onError: (e) => {
-      setErr((e as unknown as AppError).message);
+      const msg = (e as unknown as AppError).message ?? String(e);
+      // A sync we deliberately cancelled (via "Sync Now" restarting it) is not a
+      // failure — a fresh sync is already taking over, so don't count it toward
+      // the give-up threshold or surface it as an error.
+      if (/cancel/i.test(msg)) return;
+      setErr(msg);
       failures.current += 1;
       if (failures.current >= AUTO_SYNC_GIVE_UP_AFTER) setAutoSyncOff(true);
     },
@@ -688,13 +694,21 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
    * so "Sync Now" means the whole wallet, not just the balance. Also clears a
    * latched auto-sync failure: pressing this is an explicit "try again".
    */
-  const forceSync = useCallback(() => {
+  const forceSync = useCallback(async () => {
     setAutoSyncOff(false);
     failures.current = 0;
     for (const key of ["wallet-status", "wallet-history", "wallet-notes"]) {
       queryClient.invalidateQueries({ queryKey: [key, group.id] });
     }
-    if (!syncRef.current.isPending) syncRef.current.mutate();
+    // Abandon any in-flight sync first — including a stalled one, which is the
+    // whole point of an always-available "Sync Now": the backend returns the
+    // stuck run promptly, then we start a clean one. Harmless when idle.
+    try {
+      await walletCancelSync(group.id);
+    } catch {
+      // best-effort
+    }
+    syncRef.current.mutate();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [group.id, queryClient]);
 
@@ -726,6 +740,11 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const syncedHeight = live?.[0] ?? s?.synced_height ?? 0;
   const tipHeight = live?.[1] ?? s?.chain_tip_height ?? 0;
   const blocksRemaining = Math.max(0, tipHeight - syncedHeight);
+  // "Syncing" should mean *fetching blocks*, not merely "a sync call is in
+  // flight". At the tip a sync is a quick no-op check, and a stalled sync sits
+  // pending forever — both showed a permanent "Syncing…" that looked broken.
+  const catchingUp = sync.isPending && blocksRemaining > 0;
+  const atTip = tipHeight > 0 && blocksRemaining === 0;
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
@@ -766,44 +785,48 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               <div className="dim" style={{ fontSize: 12 }}>
                 Block {syncedHeight.toLocaleString()}
                 {tipHeight > 0 && <> / {tipHeight.toLocaleString()}</>}
-                {sync.isPending && blocksRemaining > 0 && (
-                  <> · {blocksRemaining.toLocaleString()} to go</>
-                )}
+                {catchingUp && <> · {blocksRemaining.toLocaleString()} to go</>}
               </div>
               <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
-                {sync.isPending ? (
+                {catchingUp ? (
                   <span>↻ Syncing…</span>
+                ) : atTip ? (
+                  <span>
+                    ✓ Up to date
+                    {lastSynced && (
+                      <> · {lastSynced.toLocaleTimeString(undefined, { timeStyle: "short" })}</>
+                    )}
+                  </span>
                 ) : lastSynced ? (
                   <span>
                     ✓ Synced {lastSynced.toLocaleTimeString(undefined, { timeStyle: "short" })}
-                    {autoSyncOff && (
-                      <>
-                        {" · "}
-                        <button
-                          style={{ all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
-                          onClick={() => { setAutoSyncOff(false); sync.mutate(); }}
-                        >
-                          Resume auto-sync
-                        </button>
-                      </>
-                    )}
                   </span>
                 ) : (
                   <span className="dim">Auto-syncing every 10s</span>
                 )}
+                {autoSyncOff && !catchingUp && (
+                  <>
+                    {" · "}
+                    <button
+                      style={{ all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
+                      onClick={() => forceSync()}
+                    >
+                      Resume auto-sync
+                    </button>
+                  </>
+                )}
               </div>
-              {/* Auto-sync can lag or stall (a slow endpoint, a dropped stream),
-                  and there is no way to tell "nothing has changed" from "nothing
-                  is happening". Give the user an explicit way to force one, right
-                  where the sync state is reported. */}
+              {/* Always available — auto-sync can lag or stall (a slow endpoint,
+                  a dropped stream), and there is no way to tell "nothing changed"
+                  from "wedged". Clicking mid-sync abandons the current run and
+                  starts a clean one, and refreshes every wallet panel. */}
               <button
                 className="secondary"
                 style={{ marginTop: 8, fontSize: 11, padding: "4px 10px" }}
-                disabled={sync.isPending}
                 onClick={() => forceSync()}
-                title="Force a sync now and refresh balances, notes, and history"
+                title="Restart the sync and refresh balances, notes, and history"
               >
-                {sync.isPending ? "Syncing…" : "Sync Now"}
+                {catchingUp ? "Restart sync" : "Sync Now"}
               </button>
             </div>
           </div>
@@ -2316,6 +2339,34 @@ function TxDetail({
 
 type PendingRow = CeremonyState & { id: string };
 
+/** A full-width sub-row under a transaction, showing its memo inline so it is
+ *  readable in the history list without expanding the row. */
+function MemoRow({ memo }: { memo: string }) {
+  return (
+    <tr>
+      <td colSpan={6} style={{ padding: "0 8px 6px 8px", borderTop: "none" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            alignItems: "baseline",
+            fontSize: 11,
+            color: "var(--fg-muted)",
+          }}
+        >
+          <span title="Memo" aria-hidden>💬</span>
+          <span
+            style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+            title={memo}
+          >
+            {memo}
+          </span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function PendingTxRow({
   row,
   contacts,
@@ -2377,6 +2428,7 @@ function PendingTxRow({
           </button>
         </td>
       </tr>
+      {meta?.memo && !isExpanded && <MemoRow memo={meta.memo} />}
       {isExpanded && (
         <TxDetail
           colSpan={6}
@@ -2463,6 +2515,9 @@ function OnchainTxRow({
           </button>
         </td>
       </tr>
+      {/* Memo, shown inline so it is readable without expanding the row. Hidden
+          when expanded, where the detail panel shows the full text. */}
+      {tx.memo && !isExpanded && <MemoRow memo={tx.memo} />}
       {isExpanded && (
         <TxDetail
           colSpan={6}

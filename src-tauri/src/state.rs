@@ -115,6 +115,9 @@ pub struct AppState {
     pub sidecar: Mutex<Option<crate::sidecar::SidecarHandle>>,
     /// Optional Cloudflare quick tunnel exposing the embedded server publicly.
     pub tunnel: Mutex<Option<crate::tunnel::TunnelHandle>>,
+    /// Cancellation token for the in-flight wallet sync of each group, so a
+    /// "Sync Now" can abandon a stalled sync and restart it cleanly.
+    pub sync_cancels: Mutex<HashMap<String, CancellationToken>>,
     /// Epoch-millis of the last user activity, used to drive the idle auto-lock.
     pub last_activity: AtomicI64,
 }
@@ -138,6 +141,7 @@ impl AppState {
             ceremonies: Mutex::new(HashMap::new()),
             sidecar: Mutex::new(None),
             tunnel: Mutex::new(None),
+            sync_cancels: Mutex::new(HashMap::new()),
             last_activity: AtomicI64::new(now_millis()),
         }
     }

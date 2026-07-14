@@ -513,21 +513,20 @@ function ParticipantPath() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const savedUrl = settings.data?.server_url ?? "";
 
-  // A TryCloudflare quick tunnel is regenerated every time the coordinator
-  // restarts it, and the old hostname stops resolving — so a saved one is dead
-  // by the next session. Offering it as "last-used server" invites the user to
-  // connect to an address that cannot work. Remember only *that* they use a
-  // tunnel, and ask for the current URL.
-  const savedIsTunnel = isEphemeralServer(savedUrl);
-  const preset = savedIsTunnel ? "" : savedUrl;
-
-  const [mode, setMode] = useState<"preset" | "manual">(preset ? "preset" : "manual");
-  const [manualUrl, setManualUrl] = useState("");
+  // There is only a manual URL field — no "reuse last server" shortcut. In
+  // practice the coordinator exposes the server through a Cloudflare tunnel,
+  // whose hostname is regenerated on every restart, so the previously-saved URL
+  // is almost always dead and reusing it just connects to nothing. A stable
+  // server (DNS or a fixed IP) can still be saved: pre-fill the field with it so
+  // it is one keystroke to reuse, but a disposable tunnel URL is not pre-filled.
+  const [manualUrl, setManualUrl] = useState(
+    isEphemeralServer(savedUrl) ? "" : savedUrl
+  );
   const [certPem, setCertPem] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const url = (mode === "preset" ? preset : manualUrl).trim();
+  const url = manualUrl.trim();
 
   const test = useMutation({
     mutationFn: () => testServerConnection(url),
@@ -572,58 +571,29 @@ function ParticipantPath() {
       {error && <div className="error">{error}</div>}
       {status && <div className="callout"><span>{status}</span></div>}
 
-      <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <ExposureTab
-          active={mode === "preset"}
-          onClick={() => setMode("preset")}
-          label={
-            preset
-              ? "Use last-used server"
-              : savedIsTunnel
-                ? "Cloudflare tunnel"
-                : "Preset (none saved)"
-          }
-        />
-        <ExposureTab
-          active={mode === "manual"}
-          onClick={() => setMode("manual")}
-          label="Enter manually"
-        />
+      <label>Server URL</label>
+      <input
+        value={manualUrl}
+        onChange={(e) => setManualUrl(e.target.value)}
+        placeholder="https://…"
+        style={{ width: "100%" }}
+      />
+      <div className="dim" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.7 }}>
+        Paste the address the coordinator is sharing right now. It looks like one
+        of:
+        <br />
+        • <span className="mono">https://frost.example.com</span>{" "}
+        &nbsp;— a domain / NGINX server
+        <br />
+        • <span className="mono">https://203.0.113.7:2744</span>{" "}
+        &nbsp;— a direct IP and port
+        <br />
+        • <span className="mono">https://long-random-words.trycloudflare.com</span>{" "}
+        &nbsp;— a Cloudflare tunnel
+        <br />
+        A Cloudflare tunnel URL is <strong>disposable</strong>: the coordinator
+        gets a new one each time they restart it, so always use the latest.
       </div>
-
-      {mode === "preset" ? (
-        preset ? (
-          <>
-            <label>Saved server</label>
-            <div className="mono">{preset}</div>
-          </>
-        ) : savedIsTunnel ? (
-          <div className="callout warn">
-            <span>
-              You connect through a <strong>Cloudflare tunnel</strong>. Those URLs
-              are disposable — the coordinator gets a new one every time they
-              restart the tunnel, and the previous one stops working. There is
-              nothing to reuse: switch to “Enter manually” and paste the URL the
-              coordinator is sharing <em>right now</em>.
-            </span>
-          </div>
-        ) : (
-          <p className="dim">
-            No server saved yet — switch to “Enter manually” and paste the address
-            your coordinator gave you.
-          </p>
-        )
-      ) : (
-        <>
-          <label>Server URL</label>
-          <input
-            value={manualUrl}
-            onChange={(e) => setManualUrl(e.target.value)}
-            placeholder="https://frost.example.com  or  https://<ip>:2744"
-            style={{ width: "100%" }}
-          />
-        </>
-      )}
 
       <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <button className="secondary" onClick={() => test.mutate()} disabled={!url || test.isPending}>
