@@ -1,6 +1,6 @@
-//! Zcash light-wallet commands (Phase 5.1, layer 1: lightwalletd config +
-//! connectivity). Network and endpoint are user-configurable; testnet is the
-//! default for testing, with mainnet available once the pipeline is complete.
+//! Zcash light-wallet commands: lightwalletd config + connectivity. Network and
+//! endpoint are user-configurable; mainnet is the default, with testnet a click
+//! away in settings.
 
 use frost_app_core::ciphersuite::Suite;
 use frost_app_core::signing::{run_coordinator, CoordinatorParams};
@@ -33,7 +33,10 @@ pub struct WalletConfig {
 /// lightwalletd endpoint when none is saved.
 fn resolve_config(state: &AppState) -> WalletConfig {
     let s = state.load_settings();
-    let network = s.wallet_network.clone().unwrap_or_else(|| "test".into());
+    // Mainnet is the default: it is where the wallet is actually used, and the
+    // mainnet guardrails (badge, confirmation modal, address checks) make the
+    // active network unmissable. Testnet remains one click away in settings.
+    let network = s.wallet_network.clone().unwrap_or_else(|| "main".into());
     let net = network_from_str(&network);
     let lightwalletd_url = s
         .lightwalletd_url

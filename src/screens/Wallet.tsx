@@ -104,7 +104,9 @@ export default function Wallet() {
   const [testing, setTesting] = useState(false);
   const [showMainnetModal, setShowMainnetModal] = useState(false);
 
-  const net = network ?? config.data?.network ?? "test";
+  // Mainnet is the default (matches the backend), so the app opens on the network
+  // it is actually used on rather than quietly pointing at testnet.
+  const net = network ?? config.data?.network ?? "main";
   const effectiveUrl = url ?? config.data?.lightwalletd_url ?? "";
 
   const save = useMutation({
@@ -142,7 +144,7 @@ export default function Wallet() {
     }
   };
 
-  const savedNet = config.data?.network ?? "test";
+  const savedNet = config.data?.network ?? "main";
   const isMainnet = net === "main";
 
   return (
@@ -288,14 +290,6 @@ export default function Wallet() {
         />
       )}
 
-      <div className="card">
-        <h3>Coming next</h3>
-        <p className="dim">
-          Per-group balances, receiving to your group's unified address, and
-          FROST-signed sending build on this connection. For now, this verifies
-          your light-client endpoint and shows the live chain height.
-        </p>
-      </div>
     </div>
   );
 }

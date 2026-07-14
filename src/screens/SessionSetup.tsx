@@ -20,6 +20,19 @@ import {
 type Role = "coordinator" | "participant";
 type Exposure = "direct" | "tunnel" | "nginx";
 
+/** A server whose address is not stable across restarts, so it must never be
+ *  remembered as a reusable "last-used server". Today that means a TryCloudflare
+ *  quick tunnel: `cloudflared` mints a new random hostname on every run and
+ *  deregisters the old one. Mirrors `neterr::is_ephemeral_server` in the core. */
+export function isEphemeralServer(url: string): boolean {
+  const host = url
+    .replace(/^https?:\/\//, "")
+    .split("/")[0]
+    .split(":")[0]
+    .toLowerCase();
+  return host.endsWith(".trycloudflare.com");
+}
+
 /** Reusable security reminder: the transport (tunnel/proxy/direct) only
  *  provides reachability. FROSTd's own Noise layer authenticates and encrypts
  *  every message end-to-end, so it must never be treated as optional just
@@ -146,7 +159,6 @@ function RoleCard({
 function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
-  const [bindLan, setBindLan] = useState(false);
   const [exposure, setExposure] = useState<Exposure>(
     (savedExposure as Exposure) ?? "direct"
   );
@@ -167,7 +179,8 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
   const tunnel = useQuery({ queryKey: ["tunnel"], queryFn: tunnelStatus });
 
   const start = useMutation({
-    mutationFn: () => startSidecar(null, bindLan),
+    // Always loopback: remote signers come in over the tunnel/proxy, not the LAN.
+    mutationFn: () => startSidecar(null, false),
     onSuccess: () => {
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["sidecar"] });
@@ -206,19 +219,13 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
         </p>
       ) : (
         <>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={bindLan}
-              onChange={(e) => setBindLan(e.target.checked)}
-            />
-            Allow other machines on my local network to connect (bind{" "}
-            <span className="mono">0.0.0.0</span>)
-          </label>
-          <p className="dim" style={{ fontSize: 12 }}>
-            Off = loopback only (safest). Turn on only for the Direct-URL path
-            when participants are on your LAN, or when a reverse proxy on another
-            host needs to reach it.
+          {/* The server always binds loopback. Cyze coordinates *remote* signers,
+              who reach it through a tunnel or reverse proxy rather than over the
+              LAN, so exposing 0.0.0.0 bought almost nothing and widened the
+              attack surface for anyone who ticked it without needing it. */}
+          <p className="dim" style={{ fontSize: 12, marginTop: 0 }}>
+            The server listens on loopback only. Remote participants reach it
+            through the tunnel or reverse proxy you configure below.
           </p>
           <button onClick={() => start.mutate()} disabled={start.isPending}>
             {start.isPending ? "Starting…" : "Start server"}
@@ -250,7 +257,6 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
             fingerprint={sidecar.data?.cert_fingerprint ?? null}
             cert={cert}
             onExportCert={async () => setCert(await exportSidecarCert())}
-            bindLan={bindLan}
           />
         ) : (
           <p className="dim">
@@ -336,7 +342,6 @@ function DirectExposure({
   fingerprint,
   cert,
   onExportCert,
-  bindLan,
 }: {
   sidecarUrl: string | null;
   lanAddresses: string[];
@@ -344,7 +349,6 @@ function DirectExposure({
   fingerprint: string | null;
   cert: string | null;
   onExportCert: () => void;
-  bindLan: boolean;
 }) {
   return (
     <div>
@@ -353,13 +357,14 @@ function DirectExposure({
         and the certificate itself (it's self-signed, so they must trust it once).
       </p>
 
-      {!bindLan && lanAddresses.length === 0 && (
+      {lanAddresses.length === 0 && (
         <div className="callout warn">
           <span>
-            The server is bound to loopback only, so it's reachable at{" "}
-            <span className="mono">127.0.0.1:{port}</span> on this machine.
-            Restart it with LAN access enabled (Step 1) for others to connect
-            directly, or use the Tunnel / NGINX paths.
+            The server is bound to loopback, so it is reachable only at{" "}
+            <span className="mono">127.0.0.1:{port}</span> on this machine. Remote
+            participants cannot reach this address — use the{" "}
+            <strong>Cloudflare Tunnel</strong> or <strong>NGINX</strong> path to
+            expose it.
           </span>
         </div>
       )}
@@ -506,7 +511,15 @@ function ParticipantPath() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
-  const preset = settings.data?.server_url ?? "";
+  const savedUrl = settings.data?.server_url ?? "";
+
+  // A TryCloudflare quick tunnel is regenerated every time the coordinator
+  // restarts it, and the old hostname stops resolving — so a saved one is dead
+  // by the next session. Offering it as "last-used server" invites the user to
+  // connect to an address that cannot work. Remember only *that* they use a
+  // tunnel, and ask for the current URL.
+  const savedIsTunnel = isEphemeralServer(savedUrl);
+  const preset = savedIsTunnel ? "" : savedUrl;
 
   const [mode, setMode] = useState<"preset" | "manual">(preset ? "preset" : "manual");
   const [manualUrl, setManualUrl] = useState("");
@@ -563,7 +576,13 @@ function ParticipantPath() {
         <ExposureTab
           active={mode === "preset"}
           onClick={() => setMode("preset")}
-          label={preset ? "Use last-used server" : "Preset (none saved)"}
+          label={
+            preset
+              ? "Use last-used server"
+              : savedIsTunnel
+                ? "Cloudflare tunnel"
+                : "Preset (none saved)"
+          }
         />
         <ExposureTab
           active={mode === "manual"}
@@ -578,6 +597,16 @@ function ParticipantPath() {
             <label>Saved server</label>
             <div className="mono">{preset}</div>
           </>
+        ) : savedIsTunnel ? (
+          <div className="callout warn">
+            <span>
+              You connect through a <strong>Cloudflare tunnel</strong>. Those URLs
+              are disposable — the coordinator gets a new one every time they
+              restart the tunnel, and the previous one stops working. There is
+              nothing to reuse: switch to “Enter manually” and paste the URL the
+              coordinator is sharing <em>right now</em>.
+            </span>
+          </div>
         ) : (
           <p className="dim">
             No server saved yet — switch to “Enter manually” and paste the address

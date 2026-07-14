@@ -537,6 +537,17 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // from notes the wallet hasn't scanned yet and fails with a spurious
   // "insufficient funds", so hold sends until that first sync succeeds.
   const initialSyncDone = lastSynced !== null;
+
+  // Gate the send form on what is actually spendable. Confirmed-but-unspendable
+  // funds are the norm right after receiving (ZIP-317 wants 10 confirmations on
+  // received notes, 3 on our own change), so offering a Prepare button that can
+  // only fail with "insufficient funds" is a trap.
+  const spendableBalance = status.data?.orchard.spendable_zatoshis ?? 0;
+  const pendingBalance = status.data?.orchard.pending_zatoshis ?? 0;
+  const noSpendableBalance = spendableBalance <= 0;
+  const exceedsBalance =
+    Number(amountZec) > 0 && Math.round(Number(amountZec) * 1e8) > spendableBalance;
+
   const prepare = useMutation({
     mutationFn: () =>
       walletPrepareSend(
@@ -668,6 +679,25 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.data?.initialized]);
 
+  /**
+   * Force a sync and refresh every panel that reads the wallet.
+   *
+   * `sync` alone updates the status it returns, but the notes, history and
+   * pending/settled views read their own queries — so a user pressing this while
+   * staring at a stale history would still see stale history. Invalidate them all
+   * so "Sync Now" means the whole wallet, not just the balance. Also clears a
+   * latched auto-sync failure: pressing this is an explicit "try again".
+   */
+  const forceSync = useCallback(() => {
+    setAutoSyncOff(false);
+    failures.current = 0;
+    for (const key of ["wallet-status", "wallet-history", "wallet-notes"]) {
+      queryClient.invalidateQueries({ queryKey: [key, group.id] });
+    }
+    if (!syncRef.current.isPending) syncRef.current.mutate();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group.id, queryClient]);
+
   // A ceremony just moved funds (a send we ran, or a session we signed). Sync now
   // rather than waiting out the poll interval, so the wallet reflects what the
   // user just did. The wallet screen is the only place that syncs, so this cannot
@@ -675,11 +705,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const walletRefreshTick = useCeremonies((s) => s.walletRefreshTick);
   useEffect(() => {
     if (walletRefreshTick === 0) return;
-    if (status.data?.initialized && !syncRef.current.isPending) {
-      setAutoSyncOff(false);
-      failures.current = 0;
-      syncRef.current.mutate();
-    }
+    if (status.data?.initialized) forceSync();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletRefreshTick]);
   useEffect(() => {
@@ -766,6 +792,19 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                   <span className="dim">Auto-syncing every 10s</span>
                 )}
               </div>
+              {/* Auto-sync can lag or stall (a slow endpoint, a dropped stream),
+                  and there is no way to tell "nothing has changed" from "nothing
+                  is happening". Give the user an explicit way to force one, right
+                  where the sync state is reported. */}
+              <button
+                className="secondary"
+                style={{ marginTop: 8, fontSize: 11, padding: "4px 10px" }}
+                disabled={sync.isPending}
+                onClick={() => forceSync()}
+                title="Force a sync now and refresh balances, notes, and history"
+              >
+                {sync.isPending ? "Syncing…" : "Sync Now"}
+              </button>
             </div>
           </div>
 
@@ -949,6 +988,8 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     disabled={
                       prepare.isPending ||
                       !initialSyncDone ||
+                      noSpendableBalance ||
+                      exceedsBalance ||
                       !recipient.trim() ||
                       !(Number(amountZec) > 0) ||
                       !!recipientErr
@@ -958,10 +999,39 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       ? "Building…"
                       : !initialSyncDone
                         ? "Syncing wallet…"
-                        : sendMode === "unshield"
-                          ? "Prepare unshield transaction"
-                          : "Prepare draft transaction"}
+                        : noSpendableBalance
+                          ? "No spendable balance"
+                          : exceedsBalance
+                            ? "Amount exceeds balance"
+                            : sendMode === "unshield"
+                              ? "Prepare unshield transaction"
+                              : "Prepare draft transaction"}
                   </button>
+                  {/* Explain a disabled button rather than leaving it inert. Funds
+                      need confirmations before they are spendable (ZIP-317: 10 for
+                      received notes, 3 for our own change), so a balance that is
+                      "there" but still pending is the common surprise. */}
+                  {initialSyncDone && noSpendableBalance && (
+                    <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
+                      Nothing is spendable yet.
+                      {pendingBalance > 0 ? (
+                        <>
+                          {" "}
+                          {zec(pendingBalance)} {unit(isMainnet)} is still awaiting
+                          confirmations — received funds need 10 confirmations
+                          (your own change needs 3) before they can be spent.
+                        </>
+                      ) : (
+                        <> Receive funds to this group's address first.</>
+                      )}
+                    </p>
+                  )}
+                  {initialSyncDone && !noSpendableBalance && exceedsBalance && (
+                    <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
+                      You can spend at most {zec(spendableBalance)} {unit(isMainnet)}{" "}
+                      right now (a network fee is taken on top of the amount).
+                    </p>
+                  )}
                   {!initialSyncDone && (
                     <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
                       Waiting for the first sync to finish so the wallet knows
@@ -1500,7 +1570,7 @@ export function GroupKeys({ group, masked = false }: { group: GroupSummary; mask
               spendable only by a threshold of the group. The UFVK grants{" "}
               <em>viewing</em> access — share it only within the group. The
               address is encoded for the network selected on the{" "}
-              <Link to="/wallet">Wallet</Link> page (testnet by default).
+              <Link to="/wallet">Wallet</Link> page (mainnet by default).
             </span>
           </div>
         </>
@@ -2167,7 +2237,20 @@ function TxDetail({
   if (txid) rows.push({ label: "Transaction ID", value: txid, mono: true });
   if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : "Sent" });
   if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ${unit(isMainnet)}` });
-  if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ${unit(isMainnet)}` });
+  // Always report the fee, for every transaction type. It used to be omitted
+  // whenever it was unknown, which is precisely the received case — leaving no
+  // indication of whether a fee existed at all. A received transaction's fee was
+  // paid by the sender out of their inputs, which this wallet cannot see, so say
+  // that rather than showing nothing.
+  rows.push({
+    label: "Network Fee",
+    value:
+      fee != null
+        ? `${zec(fee)} ${unit(isMainnet)}`
+        : direction === "receive"
+          ? "Paid by the sender (not visible to this wallet)"
+          : "—",
+  });
   if (direction === "receive") {
     rows.push({ label: "From", value: "Shielded sender (private)" });
   } else if (fromAddress) {
