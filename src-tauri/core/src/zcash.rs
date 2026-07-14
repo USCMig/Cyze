@@ -21,7 +21,7 @@ use ff::{FromUniformBytes, PrimeField};
 use pasta_curves::pallas;
 use sha2::{Digest, Sha512};
 use zcash_address::unified::{Address, Encoding, Fvk, Receiver, Ufvk};
-use zcash_address::Network;
+use zcash_protocol::consensus::NetworkType;
 
 use crate::error::CoreError;
 
@@ -59,8 +59,9 @@ pub fn orchard_fvk_bytes(ak: &[u8; 32]) -> [u8; 96] {
     out
 }
 
-/// Derive the unified address and UFVK (mainnet) for a group's `ak`.
-pub fn derive_orchard_keys(ak: &[u8; 32]) -> Result<OrchardKeys, CoreError> {
+/// Derive the unified address and UFVK for a group's `ak`, encoded for the
+/// given network (mainnet `u1…` / testnet `utest1…`).
+pub fn derive_orchard_keys(ak: &[u8; 32], network: NetworkType) -> Result<OrchardKeys, CoreError> {
     let fvk_bytes = orchard_fvk_bytes(ak);
     let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
         .ok_or_else(|| CoreError::Crypto("invalid Orchard ak (not a valid spend key)".into()))?;
@@ -71,22 +72,49 @@ pub fn derive_orchard_keys(ak: &[u8; 32]) -> Result<OrchardKeys, CoreError> {
 
     let address = Address::try_from_items(vec![Receiver::Orchard(receiver)])
         .map_err(|e| CoreError::Crypto(format!("unified address: {e:?}")))?
-        .encode(&Network::Main);
+        .encode(&network);
     let ufvk = Ufvk::try_from_items(vec![Fvk::Orchard(fvk_bytes)])
         .map_err(|e| CoreError::Crypto(format!("ufvk: {e:?}")))?
-        .encode(&Network::Main);
+        .encode(&network);
 
     Ok(OrchardKeys { address, ufvk })
 }
 
 /// Convenience: derive from a hex-encoded `ak` (the group's verifying key id).
-pub fn derive_orchard_keys_hex(ak_hex: &str) -> Result<OrchardKeys, CoreError> {
+pub fn derive_orchard_keys_hex(ak_hex: &str, network: NetworkType) -> Result<OrchardKeys, CoreError> {
     let bytes = hex::decode(ak_hex.trim())
         .map_err(|e| CoreError::Crypto(format!("bad ak hex: {e}")))?;
     let ak: [u8; 32] = bytes
         .try_into()
         .map_err(|_| CoreError::Crypto("ak must be 32 bytes".into()))?;
-    derive_orchard_keys(&ak)
+    derive_orchard_keys(&ak, network)
+}
+
+/// Derive the group's Orchard unified receive address at a specific diversifier
+/// index. Rotating the index yields a fresh, unlinkable receive address that the
+/// same viewing key still detects (Orchard IVK trial-decryption is diversifier-
+/// independent), so callers can hand out a new address per payment without any
+/// change to the group key. Index 0 matches [`derive_orchard_keys`].
+pub fn derive_orchard_address_at(
+    ak_hex: &str,
+    network: NetworkType,
+    index: u32,
+) -> Result<String, CoreError> {
+    let bytes = hex::decode(ak_hex.trim())
+        .map_err(|e| CoreError::Crypto(format!("bad ak hex: {e}")))?;
+    let ak: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| CoreError::Crypto("ak must be 32 bytes".into()))?;
+    let fvk_bytes = orchard_fvk_bytes(&ak);
+    let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
+        .ok_or_else(|| CoreError::Crypto("invalid Orchard ak (not a valid spend key)".into()))?;
+    let receiver = fvk
+        .address_at(index, orchard::keys::Scope::External)
+        .to_raw_address_bytes();
+    let address = Address::try_from_items(vec![Receiver::Orchard(receiver)])
+        .map_err(|e| CoreError::Crypto(format!("unified address: {e:?}")))?
+        .encode(&network);
+    Ok(address)
 }
 
 #[cfg(test)]
@@ -104,13 +132,36 @@ mod tests {
     #[test]
     fn derives_stable_address_and_ufvk() {
         let ak = sample_ak();
-        let a = derive_orchard_keys(&ak).unwrap();
-        let b = derive_orchard_keys(&ak).unwrap();
+        let a = derive_orchard_keys(&ak, NetworkType::Main).unwrap();
+        let b = derive_orchard_keys(&ak, NetworkType::Main).unwrap();
         // Deterministic: same ak -> same keys, every member, every run.
         assert_eq!(a.address, b.address);
         assert_eq!(a.ufvk, b.ufvk);
         assert!(a.address.starts_with("u1"), "got {}", a.address);
         assert!(a.ufvk.starts_with("uview1"), "got {}", a.ufvk);
+
+        // Testnet encodes the same key material under testnet HRPs.
+        let t = derive_orchard_keys(&ak, NetworkType::Test).unwrap();
+        assert!(t.address.starts_with("utest1"), "got {}", t.address);
+        assert!(t.ufvk.starts_with("uviewtest1"), "got {}", t.ufvk);
+        assert_ne!(t.address, a.address);
+    }
+
+    #[test]
+    fn rotating_receive_addresses_are_distinct_and_index0_matches_default() {
+        let ak = sample_ak();
+        let ak_hex = hex::encode(ak);
+        // Index 0 must equal the canonical default address.
+        let default = derive_orchard_keys(&ak, NetworkType::Test).unwrap().address;
+        let at0 = derive_orchard_address_at(&ak_hex, NetworkType::Test, 0).unwrap();
+        assert_eq!(default, at0);
+        // Successive indices produce distinct, valid testnet unified addresses.
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..8u32 {
+            let a = derive_orchard_address_at(&ak_hex, NetworkType::Test, i).unwrap();
+            assert!(a.starts_with("utest1"), "got {a}");
+            assert!(seen.insert(a), "diversifier index {i} reused an address");
+        }
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub struct SidecarHandle {
     pub child: CommandChild,
     pub port: u16,
     pub cert_pem: String,
+    /// Whether the server was bound to the LAN (`0.0.0.0`) rather than loopback.
+    pub bind_lan: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -65,7 +67,7 @@ pub fn ensure_certs(state: &AppState) -> AppResult<(String, PathBuf, PathBuf)> {
     Ok((cert.cert_pem, cert_path, key_path))
 }
 
-pub async fn start(app: &AppHandle, port: u16) -> AppResult<SidecarStatus> {
+pub async fn start(app: &AppHandle, port: u16, bind_lan: bool) -> AppResult<SidecarStatus> {
     let state = app.state::<AppState>();
     let mut guard = state.sidecar.lock().await;
     if guard.is_some() {
@@ -74,13 +76,15 @@ pub async fn start(app: &AppHandle, port: u16) -> AppResult<SidecarStatus> {
 
     let (cert_pem, cert_path, key_path) = ensure_certs(&state)?;
 
+    // Bind loopback by default; only expose to the LAN when the user opts in.
+    let bind_ip = if bind_lan { "0.0.0.0" } else { "127.0.0.1" };
     let command = app
         .shell()
         .sidecar("frostd")
         .map_err(|e| AppError::new("server", format!("sidecar binary not found: {e}")))?
         .args([
             "--ip",
-            "0.0.0.0",
+            bind_ip,
             "--port",
             &port.to_string(),
             "--tls-cert",
@@ -117,6 +121,7 @@ pub async fn start(app: &AppHandle, port: u16) -> AppResult<SidecarStatus> {
         child,
         port,
         cert_pem: cert_pem.clone(),
+        bind_lan,
     });
     drop(guard);
 
@@ -166,7 +171,9 @@ pub async fn status(state: &AppState) -> AppResult<SidecarStatus> {
             port: Some(handle.port),
             url: Some(format!("https://127.0.0.1:{}", handle.port)),
             cert_fingerprint: Some(tls::cert_fingerprint(&handle.cert_pem)?),
-            lan_addresses: lan_ips(),
+            // Only advertise LAN addresses when actually bound to the LAN;
+            // a loopback-only server is not reachable at those addresses.
+            lan_addresses: if handle.bind_lan { lan_ips() } else { vec![] },
         }),
         None => Ok(SidecarStatus {
             running: false,

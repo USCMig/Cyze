@@ -14,6 +14,7 @@ import { useCeremonies } from "../stores/ceremonies";
 
 const PHASES: Record<string, string> = {
   connecting: "Connecting to server",
+  connected: "Connection established",
   session_created: "Session created — waiting for participants",
   waiting_for_commitments: "Waiting for participant commitments",
   signing_package_sent: "Signing package sent",

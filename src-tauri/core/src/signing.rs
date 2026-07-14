@@ -58,6 +58,11 @@ pub struct CoordinatorParams {
     /// it here. When `None`, a fresh random α is generated for RedPallas (the
     /// default for standalone signing).
     pub randomizer: Option<Vec<u8>>,
+    /// Optional JSON-encoded [`crate::events::SigningContext`] describing the
+    /// transaction, forwarded to participants over the signing package's
+    /// `aux_msg` side channel so they can review it at the approval gate.
+    /// Empty for standalone (non-wallet) signing.
+    pub send_context: Vec<u8>,
 }
 
 pub struct SigningOutput {
@@ -124,6 +129,11 @@ async fn run_coordinator_generic<C: RandomizedCiphersuite + 'static>(
     let mut client = FrostdClient::new(format!("https://{}", params.server_url), &params.trust)?;
     let _ = events.send(CoordinatorEvent::Connecting).await;
     client.login(&params.comm_privkey, &params.comm_pubkey).await?;
+    let _ = events
+        .send(CoordinatorEvent::Connected {
+            server: params.server_url.clone(),
+        })
+        .await;
 
     let session_id = client
         .create_new_session(&api::CreateNewSessionArgs {
@@ -192,7 +202,13 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
             let msg = cipher
                 .decrypt(msg)
                 .map_err(|e| CoreError::Crypto(e.to_string()))?;
+            // Attribute the round-1 commitment to its sender so the session-
+            // visibility UI can mark that participant as joined (#4).
+            let sender_hex = hex::encode(&msg.sender.0);
             state.recv(msg).map_err(cerr)?;
+            let _ = events
+                .send(CoordinatorEvent::ParticipantJoined { pubkey: sender_hex })
+                .await;
         }
         if state.has_commitments() {
             break;
@@ -233,7 +249,10 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
 
     let send_args = SendSigningPackageArgs::<C> {
         signing_package: vec![signing_package.clone()],
-        aux_msg: Default::default(),
+        // Carry the human-readable transaction context to participants so their
+        // approval gate can show what the sighash represents (C-1: no blind
+        // signing). Empty for standalone signing.
+        aux_msg: params.send_context.clone(),
         randomizer: randomizer.map(|r| vec![r]).unwrap_or_default(),
     };
     // Encrypted separately per recipient (the Noise sessions are pairwise).
@@ -279,7 +298,13 @@ async fn coordinator_rounds<C: RandomizedCiphersuite + 'static>(
             let msg = cipher
                 .decrypt(msg)
                 .map_err(|e| CoreError::Crypto(e.to_string()))?;
+            // Attribute the round-2 share to its sender: they have approved and
+            // signed the pending transaction plan (#4).
+            let sender_hex = hex::encode(&msg.sender.0);
             state.recv(msg).map_err(cerr)?;
+            let _ = events
+                .send(CoordinatorEvent::ParticipantApproved { pubkey: sender_hex })
+                .await;
         }
         if state.has_signature_shares() {
             break;
@@ -374,6 +399,11 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
     let mut client = FrostdClient::new(format!("https://{}", params.server_url), &params.trust)?;
     let _ = events.send(ParticipantEvent::Connecting).await;
     client.login(&params.comm_privkey, &params.comm_pubkey).await?;
+    let _ = events
+        .send(ParticipantEvent::Connected {
+            server: params.server_url.clone(),
+        })
+        .await;
 
     let session_id = params.session_id;
 
@@ -438,11 +468,21 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
         .first()
         .ok_or_else(|| CoreError::Ceremony("empty signing package".into()))?;
 
+    // Decode the coordinator-supplied transaction context, if any, so the
+    // approval gate can show what the sighash represents rather than raw hex.
+    // Advisory only: malformed context is ignored (falls back to hex display).
+    let context = if send_args.aux_msg.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<crate::events::SigningContext>(&send_args.aux_msg).ok()
+    };
+
     // Approval gate: surface the message and wait for the user. No secret
     // material has been revealed yet — only nonce commitments.
     let _ = events
         .send(ParticipantEvent::AwaitingApproval {
             message_hex: hex::encode(signing_package.message()),
+            context,
         })
         .await;
     let approved = tokio::select! {

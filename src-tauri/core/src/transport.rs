@@ -59,10 +59,13 @@ impl FrostdClient {
         } else {
             req
         };
-        let response = req
-            .send()
-            .await
-            .map_err(|e| CoreError::Connection(e.to_string()))?;
+        // `e.to_string()` on a reqwest error yields only "error sending request
+        // for url (…)" — the DNS/refused/TLS cause underneath is dropped. Walk the
+        // chain and name the fix (a dead quick tunnel, notably, is just a DNS
+        // failure and is otherwise indistinguishable from a typo).
+        let response = req.send().await.map_err(|e| {
+            crate::neterr::connection_error("reaching the signing server", &self.base_url, &e)
+        })?;
         if !response.status().is_success() {
             if response.status() == reqwest::StatusCode::INTERNAL_SERVER_ERROR {
                 let err = response

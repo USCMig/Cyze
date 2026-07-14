@@ -77,6 +77,11 @@ async fn run_dkg_generic<C: Ciphersuite + MaybeIntoEvenY + 'static>(
 
     let _ = events.send(DkgEvent::Connecting).await;
     client.login(&params.comm_privkey, &params.comm_pubkey).await?;
+    let _ = events
+        .send(DkgEvent::Connected {
+            server: params.server_url.clone(),
+        })
+        .await;
 
     // Create or join the session.
     let session_id = if is_initiator {

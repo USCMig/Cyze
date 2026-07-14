@@ -37,14 +37,61 @@ xeddsa = "=1.0.2"
 
 # Optional Zcash key/address derivation (spike). Behind a feature so the heavy
 # orchard/halo2 dependency tree stays out of the default build.
-orchard = { version = "0.14", optional = true }
-zcash_address = { version = "0.6", optional = true }
+#
+# IRONWOOD/NU6.3 TESTNET SPIKE: the zcash_* cohort is pinned to zecrocks'
+# librustzcash fork branch `ironwood-scan-model`, which carries the real testnet
+# NU6.3 branch id (0x37a5165b) plus the Ironwood send path + turnstile
+# enforcement. orchard moves to 0.15.0-pre.2 (still ships `unstable-frost`).
+# These are PRE-RELEASE deps appropriate for a testnet build only. See
+# src-tauri/Cargo.toml for the required [patch.crates-io] incrementalmerkletree
+# pin the fork depends on.
+orchard = { version = "0.15.0-pre.2", optional = true, features = ["unstable-frost"] }
+zcash_address = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true }
 pasta_curves = { version = "0.5", optional = true }
 ff = { version = "0.13", optional = true }
 
+# Wallet/light-client stack (feature `wallet`, spike 5.0). Heavy: pulls the
+# zcash light-client backend, lightwalletd gRPC, PCZT builder, and sqlite.
+zcash_client_backend = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true, default-features = false, features = [
+    "orchard",
+    "sync",
+    "lightwalletd-tonic",
+    "lightwalletd-tonic-transport",
+    "lightwalletd-tonic-tls-webpki-roots",
+    "pczt",
+] }
+zcash_client_sqlite = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true, features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+pczt = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true, features = ["signer"] }
+zcash_keys = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true, features = ["orchard"] }
+zcash_protocol = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true }
+tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-webpki-roots"] }
+# SQLCipher (bundled amalgamation) so the per-group wallet database is encrypted
+# at rest. Feature-unifies with zcash_client_sqlite's `bundled` rusqlite: the
+# single libsqlite3-sys build compiles the SQLCipher amalgamation. Uses vendored
+# OpenSSL (compiled from source) so no system libssl-dev / openssl headers are
+# required on the build machine — only a C toolchain + perl.
+rusqlite = { version = "0.37", optional = true, features = ["bundled-sqlcipher-vendored-openssl"] }
+prost = { version = "0.14", optional = true }
+async-trait = { version = "0.1", optional = true }
+zcash_primitives = { git = "https://github.com/zecrocks/librustzcash", branch = "ironwood-scan-model", optional = true }
+
 [features]
 # Orchard FVK / unified-address derivation from group key material.
-zcash = ["dep:orchard", "dep:zcash_address", "dep:pasta_curves", "dep:ff"]
+zcash = ["dep:orchard", "dep:zcash_address", "dep:pasta_curves", "dep:ff", "dep:zcash_protocol"]
+# Light-client wallet: sync, balances, and PCZT transaction building.
+wallet = [
+    "zcash",
+    "dep:zcash_client_backend",
+    "dep:zcash_client_sqlite",
+    "dep:zcash_keys",
+    "dep:zcash_protocol",
+    "dep:tonic",
+    "dep:rusqlite",
+    "dep:prost",
+    "dep:async-trait",
+    "dep:zcash_primitives",
+    "dep:pczt",
+]
 
 [dev-dependencies]
 tempfile = "3"

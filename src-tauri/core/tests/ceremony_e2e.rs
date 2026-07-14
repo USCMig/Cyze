@@ -177,6 +177,7 @@ async fn dkg_and_sign(suite: Suite) {
         signers,
         self_key_package: outputs[0].group.key_package.clone(),
         randomizer: None,
+        send_context: Vec::new(),
     };
     let (coord_tx, mut coord_rx) = mpsc::channel(32);
     let coord_cancel = CancellationToken::new();
@@ -215,7 +216,7 @@ async fn dkg_and_sign(suite: Suite) {
         tokio::spawn(async move {
             let mut approve_tx = Some(approve_tx);
             while let Some(event) = rx.recv().await {
-                if let frost_app_core::events::ParticipantEvent::AwaitingApproval { message_hex } =
+                if let frost_app_core::events::ParticipantEvent::AwaitingApproval { message_hex, .. } =
                     &event
                 {
                     assert_eq!(message_hex, &expected_hex, "must show the real message");
@@ -319,6 +320,7 @@ async fn participant_rejection_aborts() {
         signers,
         self_key_package: outputs[0].group.key_package.clone(),
         randomizer: None,
+        send_context: Vec::new(),
     };
     let (coord_tx, mut coord_rx) = mpsc::channel(32);
     let coord_cancel = CancellationToken::new();

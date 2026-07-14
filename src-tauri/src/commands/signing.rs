@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::{AppState, CeremonyHandle};
 
 /// Resolve a group from the keystore plus the server/trust to use for it.
-async fn group_context(
+pub(crate) async fn group_context(
     state: &AppState,
     group_id: &str,
     server_override: Option<String>,
@@ -34,10 +34,23 @@ async fn group_context(
         let guard = state.sidecar.lock().await;
         guard.as_ref().map(|h| format!("127.0.0.1:{}", h.port))
     };
+    // The group records the server it was created on. That is the right default
+    // for a *stable* address, but a Cloudflare quick tunnel is ephemeral: its
+    // hostname is regenerated whenever the coordinator restarts the tunnel, so a
+    // stored one is dead the moment that happens. Left ahead of the current
+    // setting it would silently pin the group to a permanently-unresolvable host
+    // — you could still *see* a session (the inbox polls the configured server)
+    // but never join it. So a stored ephemeral URL yields to the live setting,
+    // and is only used as a last resort when nothing else is configured.
+    let (stable_group_url, ephemeral_group_url) = match group.server_url.clone() {
+        Some(u) if frost_app_core::neterr::is_ephemeral_server(&u) => (None, Some(u)),
+        other => (other, None),
+    };
     let server_url = server_override
-        .or_else(|| group.server_url.clone())
+        .or(stable_group_url)
         .or(local_sidecar_url)
         .or_else(|| state.load_settings().server_url)
+        .or(ephemeral_group_url)
         .ok_or_else(|| AppError::new("config", "no server configured for this group"))?;
     let server_url = server_url
         .trim_start_matches("https://")
@@ -114,6 +127,8 @@ pub async fn create_signing_session<R: tauri::Runtime>(
         // Standalone signing generates a fresh randomizer; the Orchard
         // transaction flow (phase 5) supplies the spend's α here instead.
         randomizer: None,
+        // Standalone signing has no wallet transaction context to show.
+        send_context: Vec::new(),
     };
 
     let ceremony_id = Uuid::new_v4();
@@ -139,7 +154,17 @@ pub async fn create_signing_session<R: tauri::Runtime>(
 
     let task_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_coordinator(suite, params, tx, cancel).await;
+        // 35-minute timeout: gives signers ample time to approve while keeping
+        // the session from hanging indefinitely when someone goes offline.
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35 * 60);
+        let result = match tokio::time::timeout(TIMEOUT, run_coordinator(suite, params, tx, cancel)).await {
+            Ok(r) => r,
+            Err(_) => Err(frost_app_core::CoreError::Ceremony(
+                "Signing session timed out after 35 minutes. \
+                 Start a new session when all participants are available."
+                .to_string(),
+            )),
+        };
         let state = task_app.state::<AppState>();
         state.ceremonies.lock().await.remove(&ceremony_id);
         match result {
@@ -336,9 +361,20 @@ pub async fn list_pending_sessions(
             .iter()
             .find(|(_, pk)| *pk == info.coordinator_pubkey.0)
             .map(|(name, _)| name.clone());
+        // Which of our groups is this session for? frostd is group-agnostic — a
+        // session carries no group id — so the *signer set* is what identifies it.
+        // Matching on the coordinator alone lights the session up under every
+        // group that merely shares that coordinator, which is the common case
+        // (same people, several groups). Require instead that every pubkey in the
+        // session is a member of the group: a threshold subset of group A is not
+        // a subset of group B unless B contains all of them.
+        let session_pubkeys: Vec<&Vec<u8>> = info.pubkeys.iter().map(|p| &p.0).collect();
         let matching_groups = groups
             .iter()
-            .filter(|(_, pubkeys)| pubkeys.contains(&info.coordinator_pubkey.0))
+            .filter(|(_, members)| {
+                members.contains(&info.coordinator_pubkey.0)
+                    && session_pubkeys.iter().all(|pk| members.contains(pk))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         pending.push(PendingSession {

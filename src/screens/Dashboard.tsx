@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   listContacts,
   listGroups,
@@ -19,6 +19,8 @@ interface Step {
 
 export default function Dashboard() {
   const [copied, setCopied] = useState<"app" | "cli" | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>("");
+  const navigate = useNavigate();
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const contacts = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
@@ -61,14 +63,19 @@ export default function Dashboard() {
       cta: hasGroups ? "New ceremony" : "Start DKG",
     },
     {
-      title: "Sign a message",
+      title: "Send a transaction",
       done: false,
       detail:
-        "Coordinate a signing session, or approve one from your inbox when someone else coordinates.",
-      to: hasGroups ? "/sign" : "/inbox",
-      cta: hasGroups ? "New signing session" : "Open inbox",
+        "Build and sign a Zcash transaction with your threshold group, or approve a send from your inbox.",
+      to: hasGroups ? "/groups" : "/inbox",
+      cta: hasGroups ? "Go to groups" : "Open inbox",
     },
   ];
+
+  // Orchard groups only — those are the ones with wallets.
+  const orchardGroups = (groups.data ?? []).filter((g) =>
+    g.ciphersuite.includes("Pallas")
+  );
 
   // The user's current position is the first not-yet-done step.
   const currentIdx = steps.findIndex((s) => !s.done);
@@ -104,6 +111,35 @@ export default function Dashboard() {
           })}
         </div>
       </div>
+
+      {orchardGroups.length > 0 && (
+        <div className="card">
+          <h3>Send a Transaction</h3>
+          <p className="dim" style={{ marginTop: 0 }}>
+            Select a group wallet to build and sign a Zcash transaction with the threshold.
+          </p>
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            <select
+              value={selectedGroupId}
+              onChange={(e) => setSelectedGroupId(e.target.value)}
+              style={{ flex: 1 }}
+            >
+              <option value="">— choose a group —</option>
+              {orchardGroups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.description || g.id.slice(0, 16) + "…"} ({g.threshold}-of-{g.num_participants})
+                </option>
+              ))}
+            </select>
+            <button
+              disabled={!selectedGroupId}
+              onClick={() => selectedGroupId && navigate(`/groups/${selectedGroupId}/wallet`)}
+            >
+              Open wallet →
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h3>Your groups</h3>
