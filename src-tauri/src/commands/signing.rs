@@ -361,9 +361,20 @@ pub async fn list_pending_sessions(
             .iter()
             .find(|(_, pk)| *pk == info.coordinator_pubkey.0)
             .map(|(name, _)| name.clone());
+        // Which of our groups is this session for? frostd is group-agnostic — a
+        // session carries no group id — so the *signer set* is what identifies it.
+        // Matching on the coordinator alone lights the session up under every
+        // group that merely shares that coordinator, which is the common case
+        // (same people, several groups). Require instead that every pubkey in the
+        // session is a member of the group: a threshold subset of group A is not
+        // a subset of group B unless B contains all of them.
+        let session_pubkeys: Vec<&Vec<u8>> = info.pubkeys.iter().map(|p| &p.0).collect();
         let matching_groups = groups
             .iter()
-            .filter(|(_, pubkeys)| pubkeys.contains(&info.coordinator_pubkey.0))
+            .filter(|(_, members)| {
+                members.contains(&info.coordinator_pubkey.0)
+                    && session_pubkeys.iter().all(|pk| members.contains(pk))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         pending.push(PendingSession {

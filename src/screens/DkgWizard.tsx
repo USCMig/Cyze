@@ -77,18 +77,26 @@ export default function DkgWizard() {
   const begin = async () => {
     setError(null);
     try {
+      // The name is what identifies this group everywhere afterwards. A blank one
+      // leaves only the group's hex verifying key to show, which is unreadable —
+      // so always fall back to something a person can recognise. The joiner's
+      // threshold/participant inputs describe the ceremony they are joining, not
+      // a group they defined, so don't spell those into their fallback.
+      const suiteName = suite === "redpallas" ? "RedPallas" : "Ed25519";
+      const groupName =
+        description.trim() ||
+        (role === "create"
+          ? `${suiteName} ${threshold}-of-${totalParticipants}`
+          : `${suiteName} group`);
       const id = await startDkg({
         suite,
-        description,
+        description: groupName,
         threshold,
         participants: role === "create" ? [...selected] : [],
         server_url: effectiveServer || null,
         session_id: null,
       });
-      const label =
-        description.trim() ||
-        `${suite === "redpallas" ? "RedPallas" : "Ed25519"} ${threshold}-of-${totalParticipants}`;
-      setActiveDkg(id, label);
+      setActiveDkg(id, groupName);
     } catch (e) {
       setError((e as AppError).message ?? String(e));
     }
@@ -198,16 +206,28 @@ export default function DkgWizard() {
           </button>
         </div>
 
+        {/* Both roles name the group. A joiner who can't name it ends up with a
+            group labelled by its hex verifying key everywhere in the app. The
+            name is local to each device (the DKG protocol carries no metadata,
+            so it cannot travel from the coordinator), which is exactly why the
+            joiner should be told what to type. */}
+        <label>Group name</label>
+        <input
+          type="text"
+          placeholder={
+            role === "create" ? "e.g. Treasury 2-of-3" : "e.g. Treasury 2-of-3"
+          }
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+        <p className="dim" style={{ marginTop: -4, marginBottom: 12 }}>
+          {role === "create"
+            ? "How this group appears on your device. Tell the other participants what you called it so everyone refers to it the same way."
+            : "How this group appears on your device. Ask the coordinator what they named it and use the same name. Leave it blank and it falls back to a generic label."}
+        </p>
+
         {role === "create" ? (
           <>
-            <label>Group description</label>
-            <input
-              type="text"
-              placeholder="e.g. Treasury 2-of-3"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-
             <label>Ciphersuite</label>
             <select value={suite} onChange={(e) => setSuite(e.target.value as Ciphersuite)}>
               <option value="redpallas">

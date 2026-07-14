@@ -45,6 +45,11 @@ function unit(isMainnet: boolean): string {
   return isMainnet ? "ZEC" : "TAZ";
 }
 
+/** How long an unconfirmed send is still worth showing. A transaction's expiry
+ *  is ~40 blocks (≈50 min), so past an hour with no on-chain row it can never
+ *  confirm — it stalled or expired, and is noise rather than pending state. */
+const STALE_PENDING_MS = 60 * 60 * 1000;
+
 /** Full-page overlay confirmation required before broadcasting a mainnet send.
  *  The user must explicitly check a box acknowledging irreversibility. */
 function MainnetConfirmModal({
@@ -461,6 +466,10 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     queryKey: ["wallet-status", group.id],
     queryFn: () => walletGroupStatus(group.id),
     enabled: group.ciphersuite.includes("Pallas"),
+    // Balances are read straight from the local db (no network), so polling is
+    // cheap — and without it the figures only moved when a sync happened to
+    // finish, so a confirmation could sit on screen unreflected.
+    refetchInterval: 5_000,
   });
   const [err, setErr] = useState<string | null>(null);
   const [walletTab, setWalletTab] = useState<WalletTab>("receive");
@@ -476,10 +485,19 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   const [autoSyncOff, setAutoSyncOff] = useState(false);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  // A sync can fail for reasons that clear on their own — a dropped connection,
+  // a lightwalletd blip. Switching auto-sync off after a single one of those left
+  // the wallet frozen for the rest of the session: nothing refreshed until the
+  // user navigated away and back (which remounts and resets this), which is
+  // exactly the "it only updates if I leave the page" behaviour. Only give up
+  // after it keeps failing.
+  const failures = useRef(0);
+  const AUTO_SYNC_GIVE_UP_AFTER = 3;
   const sync = useMutation({
     mutationFn: () => walletSync(group.id),
     onSuccess: (s) => {
       setErr(null);
+      failures.current = 0;
       setLastSynced(new Date());
       queryClient.setQueryData(["wallet-status", group.id], s);
       queryClient.invalidateQueries({ queryKey: ["wallet-history", group.id] });
@@ -487,7 +505,8 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     },
     onError: (e) => {
       setErr((e as unknown as AppError).message);
-      setAutoSyncOff(true);
+      failures.current += 1;
+      if (failures.current >= AUTO_SYNC_GIVE_UP_AFTER) setAutoSyncOff(true);
     },
   });
 
@@ -648,6 +667,21 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.data?.initialized]);
+
+  // A ceremony just moved funds (a send we ran, or a session we signed). Sync now
+  // rather than waiting out the poll interval, so the wallet reflects what the
+  // user just did. The wallet screen is the only place that syncs, so this cannot
+  // race a second writer; if one is already running, the poll picks it up next.
+  const walletRefreshTick = useCeremonies((s) => s.walletRefreshTick);
+  useEffect(() => {
+    if (walletRefreshTick === 0) return;
+    if (status.data?.initialized && !syncRef.current.isPending) {
+      setAutoSyncOff(false);
+      failures.current = 0;
+      syncRef.current.mutate();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletRefreshTick]);
   useEffect(() => {
     const t = setInterval(() => {
       const cur = syncRef.current;
@@ -1946,7 +1980,10 @@ function WalletTxHistory({ group, isMainnet }: { group: GroupSummary; isMainnet:
     queryKey: ["wallet-history", group.id],
     queryFn: () => walletHistory(group.id),
     enabled: group.ciphersuite.includes("Pallas"),
-    refetchInterval: 35_000,
+    // Read from the local db, so polling is cheap. At 35s a just-confirmed
+    // transaction could sit invisible for over half a minute while the user
+    // stared at the page it should have appeared on.
+    refetchInterval: 8_000,
   });
   const walletStatus = useQuery({
     queryKey: ["wallet-status", group.id],
@@ -1965,6 +2002,14 @@ function WalletTxHistory({ group, isMainnet }: { group: GroupSummary; isMainnet:
     () => new Set((history.data ?? []).map((t) => t.txid)),
     [history.data]
   );
+  // Re-evaluate staleness on a timer, so a pending row that ages out disappears
+  // on its own instead of lingering until some unrelated re-render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
   const pendingRows = useMemo(
     () =>
       Object.entries(ceremonies)
@@ -1974,11 +2019,16 @@ function WalletTxHistory({ group, isMainnet }: { group: GroupSummary; isMainnet:
             c.groupId === group.id &&
             id !== activeId &&
             // If it landed on-chain, let the SQLite row be authoritative.
-            !(c.txid && onchainTxids.has(c.txid))
+            !(c.txid && onchainTxids.has(c.txid)) &&
+            // A transaction's expiry is ~40 blocks (≈50 min). Past an hour with
+            // no on-chain row, it never confirmed and never can — the ceremony
+            // stalled, or it expired before broadcast. Keeping it would leave a
+            // permanent ⏳ row claiming funds are in flight that never moved.
+            !(c.startedAt != null && now - c.startedAt > STALE_PENDING_MS)
         )
         .map(([id, c]) => ({ ...c, id }))
         .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
-    [ceremonies, group.id, activeId, onchainTxids]
+    [ceremonies, group.id, activeId, onchainTxids, now]
   );
 
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
