@@ -85,15 +85,26 @@ Prerequisites:
 - Rust (1.92+), Node 18+
 - Tauri Linux system deps:
   `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev librsvg2-dev libayatana-appindicator3-dev build-essential`
-- Optional: [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-  on your PATH, for the public-tunnel feature.
 
 ```sh
 npm install
-./scripts/build-sidecar.sh   # builds frostd at the pinned rev (scripts/PINNED_REV)
+./scripts/build-sidecar.sh   # REQUIRED — see below
 npm run tauri dev            # development
 npm run tauri build          # native installers (AppImage/deb/…)
 ```
+
+**`build-sidecar.sh` is not optional.** The app bundles two sidecar binaries, and
+Tauri refuses to build unless both are present for your host's target triple:
+
+- **`frostd`** — the coordination server, built from `frost-tools` at the pinned
+  revision (`scripts/PINNED_REV`). It must match the `frost-client` dependency in
+  `src-tauri/Cargo.toml` or client and server disagree on the wire format.
+- **`cloudflared`** — downloaded from Cloudflare's releases, so the optional
+  public-tunnel feature needs no separate install or PATH entry.
+
+The script fetches both. Skip it and the build fails late with
+`resource path 'binaries/cloudflared-<triple>' doesn't exist`. The binaries land
+in `src-tauri/binaries/` (gitignored), so a fresh clone always needs this step.
 
 Windows builds run natively (MSVC + Node) or via WSL2; build a Windows `frostd`
 sidecar and target `nsis`/`msi`. To run two instances on one machine (e.g. to
