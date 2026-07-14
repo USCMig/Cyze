@@ -974,7 +974,7 @@ pub async fn prepare_send(
     use zcash_keys::address::Address;
     use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::value::Zatoshis;
-    use zcash_protocol::ShieldedProtocol;
+    use zcash_protocol::ShieldedPool;
 
     let params = network.params();
     let (db_path, _) = wallet_paths(data_dir, group_id, network);
@@ -1049,7 +1049,7 @@ pub async fn prepare_send(
         amount,
         memo_bytes,
         None, // change memo
-        ShieldedProtocol::Orchard,
+        ShieldedPool::Orchard,
         Some(TxVersion::V5),
     )
     .map_err(|e| CoreError::Ceremony(format!("propose transfer: {e:?}")))?;
