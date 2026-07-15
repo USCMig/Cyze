@@ -8,7 +8,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
@@ -17,7 +17,7 @@ import {
   listGroups,
   recordActivity,
   getSettings,
-  setSessionRole,
+  listPendingSessions,
 } from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
 import { Logo } from "./components/Logo";
@@ -120,34 +120,15 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   },
 ];
 
-/** Sidebar profile switch: a two-state slider toggling the active session
- *  profile (Coordinator / Participant). Clicking anywhere flips it; the current
- *  side is highlighted and bold. Persists the choice. */
-function ProfileSlider() {
-  const queryClient = useQueryClient();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
-  const role = settings.data?.session_role === "participant" ? "participant" : "coordinator";
-
-  const toggle = useMutation({
-    mutationFn: () => setSessionRole(role === "coordinator" ? "participant" : "coordinator"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
-  });
-
-  const isCoord = role === "coordinator";
+/** A red dot with a white "!", shown against a nav entry that needs the user to
+ *  do something: a signing session waiting in their inbox, or a DKG ceremony in
+ *  flight. Ceremonies stall if a participant doesn't notice they were invited,
+ *  so this has to be visible from wherever they are in the app. */
+function AttentionBadge({ title }: { title: string }) {
   return (
-    <button
-      className="profile-slider"
-      onClick={() => toggle.mutate()}
-      title="Switch session profile"
-      aria-label={`Session profile: ${role}. Click to switch.`}
-    >
-      <span
-        className="profile-slider-thumb"
-        style={{ left: isCoord ? "3px" : "calc(50% + 0px)" }}
-      />
-      <span className={`profile-slider-opt ${isCoord ? "on" : ""}`}>Coordinator</span>
-      <span className={`profile-slider-opt ${!isCoord ? "on" : ""}`}>Participant</span>
-    </button>
+    <span className="nav-alert" role="status" aria-label={title} title={title}>
+      !
+    </span>
   );
 }
 
@@ -160,6 +141,21 @@ function Layout() {
     queryFn: getSettings,
     enabled: loaded && unlocked,
   });
+
+  // Signing sessions waiting on this user. Polled here, not just on the Inbox
+  // screen, so an invitation is noticed from anywhere in the app — a signer who
+  // never opens their inbox stalls the whole ceremony. Shares its query key with
+  // the Inbox, so the two dedupe into a single poll rather than two.
+  // Only meaningful once a server is configured; without one the call errors, so
+  // don't issue it (and don't retry a config problem on a timer).
+  const pendingSessions = useQuery({
+    queryKey: ["pending-sessions"],
+    queryFn: () => listPendingSessions(null),
+    enabled: loaded && unlocked && !!settings.data?.server_url,
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const pendingCount = pendingSessions.data?.length ?? 0;
 
   // Auto-lock: reflect a backend-initiated idle lock in the UI, and report user
   // activity (throttled) so the idle timer only fires when truly inactive.
@@ -206,7 +202,6 @@ function Layout() {
         <div className="sidebar-brand">
           <Logo markSize={24} showTagline />
         </div>
-        <ProfileSlider />
         {NAV_SECTIONS.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>
@@ -217,7 +212,14 @@ function Layout() {
                 <NavLink key={link.to} to={link.to} end={link.to === "/"}>
                   {link.label}
                   {link.to === "/dkg" && dkgInProgress && (
-                    <span className="nav-pulse" title="A DKG ceremony is running" />
+                    <AttentionBadge title="A DKG ceremony is running — it needs your attention" />
+                  )}
+                  {link.to === "/inbox" && pendingCount > 0 && (
+                    <AttentionBadge
+                      title={`${pendingCount} signing ${
+                        pendingCount === 1 ? "session is" : "sessions are"
+                      } waiting for you`}
+                    />
                   )}
                 </NavLink>
               )

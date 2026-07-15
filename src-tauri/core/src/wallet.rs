@@ -527,6 +527,21 @@ fn open_db(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<Grou
     Ok(db)
 }
 
+/// Open a group wallet for *reading only* (balances, account ids): a `WalletDb`
+/// over a keyed connection, but WITHOUT running `init_wallet_db`.
+///
+/// `init_wallet_db` opens a write transaction to check/apply schema migrations,
+/// so calling it on every read takes a write lock. The balance panel polls
+/// `group_status` every few seconds, so under `open_db` each poll fought the sync
+/// writer for the single WAL write lock and intermittently lost with "database is
+/// locked" mid commitment-tree write. Migrations already ran when the account was
+/// created and run again on every sync, so a read never needs to migrate — a
+/// SELECT under WAL takes only a shared lock and cannot block the writer.
+fn open_db_read(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<GroupDb, CoreError> {
+    let conn = open_keyed_connection(db_path, db_key)?;
+    Ok(WalletDb::from_connection(conn, network.params(), SystemClock, OsRng))
+}
+
 /// A single shielded/transparent pool's balance, broken into spendable now,
 /// pending (maturing or unconfirmed), and total.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -583,7 +598,10 @@ pub fn group_status(
             chain_tip_height: 0,
         });
     }
-    let db = open_db(&db_path, network, db_key)?;
+    // Read-only: no migration, so this poll never takes a write lock (see
+    // open_db_read). The account was already created and migrated by
+    // init_group_account before any status read can happen.
+    let db = open_db_read(&db_path, network, db_key)?;
     let account_ids = db
         .get_account_ids()
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?;
@@ -894,6 +912,7 @@ pub async fn sync_group(
     network: WalletNetwork,
     lightwalletd_url: &str,
     db_key: &[u8],
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), CoreError> {
     let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
     std::fs::create_dir_all(&blocks_dir)?;
@@ -911,10 +930,19 @@ pub async fn sync_group(
     };
 
     let mut client = connect(lightwalletd_url).await?;
-    zcash_client_backend::sync::run(&mut client, &network.params(), &cache, &mut db, 1000)
-        .await
-        .map_err(|e| CoreError::Connection(format!("sync: {e}")))?;
-    Ok(())
+    let params = network.params();
+    // `sync::run` scans in transactional batches, so dropping its future between
+    // batches leaves the db consistent (just short of the tip). That makes it
+    // safe to race against a cancellation token: "Sync Now" trips the token to
+    // abandon a stalled run, and a fresh sync resumes from where this one left
+    // off. Without this, a stuck stream would keep the sync pending forever.
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(CoreError::Cancelled),
+        res = zcash_client_backend::sync::run(
+            &mut client, &params, &cache, &mut db, 1000,
+        ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
+    }
 }
 
 /// One Orchard spend that the group must FROST-sign: its action index and the
@@ -1485,7 +1513,8 @@ pub fn wallet_history(
                      AND orn2.account_id = ?1 \
                      AND orn2.is_change = 0 \
                      AND orn2.memo IS NOT NULL \
-                   LIMIT 1 ) \
+                   LIMIT 1 ), \
+                 ( SELECT vt.fee_paid FROM v_transactions vt WHERE vt.txid = t.txid LIMIT 1 ) \
                  FROM orchard_received_notes orn \
                  JOIN transactions t ON orn.transaction_id = t.id_tx \
                  LEFT JOIN blocks b ON b.height = t.mined_height \
@@ -1504,12 +1533,13 @@ pub fn wallet_history(
                     row.get::<_, Option<i64>>(2)?,
                     row.get::<_, u64>(3)?,
                     row.get::<_, Option<Vec<u8>>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute receive query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, timestamp, amount, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, amount, memo_bytes, fee_paid) =
                 row.map_err(|e| CoreError::Crypto(format!("receive row: {e}")))?;
             // zcash_client_sqlite stores txid in internal byte order; the
             // conventional display representation (block explorers, CLI) is
@@ -1521,7 +1551,11 @@ pub fn wallet_history(
                 timestamp,
                 direction: "receive".to_string(),
                 amount_zatoshis: amount,
-                fee_zatoshis: None,
+                // The fee is on-chain and public. The wallet knows it whenever it
+                // has the full transaction (v_transactions.fee_paid); it stays
+                // None only when the sender's inputs were never fetched, in which
+                // case the UI says the sender paid it rather than showing nothing.
+                fee_zatoshis: fee_paid.map(|f| f.max(0) as u64),
                 memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
                 recipient: None,
             });

@@ -75,8 +75,10 @@ one-time recovery code to back up. A typical first run:
 4. **Send** — enter a recipient and amount; the app runs a signing ceremony with
    the chosen threshold of members, then broadcasts the transaction.
 
-See `FEATURES.md` and `WALKTHROUGH.md` (local, not committed) for a full feature
-list and a step-by-step demo script.
+**📖 [User Walkthrough & Testing Guide](docs/USER_GUIDE.md)** — a detailed,
+step-by-step guide covering security setup, contacts, hosting/joining a server,
+the DKG ceremony, building and approving transactions, and configuration. Follow
+it in order to fully test and vet the application.
 
 ## Building
 
