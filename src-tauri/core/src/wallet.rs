@@ -527,6 +527,21 @@ fn open_db(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<Grou
     Ok(db)
 }
 
+/// Open a group wallet for *reading only* (balances, account ids): a `WalletDb`
+/// over a keyed connection, but WITHOUT running `init_wallet_db`.
+///
+/// `init_wallet_db` opens a write transaction to check/apply schema migrations,
+/// so calling it on every read takes a write lock. The balance panel polls
+/// `group_status` every few seconds, so under `open_db` each poll fought the sync
+/// writer for the single WAL write lock and intermittently lost with "database is
+/// locked" mid commitment-tree write. Migrations already ran when the account was
+/// created and run again on every sync, so a read never needs to migrate — a
+/// SELECT under WAL takes only a shared lock and cannot block the writer.
+fn open_db_read(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<GroupDb, CoreError> {
+    let conn = open_keyed_connection(db_path, db_key)?;
+    Ok(WalletDb::from_connection(conn, network.params(), SystemClock, OsRng))
+}
+
 /// A single shielded/transparent pool's balance, broken into spendable now,
 /// pending (maturing or unconfirmed), and total.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -583,7 +598,10 @@ pub fn group_status(
             chain_tip_height: 0,
         });
     }
-    let db = open_db(&db_path, network, db_key)?;
+    // Read-only: no migration, so this poll never takes a write lock (see
+    // open_db_read). The account was already created and migrated by
+    // init_group_account before any status read can happen.
+    let db = open_db_read(&db_path, network, db_key)?;
     let account_ids = db
         .get_account_ids()
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?;
