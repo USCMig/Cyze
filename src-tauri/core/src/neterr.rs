@@ -72,14 +72,21 @@ enum Kind {
     Dns,
     Refused,
     Unreachable,
-    Tls,
+    /// The server's certificate was *rejected* on validation — a genuine trust
+    /// problem the user can fix (e.g. import a self-signed cert).
+    TlsCert,
+    /// The TLS handshake was cut short (EOF / abort) before any certificate
+    /// verdict. Not a cert problem — usually a proxy/VPN/firewall or a blip.
+    TlsAbort,
     Timeout,
     Other,
 }
 
 fn classify(chain: &str) -> Kind {
     let c = chain.to_ascii_lowercase();
-    // Order matters: a TLS failure can also mention "connect".
+    // Order matters. Certificate *validation* failures must be checked before the
+    // generic handshake/EOF bucket: rustls reports a rejected cert as, e.g.,
+    // "invalid peer certificate: UnknownIssuer", which also occurs mid-handshake.
     if c.contains("dns error")
         || c.contains("failed to lookup address")
         || c.contains("name or service not known")
@@ -93,10 +100,14 @@ fn classify(chain: &str) -> Kind {
         || c.contains("unknown issuer")
         || c.contains("self-signed")
         || c.contains("bad certificate")
-        || c.contains("handshake")
         || c.contains("invalid peer certificate")
     {
-        Kind::Tls
+        Kind::TlsCert
+    } else if c.contains("handshake") || c.contains("unexpected eof") || c.contains("eof") {
+        // "tls handshake eof": the peer closed the connection during the TLS
+        // handshake. The certificate was never rejected — there wasn't one to
+        // reject yet — so this is a transport problem, not a trust problem.
+        Kind::TlsAbort
     } else if c.contains("connection refused") {
         Kind::Refused
     } else if c.contains("network is unreachable") || c.contains("no route to host") {
@@ -139,9 +150,16 @@ pub fn connection_error(
             "{host} is unreachable from this machine — no network route. A VPN, firewall, or a \
              host with no IPv6 route can cause this."
         ),
-        Kind::Tls => format!(
+        Kind::TlsCert => format!(
             "the TLS certificate for {host} was not accepted. For a self-signed server, import \
              its certificate first (trust-on-first-use) so it can be pinned."
+        ),
+        Kind::TlsAbort => format!(
+            "the secure connection to {host} was closed during the TLS handshake. This is a \
+             transport problem, not a certificate one — commonly a VPN, firewall, or proxy that \
+             intercepts TLS, or a transient network blip. Try again; if it persists, disable any \
+             TLS-intercepting proxy/VPN or switch networks. (A public endpoint like a lightwalletd \
+             server does not need a certificate import.)"
         ),
         Kind::Timeout => format!(
             "the connection to {host} timed out. The server may be down, or a firewall may be \
@@ -192,10 +210,33 @@ mod tests {
         // The shapes reqwest/hyper/tonic actually produce.
         assert_eq!(classify("error sending request: dns error: failed to lookup address"), Kind::Dns);
         assert_eq!(classify("transport error: tcp connect error: Connection refused (os error 111)"), Kind::Refused);
-        assert_eq!(classify("transport error: invalid peer certificate: UnknownIssuer"), Kind::Tls);
+        // A *rejected* certificate is a cert-trust problem.
+        assert_eq!(classify("transport error: invalid peer certificate: UnknownIssuer"), Kind::TlsCert);
+        assert_eq!(classify("tls handshake error: bad certificate"), Kind::TlsCert);
+        // A handshake cut short is NOT a cert problem — this is the reported case.
+        assert_eq!(classify("transport error: tls handshake eof"), Kind::TlsAbort);
+        assert_eq!(classify("error sending request: unexpected eof during handshake"), Kind::TlsAbort);
         assert_eq!(classify("error sending request: operation timed out"), Kind::Timeout);
         assert_eq!(classify("network is unreachable (os error 101)"), Kind::Unreachable);
         assert_eq!(classify("something else entirely"), Kind::Other);
+    }
+
+    #[test]
+    fn a_handshake_eof_does_not_blame_the_certificate() {
+        #[derive(Debug)]
+        struct E;
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "transport error: tls handshake eof")
+            }
+        }
+        impl std::error::Error for E {}
+        let msg = connection_error("connecting to lightwalletd", "https://zec.rocks:443", &E)
+            .to_string();
+        assert!(msg.contains("transport problem, not a certificate"), "{msg}");
+        // Must NOT push the wrong fix (importing a self-signed cert).
+        assert!(!msg.contains("import its certificate"), "{msg}");
+        assert!(!msg.contains("was not accepted"), "{msg}");
     }
 
     #[test]
