@@ -129,6 +129,11 @@ async fn run_coordinator_generic<C: RandomizedCiphersuite + 'static>(
     let mut client = FrostdClient::new(format!("https://{}", params.server_url), &params.trust)?;
     let _ = events.send(CoordinatorEvent::Connecting).await;
     client.login(&params.comm_privkey, &params.comm_pubkey).await?;
+    let _ = events
+        .send(CoordinatorEvent::Connected {
+            server: params.server_url.clone(),
+        })
+        .await;
 
     let session_id = client
         .create_new_session(&api::CreateNewSessionArgs {
@@ -394,6 +399,11 @@ async fn run_participant_generic<C: RandomizedCiphersuite + 'static>(
     let mut client = FrostdClient::new(format!("https://{}", params.server_url), &params.trust)?;
     let _ = events.send(ParticipantEvent::Connecting).await;
     client.login(&params.comm_privkey, &params.comm_pubkey).await?;
+    let _ = events
+        .send(ParticipantEvent::Connected {
+            server: params.server_url.clone(),
+        })
+        .await;
 
     let session_id = params.session_id;
 

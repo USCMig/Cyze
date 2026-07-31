@@ -56,6 +56,18 @@ impl WalletNetwork {
             WalletNetwork::Main => "https://zec.rocks:443",
         }
     }
+
+    /// On-disk directory name for this network's wallet data. Testnet and
+    /// mainnet keep entirely separate databases, blocks caches, and pending
+    /// transactions, so switching networks never shows one network's balance
+    /// while pointed at the other's chain (and testnet data can't corrupt a
+    /// mainnet db, or vice versa).
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            WalletNetwork::Test => "testnet",
+            WalletNetwork::Main => "mainnet",
+        }
+    }
 }
 
 /// Chain info reported by a lightwalletd server (a connectivity probe).
@@ -89,6 +101,37 @@ pub fn branch_id_for_height(network: WalletNetwork, height: u64) -> String {
     let params = network.params();
     let bid = BranchId::for_height(&params, BlockHeight::from_u32(height as u32));
     format!("{:08x}", u32::from(bid))
+}
+
+/// The NU6.3 / Ironwood consensus branch id (little-endian u32, printed as
+/// 8-digit hex). Orchard actions mined under this upgrade prove against the
+/// `PostNu6_3` circuit (the fixed circuit plus the `disableCrossAddress`
+/// constraint). Testnet activated it at 4,134,000; mainnet has not (yet).
+const NU6_3_BRANCH_ID: &str = "37a5165b";
+
+/// The Orchard proving/verifying circuit version to use for a transaction mined
+/// at `height` on `network`. This MUST match the consensus branch active at that
+/// height, or the proof is rejected by the network:
+///
+/// - Post-NU6.3 (Ironwood, currently testnet only) → `PostNu6_3`.
+/// - Post-NU6.2 (mainnet's current activation) → `FixedPostNu6_2`.
+///
+/// Deriving it from the live branch id — rather than hardcoding one network's
+/// value — is what lets the same build produce valid transactions on both
+/// networks, and automatically switches mainnet over once it activates NU6.3.
+/// Both live networks are past NU6.2, so `FixedPostNu6_2` is the correct floor;
+/// the historical `InsecurePreNu6_2` circuit is never used for new sends.
+#[cfg(feature = "wallet")]
+fn orchard_circuit_version_for_height(
+    network: WalletNetwork,
+    height: u64,
+) -> orchard::circuit::OrchardCircuitVersion {
+    use orchard::circuit::OrchardCircuitVersion;
+    if branch_id_for_height(network, height) == NU6_3_BRANCH_ID {
+        OrchardCircuitVersion::PostNu6_3
+    } else {
+        OrchardCircuitVersion::FixedPostNu6_2
+    }
 }
 
 /// Normalize an endpoint: a bare `host:port` (e.g. `tz.ombie.cash:443`) is
@@ -160,10 +203,12 @@ async fn connect(url: &str) -> Result<CompactTxStreamerClient<Channel>, CoreErro
             .tls_config(ClientTlsConfig::new().with_webpki_roots())
             .map_err(|e| CoreError::Connection(format!("TLS config: {e}")))?;
     }
+    // tonic renders a failed connect as the bare string "transport error"; the
+    // DNS/refused/TLS cause is only reachable through the source chain.
     let channel = endpoint
         .connect()
         .await
-        .map_err(|e| CoreError::Connection(format!("connecting to {url}: {e}")))?;
+        .map_err(|e| crate::neterr::connection_error("connecting to lightwalletd", &url, &e))?;
     Ok(CompactTxStreamerClient::new(channel))
 }
 
@@ -225,19 +270,30 @@ use zcash_protocol::memo::{Memo, MemoBytes};
 
 type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
 
-/// `(wallet.sqlite path, fsblockdb dir)` for a group.
-fn wallet_paths(data_dir: &Path, group_id: &str) -> (PathBuf, PathBuf) {
-    let base = data_dir.join("wallets").join(group_id);
+/// `(wallet.sqlite path, fsblockdb dir)` for a group on a given network.
+/// Scoped by network (`.../<group_id>/<network>/...`) so testnet and mainnet
+/// each keep their own db, blocks cache, and balance — they never share state.
+fn wallet_paths(data_dir: &Path, group_id: &str, network: WalletNetwork) -> (PathBuf, PathBuf) {
+    let base = data_dir
+        .join("wallets")
+        .join(group_id)
+        .join(network.dir_name());
     (base.join("wallet.sqlite"), base.join("blocks"))
 }
 
 /// Path of the on-disk record for a fully-signed transaction awaiting broadcast.
 /// Keeping the signed PCZT lets a failed broadcast be retried without repeating
-/// the whole FROST signing ceremony.
-fn pending_tx_path(data_dir: &Path, group_id: &str, ceremony_id: &str) -> PathBuf {
+/// the whole FROST signing ceremony. Network-scoped like [`wallet_paths`].
+fn pending_tx_path(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+    ceremony_id: &str,
+) -> PathBuf {
     data_dir
         .join("wallets")
         .join(group_id)
+        .join(network.dir_name())
         .join("pending")
         .join(format!("{ceremony_id}.pczt.hex"))
 }
@@ -246,10 +302,11 @@ fn pending_tx_path(data_dir: &Path, group_id: &str, ceremony_id: &str) -> PathBu
 pub fn save_pending_tx(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     ceremony_id: &str,
     signed_pczt_hex: &str,
 ) -> Result<PathBuf, CoreError> {
-    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    let path = pending_tx_path(data_dir, group_id, network, ceremony_id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         let _ = crate::keystore::restrict_dir_to_owner(parent);
@@ -263,9 +320,10 @@ pub fn save_pending_tx(
 pub fn load_pending_tx(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     ceremony_id: &str,
 ) -> Result<String, CoreError> {
-    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+    let path = pending_tx_path(data_dir, group_id, network, ceremony_id);
     let hex = std::fs::read_to_string(&path).map_err(|e| {
         CoreError::Config(format!("no pending transaction for {ceremony_id}: {e}"))
     })?;
@@ -273,8 +331,8 @@ pub fn load_pending_tx(
 }
 
 /// Remove a pending transaction record once it has been broadcast.
-pub fn clear_pending_tx(data_dir: &Path, group_id: &str, ceremony_id: &str) {
-    let path = pending_tx_path(data_dir, group_id, ceremony_id);
+pub fn clear_pending_tx(data_dir: &Path, group_id: &str, network: WalletNetwork, ceremony_id: &str) {
+    let path = pending_tx_path(data_dir, group_id, network, ceremony_id);
     let _ = std::fs::remove_file(path);
 }
 
@@ -293,9 +351,44 @@ fn key_pragma(db_key: &[u8]) -> String {
 /// connection to a group wallet must set this.
 const DB_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Open a read-only connection to a group wallet, unlocking it with the
-/// SQLCipher key when the file is encrypted. A pre-encryption plaintext db (not
-/// yet migrated by [`open_db`]) is read as-is.
+/// Put a group wallet into WAL mode. Must run *after* the SQLCipher key pragma.
+///
+/// In SQLite's default rollback-journal mode, every reader holds a SHARED lock,
+/// and a writer can only commit once it upgrades to EXCLUSIVE — which requires
+/// that no SHARED locks are held. The UI polls this db while a sync runs (scan
+/// progress every 2s, notes every 15s, history every 35s), so a long catch-up
+/// sync is starved out of the EXCLUSIVE lock, blows past `DB_BUSY_TIMEOUT`, and
+/// dies with "database is locked" mid-way through a commitment-tree write.
+///
+/// WAL lets readers and the single writer proceed concurrently, so the sync
+/// commits regardless of how often the UI reads. The mode is persisted in the
+/// database header, so it only has to be set once per file.
+///
+/// `journal_mode` reports the mode actually in effect: a filesystem that cannot
+/// support WAL (some network mounts) keeps the old mode rather than failing.
+/// That is degraded but still correct, so don't turn it into a hard error.
+fn set_wal_mode(conn: &rusqlite::Connection) -> Result<(), CoreError> {
+    let _mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL;", [], |r| r.get(0))
+        .map_err(|e| CoreError::Crypto(format!("set journal mode: {e}")))?;
+    // Safe under WAL: a crash can lose the last commits but cannot corrupt the
+    // db, and it keeps the block-scan write path from fsyncing on every batch.
+    conn.execute_batch("PRAGMA synchronous = NORMAL;")
+        .map_err(|e| CoreError::Crypto(format!("set synchronous: {e}")))?;
+    Ok(())
+}
+
+/// Open a connection used only for reads (balances, notes, history, scan
+/// progress), unlocking it with the SQLCipher key when the file is encrypted. A
+/// pre-encryption plaintext db (not yet migrated by [`open_db`]) is read as-is.
+///
+/// Read-only by *convention*, not by open flag: this deliberately does NOT pass
+/// `SQLITE_OPEN_READ_ONLY`. Under WAL (see [`set_wal_mode`]) a reader needs the
+/// `-shm` shared-memory index, and a strictly read-only handle cannot create it
+/// — so if the last connection closed cleanly (which removes `-wal`/`-shm`), a
+/// read-only open of a WAL db fails outright with `SQLITE_CANTOPEN`. A writable
+/// handle can materialize the index; callers here still only issue SELECTs, and
+/// a read that takes no write lock cannot block the sync writer under WAL.
 fn open_readonly_connection(
     db_path: &Path,
     db_key: &[u8],
@@ -303,7 +396,7 @@ fn open_readonly_connection(
     let plaintext = is_plaintext_sqlite(db_path)?;
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| CoreError::Crypto(format!("open wallet db: {e}")))?;
     conn.busy_timeout(DB_BUSY_TIMEOUT)
@@ -332,7 +425,7 @@ pub fn sync_progress(
     network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<(u64, u64), CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok((0, 0));
     }
@@ -367,6 +460,7 @@ fn open_keyed_connection(
     // Force the cipher to engage; fails cleanly if the key is wrong.
     conn.execute_batch("SELECT count(*) FROM sqlite_master;")
         .map_err(|e| CoreError::Crypto(format!("unlock wallet db: {e}")))?;
+    set_wal_mode(&conn)?;
     // WalletDb::for_path normally registers this virtual table for `WHERE x IN
     // rarray(?)` queries used internally by zcash_client_sqlite/backend; since
     // we build the connection ourselves (to key it first), register it here too.
@@ -433,6 +527,21 @@ fn open_db(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<Grou
     Ok(db)
 }
 
+/// Open a group wallet for *reading only* (balances, account ids): a `WalletDb`
+/// over a keyed connection, but WITHOUT running `init_wallet_db`.
+///
+/// `init_wallet_db` opens a write transaction to check/apply schema migrations,
+/// so calling it on every read takes a write lock. The balance panel polls
+/// `group_status` every few seconds, so under `open_db` each poll fought the sync
+/// writer for the single WAL write lock and intermittently lost with "database is
+/// locked" mid commitment-tree write. Migrations already ran when the account was
+/// created and run again on every sync, so a read never needs to migrate — a
+/// SELECT under WAL takes only a shared lock and cannot block the writer.
+fn open_db_read(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<GroupDb, CoreError> {
+    let conn = open_keyed_connection(db_path, db_key)?;
+    Ok(WalletDb::from_connection(conn, network.params(), SystemClock, OsRng))
+}
+
 /// A single shielded/transparent pool's balance, broken into spendable now,
 /// pending (maturing or unconfirmed), and total.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -474,7 +583,7 @@ pub fn group_status(
     ufvk: &str,
     db_key: &[u8],
 ) -> Result<WalletStatus, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let address = ufvk_default_address(network, ufvk).ok();
     if !db_path.exists() {
         return Ok(WalletStatus {
@@ -489,7 +598,10 @@ pub fn group_status(
             chain_tip_height: 0,
         });
     }
-    let db = open_db(&db_path, network, db_key)?;
+    // Read-only: no migration, so this poll never takes a write lock (see
+    // open_db_read). The account was already created and migrated by
+    // init_group_account before any status read can happen.
+    let db = open_db_read(&db_path, network, db_key)?;
     let account_ids = db
         .get_account_ids()
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?;
@@ -634,7 +746,7 @@ pub async fn init_group_account(
 ) -> Result<u64, CoreError> {
     use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
 
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let mut db = open_db(&db_path, network, db_key)?;
     if !db
         .get_account_ids()
@@ -800,8 +912,9 @@ pub async fn sync_group(
     network: WalletNetwork,
     lightwalletd_url: &str,
     db_key: &[u8],
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), CoreError> {
-    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id);
+    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
     std::fs::create_dir_all(&blocks_dir)?;
     let mut db = open_db(&db_path, network, db_key)?;
 
@@ -817,10 +930,19 @@ pub async fn sync_group(
     };
 
     let mut client = connect(lightwalletd_url).await?;
-    zcash_client_backend::sync::run(&mut client, &network.params(), &cache, &mut db, 1000)
-        .await
-        .map_err(|e| CoreError::Connection(format!("sync: {e}")))?;
-    Ok(())
+    let params = network.params();
+    // `sync::run` scans in transactional batches, so dropping its future between
+    // batches leaves the db consistent (just short of the tip). That makes it
+    // safe to race against a cancellation token: "Sync Now" trips the token to
+    // abandon a stalled run, and a fresh sync resumes from where this one left
+    // off. Without this, a stuck stream would keep the sync pending forever.
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(CoreError::Cancelled),
+        res = zcash_client_backend::sync::run(
+            &mut client, &params, &cache, &mut db, 1000,
+        ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
+    }
 }
 
 /// Which shielded pool an action belongs to. Post-NU6.3 a single transaction can
@@ -897,7 +1019,7 @@ pub async fn prepare_send(
     use zcash_protocol::ShieldedPool;
 
     let params = network.params();
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let mut db = open_db(&db_path, network, db_key)?;
 
     // Anchor the expiry to the live chain tip, not whatever sync last recorded.
@@ -1161,7 +1283,7 @@ pub fn apply_signatures(
 /// creates the binding signature), and submit it to lightwalletd.
 pub async fn broadcast_signed(
     signed_pczt_hex: &str,
-    _network: WalletNetwork,
+    network: WalletNetwork,
     url: &str,
 ) -> Result<String, CoreError> {
     let pczt = pczt::Pczt::parse(
@@ -1176,21 +1298,32 @@ pub async fn broadcast_signed(
     // Orchard. Proving an empty bundle fails its anchor check, so gate on it.
     let (has_orchard, has_ironwood) = bundle_presence(&pczt)?;
 
+    // Select the Orchard circuit from the consensus branch active at the live
+    // chain tip, so the proof matches what THIS network's validators expect
+    // (PostNu6_3 on Ironwood, FixedPostNu6_2 pre-NU6.3). A stale or hardcoded
+    // circuit produces a proof the network rejects. This runs seconds before
+    // broadcast, so the tip is effectively the tx's mined branch. Both the
+    // Orchard and Ironwood pools share this circuit, so one key serves both.
+    let mut client = connect(url).await?;
+    let tip_height = client
+        .get_latest_block(ChainSpec {})
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .into_inner()
+        .height;
+    let circuit_version = orchard_circuit_version_for_height(network, tip_height);
+
     // Proving + finalize + extract is synchronous, CPU-bound work; keep it off
     // the async runtime so progress events and other tasks stay responsive.
     let (raw, txid) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), CoreError> {
-        use orchard::circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey};
+        use orchard::circuit::{ProvingKey, VerifyingKey};
         use pczt::roles::{
             prover::Prover, spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor,
         };
 
-        // Both the Orchard and Ironwood pools use the post-NU6.3 Action circuit
-        // (ProtocolVersion V3 → PostNu6_3), so one proving/verifying key serves
-        // both bundles — which is exactly why the extractor takes a single
-        // orchard vk for both. Both testnet and mainnet have activated NU6.3, so
-        // PostNu6_3 is correct for every live send; a pre-activation (regtest)
-        // build would need to derive this from the PCZT's branch id.
-        let circuit_version = OrchardCircuitVersion::PostNu6_3;
+        // `circuit_version` is chosen from the live chain tip above and captured
+        // by this move closure; one proving/verifying key serves both the
+        // Orchard and Ironwood bundles, which share that circuit.
         let pk = ProvingKey::build(circuit_version);
 
         // 1. Zero-knowledge proof for each present bundle.
@@ -1230,8 +1363,7 @@ pub async fn broadcast_signed(
     .await
     .map_err(|e| CoreError::Ceremony(format!("proving task panicked: {e}")))??;
 
-    // 4. Submit to lightwalletd.
-    let mut client = connect(url).await?;
+    // 4. Submit to lightwalletd (reusing the connection opened above).
     let resp = client
         .send_transaction(zcash_client_backend::proto::service::RawTransaction { data: raw, height: 0 })
         .await
@@ -1282,9 +1414,10 @@ pub struct TxRecord {
 pub fn count_orchard_received_notes(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<u64, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok(0);
     }
@@ -1324,9 +1457,10 @@ pub struct NoteRecord {
 pub fn wallet_notes(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<Vec<NoteRecord>, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok(vec![]);
     }
@@ -1412,9 +1546,10 @@ pub fn wallet_notes(
 pub fn wallet_history(
     data_dir: &Path,
     group_id: &str,
+    network: WalletNetwork,
     db_key: &[u8],
 ) -> Result<Vec<TxRecord>, CoreError> {
-    let (db_path, _) = wallet_paths(data_dir, group_id);
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     if !db_path.exists() {
         return Ok(vec![]);
     }
@@ -1448,7 +1583,8 @@ pub fn wallet_history(
                      AND orn2.account_id = ?1 \
                      AND orn2.is_change = 0 \
                      AND orn2.memo IS NOT NULL \
-                   LIMIT 1 ) \
+                   LIMIT 1 ), \
+                 ( SELECT vt.fee_paid FROM v_transactions vt WHERE vt.txid = t.txid LIMIT 1 ) \
                  FROM orchard_received_notes orn \
                  JOIN transactions t ON orn.transaction_id = t.id_tx \
                  LEFT JOIN blocks b ON b.height = t.mined_height \
@@ -1467,12 +1603,13 @@ pub fn wallet_history(
                     row.get::<_, Option<i64>>(2)?,
                     row.get::<_, u64>(3)?,
                     row.get::<_, Option<Vec<u8>>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                 ))
             })
             .map_err(|e| CoreError::Crypto(format!("execute receive query: {e}")))?;
 
         for row in rows {
-            let (mut txid_bytes, block_height, timestamp, amount, memo_bytes) =
+            let (mut txid_bytes, block_height, timestamp, amount, memo_bytes, fee_paid) =
                 row.map_err(|e| CoreError::Crypto(format!("receive row: {e}")))?;
             // zcash_client_sqlite stores txid in internal byte order; the
             // conventional display representation (block explorers, CLI) is
@@ -1484,7 +1621,11 @@ pub fn wallet_history(
                 timestamp,
                 direction: "receive".to_string(),
                 amount_zatoshis: amount,
-                fee_zatoshis: None,
+                // The fee is on-chain and public. The wallet knows it whenever it
+                // has the full transaction (v_transactions.fee_paid); it stays
+                // None only when the sender's inputs were never fetched, in which
+                // case the UI says the sender paid it rather than showing nothing.
+                fee_zatoshis: fee_paid.map(|f| f.max(0) as u64),
                 memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
                 recipient: None,
             });

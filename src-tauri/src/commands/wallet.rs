@@ -1,6 +1,6 @@
-//! Zcash light-wallet commands (Phase 5.1, layer 1: lightwalletd config +
-//! connectivity). Network and endpoint are user-configurable; testnet is the
-//! default for testing, with mainnet available once the pipeline is complete.
+//! Zcash light-wallet commands: lightwalletd config + connectivity. Network and
+//! endpoint are user-configurable; mainnet is the default, with testnet a click
+//! away in settings.
 
 use frost_app_core::ciphersuite::Suite;
 use frost_app_core::signing::{run_coordinator, CoordinatorParams};
@@ -33,7 +33,10 @@ pub struct WalletConfig {
 /// lightwalletd endpoint when none is saved.
 fn resolve_config(state: &AppState) -> WalletConfig {
     let s = state.load_settings();
-    let network = s.wallet_network.clone().unwrap_or_else(|| "test".into());
+    // Mainnet is the default: it is where the wallet is actually used, and the
+    // mainnet guardrails (badge, confirmation modal, address checks) make the
+    // active network unmissable. Testnet remains one click away in settings.
+    let network = s.wallet_network.clone().unwrap_or_else(|| "main".into());
     let net = network_from_str(&network);
     let lightwalletd_url = s
         .lightwalletd_url
@@ -205,12 +208,38 @@ pub async fn wallet_sync_progress(
 }
 
 /// Sync the group's wallet from lightwalletd, then return the updated status.
-/// Long-running. Touches the network.
+/// Long-running. Touches the network. Cancellable via [`wallet_cancel_sync`].
 #[tauri::command]
 pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppResult<WalletStatus> {
     let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    wallet::sync_group(&state.data_dir, &group_id, network, &url, db_key.as_ref()).await?;
+
+    // Register a fresh cancellation token for this group, tripping (and replacing)
+    // any prior one so at most one sync per group is ever live. "Sync Now" cancels
+    // the previous run before this one starts, avoiding two writers on one db.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let mut cancels = state.sync_cancels.lock().await;
+        if let Some(prev) = cancels.insert(group_id.clone(), cancel.clone()) {
+            prev.cancel();
+        }
+    }
+
+    let result = wallet::sync_group(
+        &state.data_dir, &group_id, network, &url, db_key.as_ref(), &cancel,
+    )
+    .await;
+
+    // Tidy the registry. If our token was cancelled, either a newer sync replaced
+    // us (its token is now the registry entry — leave it) or a cancel request did
+    // (the next sync's insert will clear it) — either way, don't touch the map. If
+    // we finished uncancelled, no newer sync can have started (that would have
+    // cancelled us), so the entry is ours to remove.
+    if !cancel.is_cancelled() {
+        state.sync_cancels.lock().await.remove(&group_id);
+    }
+
+    result?;
     Ok(wallet::group_status(
         &state.data_dir,
         &group_id,
@@ -218,6 +247,17 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
         &ufvk,
         db_key.as_ref(),
     )?)
+}
+
+/// Cancel the in-flight sync for a group, if any. The current `wallet_sync`
+/// returns promptly with a "cancelled" error, freeing the wallet for a fresh
+/// sync. Safe to call when nothing is syncing (a no-op).
+#[tauri::command]
+pub async fn wallet_cancel_sync(state: State<'_, AppState>, group_id: String) -> AppResult<()> {
+    if let Some(token) = state.sync_cancels.lock().await.get(&group_id) {
+        token.cancel();
+    }
+    Ok(())
 }
 
 /// On-chain transaction history for a group wallet: received funds and sent
@@ -230,9 +270,9 @@ pub async fn wallet_history(
     // Validate that `group_id` is a known RedPallas group before it is used as a
     // filesystem path component (see wallet_paths). This mirrors the guard every
     // other wallet command applies and prevents path traversal via the group id.
-    group_wallet_ctx(&state, &group_id).await?;
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    Ok(wallet::wallet_history(&state.data_dir, &group_id, db_key.as_ref())?)
+    Ok(wallet::wallet_history(&state.data_dir, &group_id, network, db_key.as_ref())?)
 }
 
 /// The unspent Orchard notes that make up the group's balance (for the "Review
@@ -242,9 +282,9 @@ pub async fn wallet_notes(
     state: State<'_, AppState>,
     group_id: String,
 ) -> AppResult<Vec<wallet::NoteRecord>> {
-    group_wallet_ctx(&state, &group_id).await?;
+    let (network, _url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
     let db_key = state.wallet_db_key(&group_id).await?;
-    Ok(wallet::wallet_notes(&state.data_dir, &group_id, db_key.as_ref())?)
+    Ok(wallet::wallet_notes(&state.data_dir, &group_id, network, db_key.as_ref())?)
 }
 
 /// A rotating receive address plus the diversifier index it was derived at.
@@ -266,7 +306,7 @@ async fn resolve_receive_address(
     let (network, _url, _ufvk) = group_wallet_ctx(state, group_id).await?;
     let db_key = state.wallet_db_key(group_id).await?;
     let current_notes =
-        wallet::count_orchard_received_notes(&state.data_dir, group_id, db_key.as_ref())?;
+        wallet::count_orchard_received_notes(&state.data_dir, group_id, network, db_key.as_ref())?;
 
     let mut settings = state.load_settings();
     let entry = settings.receive_state.entry(group_id.to_string()).or_default();
@@ -571,7 +611,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
         // via wallet_rebroadcast without gathering signatures again.
         let data_dir = task_app.state::<AppState>().data_dir.clone();
         let ceremony_str = ceremony_id.to_string();
-        let _ = wallet::save_pending_tx(&data_dir, &group_id, &ceremony_str, &signed_pczt_hex);
+        let _ = wallet::save_pending_tx(&data_dir, &group_id, network, &ceremony_str, &signed_pczt_hex);
 
         // Prove + broadcast. Surfaced as its own phase since the proof build is
         // the slow part (several seconds).
@@ -591,7 +631,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
             .unwrap_or(url);
         match wallet::broadcast_signed(&signed_pczt_hex, network, &broadcast_url).await {
             Ok(txid) => {
-                wallet::clear_pending_tx(&data_dir, &group_id, &ceremony_str);
+                wallet::clear_pending_tx(&data_dir, &group_id, network, &ceremony_str);
                 let _ = task_app.emit(
                     "send:complete",
                     serde_json::json!({
@@ -629,8 +669,8 @@ pub async fn wallet_rebroadcast(
     ceremony_id: String,
 ) -> AppResult<String> {
     let (network, url, _ufvk) = group_wallet_ctx(&state, &group_id).await?;
-    let signed_pczt_hex = wallet::load_pending_tx(&state.data_dir, &group_id, &ceremony_id)?;
+    let signed_pczt_hex = wallet::load_pending_tx(&state.data_dir, &group_id, network, &ceremony_id)?;
     let txid = wallet::broadcast_signed(&signed_pczt_hex, network, &url).await?;
-    wallet::clear_pending_tx(&state.data_dir, &group_id, &ceremony_id);
+    wallet::clear_pending_tx(&state.data_dir, &group_id, network, &ceremony_id);
     Ok(txid)
 }

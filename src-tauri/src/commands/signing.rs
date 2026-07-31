@@ -34,10 +34,23 @@ pub(crate) async fn group_context(
         let guard = state.sidecar.lock().await;
         guard.as_ref().map(|h| format!("127.0.0.1:{}", h.port))
     };
+    // The group records the server it was created on. That is the right default
+    // for a *stable* address, but a Cloudflare quick tunnel is ephemeral: its
+    // hostname is regenerated whenever the coordinator restarts the tunnel, so a
+    // stored one is dead the moment that happens. Left ahead of the current
+    // setting it would silently pin the group to a permanently-unresolvable host
+    // — you could still *see* a session (the inbox polls the configured server)
+    // but never join it. So a stored ephemeral URL yields to the live setting,
+    // and is only used as a last resort when nothing else is configured.
+    let (stable_group_url, ephemeral_group_url) = match group.server_url.clone() {
+        Some(u) if frost_app_core::neterr::is_ephemeral_server(&u) => (None, Some(u)),
+        other => (other, None),
+    };
     let server_url = server_override
-        .or_else(|| group.server_url.clone())
+        .or(stable_group_url)
         .or(local_sidecar_url)
         .or_else(|| state.load_settings().server_url)
+        .or(ephemeral_group_url)
         .ok_or_else(|| AppError::new("config", "no server configured for this group"))?;
     let server_url = server_url
         .trim_start_matches("https://")
@@ -348,9 +361,20 @@ pub async fn list_pending_sessions(
             .iter()
             .find(|(_, pk)| *pk == info.coordinator_pubkey.0)
             .map(|(name, _)| name.clone());
+        // Which of our groups is this session for? frostd is group-agnostic — a
+        // session carries no group id — so the *signer set* is what identifies it.
+        // Matching on the coordinator alone lights the session up under every
+        // group that merely shares that coordinator, which is the common case
+        // (same people, several groups). Require instead that every pubkey in the
+        // session is a member of the group: a threshold subset of group A is not
+        // a subset of group B unless B contains all of them.
+        let session_pubkeys: Vec<&Vec<u8>> = info.pubkeys.iter().map(|p| &p.0).collect();
         let matching_groups = groups
             .iter()
-            .filter(|(_, pubkeys)| pubkeys.contains(&info.coordinator_pubkey.0))
+            .filter(|(_, members)| {
+                members.contains(&info.coordinator_pubkey.0)
+                    && session_pubkeys.iter().all(|pk| members.contains(pk))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         pending.push(PendingSession {

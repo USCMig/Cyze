@@ -12,7 +12,24 @@ import { useCeremonies, CeremonyEventPayload } from "./stores/ceremonies";
  */
 export default function CeremonyListener() {
   const queryClient = useQueryClient();
-  const { onProgress, onComplete, onFailed } = useCeremonies();
+  const { onProgress, onComplete, onFailed, requestWalletRefresh } = useCeremonies();
+
+  /**
+   * A ceremony just moved funds. Re-read the wallet panels from the local db at
+   * once, and ask the wallet screen to sync so the on-chain transaction is
+   * actually scanned in.
+   *
+   * This runs for a *signing* completion too, not just a send we coordinated:
+   * a participant who approves a transaction never runs the send themselves, so
+   * nothing else would ever refresh their wallet — leaving their history openly
+   * contradicting the transaction they just signed.
+   */
+  const refreshWallet = () => {
+    for (const key of ["wallet-status", "wallet-history", "wallet-notes"]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+    requestWalletRefresh();
+  };
 
   useTauriEvent<CeremonyEventPayload>("dkg:progress", (p) => onProgress("dkg", p));
   useTauriEvent<CeremonyEventPayload>("dkg:complete", (p) => {
@@ -24,9 +41,10 @@ export default function CeremonyListener() {
   useTauriEvent<CeremonyEventPayload>("signing:progress", (p) =>
     onProgress("signing", p)
   );
-  useTauriEvent<CeremonyEventPayload>("signing:complete", (p) =>
-    onComplete("signing", p)
-  );
+  useTauriEvent<CeremonyEventPayload>("signing:complete", (p) => {
+    onComplete("signing", p);
+    refreshWallet();
+  });
   useTauriEvent<CeremonyEventPayload>("signing:failed", (p) =>
     onFailed("signing", p)
   );
@@ -34,7 +52,10 @@ export default function CeremonyListener() {
   // Wallet send: a coordinator signing ceremony over a transaction sighash.
   // Captured globally so progress lands even when off the wallet screen.
   useTauriEvent<CeremonyEventPayload>("send:progress", (p) => onProgress("send", p));
-  useTauriEvent<CeremonyEventPayload>("send:complete", (p) => onComplete("send", p));
+  useTauriEvent<CeremonyEventPayload>("send:complete", (p) => {
+    onComplete("send", p);
+    refreshWallet();
+  });
   useTauriEvent<CeremonyEventPayload>("send:failed", (p) => onFailed("send", p));
 
   return null;

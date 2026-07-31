@@ -6,9 +6,9 @@ import {
   NavLink,
   Navigate,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
-import type { GroupSummary } from "./ipc/commands";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useKeystore } from "./stores/keystore";
 import { useCeremonies, selectDkgInProgress } from "./stores/ceremonies";
@@ -17,7 +17,7 @@ import {
   listGroups,
   recordActivity,
   getSettings,
-  setSessionRole,
+  listPendingSessions,
 } from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
 import { Logo } from "./components/Logo";
@@ -32,69 +32,56 @@ import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
 import Wallet from "./screens/Wallet";
 
-/** Expandable Groups nav entry: accordion — at most one group's sub-links
- *  visible at a time to keep the sidebar uncluttered. Auto-opens the group
- *  whose page is currently active. */
+/** Groups nav entry: a single-select dropdown so exactly one group ("active
+ *  wallet") is shown at a time, with only that group's links below it. Keeps
+ *  the sidebar quiet no matter how many groups exist. Follows the current
+ *  route, and switching the picker navigates into the chosen group. */
 function GroupsNavItem() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const location = useLocation();
+  const navigate = useNavigate();
 
   const activeGroupId = useMemo(() => {
     const m = location.pathname.match(/^\/groups\/([^/]+)/);
     return m ? m[1] : null;
   }, [location.pathname]);
-  const [expandedId, setExpandedId] = useState<string | null>(activeGroupId);
+  const [selectedId, setSelectedId] = useState<string | null>(activeGroupId);
   useEffect(() => {
-    if (activeGroupId) setExpandedId(activeGroupId);
+    if (activeGroupId) setSelectedId(activeGroupId);
   }, [activeGroupId]);
 
-  if (!groups.data?.length) return null;
-  return (
-    <div>
-      {groups.data.map((g) => (
-        <GroupNavEntry
-          key={g.id}
-          g={g}
-          isOpen={expandedId === g.id}
-          onToggle={() => setExpandedId((prev) => (prev === g.id ? null : g.id))}
-        />
-      ))}
-    </div>
-  );
-}
+  const list = groups.data ?? [];
+  if (!list.length) return null;
 
-/** A single group in the sidebar. Controlled open state is lifted to the
- *  parent so only one group can be expanded at a time. */
-function GroupNavEntry({
-  g,
-  isOpen,
-  onToggle,
-}: {
-  g: GroupSummary;
-  isOpen: boolean;
-  onToggle: () => void;
-}) {
+  // Always resolve to one real group so the panel shows a single active wallet.
+  const current =
+    list.find((g) => g.id === selectedId) ?? list[0];
+
   return (
     <div className="nav-group">
-      <button
-        className="nav-group-name"
-        onClick={onToggle}
-        title={g.description || g.id}
+      <select
+        className="nav-group-select group-pick"
+        value={current.id}
+        title={current.description || current.id}
+        aria-label="Active group"
+        onChange={(e) => {
+          setSelectedId(e.target.value);
+          navigate(`/groups/${e.target.value}`);
+        }}
       >
-        <span className="nav-group-caret">{isOpen ? "▾" : "▸"}</span>
-        {g.description || `${g.id.slice(0, 10)}…`}
-      </button>
-      {isOpen && (
-        <>
-          <NavLink to={`/groups/${g.id}`} end className="nav-subsubitem">
-            Details
-          </NavLink>
-          {g.ciphersuite.includes("Pallas") && (
-            <NavLink to={`/groups/${g.id}/wallet`} className="nav-subsubitem">
-              Wallet
-            </NavLink>
-          )}
-        </>
+        {list.map((g) => (
+          <option key={g.id} value={g.id}>
+            {g.description || `${g.id.slice(0, 10)}…`}
+          </option>
+        ))}
+      </select>
+      <NavLink to={`/groups/${current.id}`} end className="nav-subsubitem">
+        Details
+      </NavLink>
+      {current.ciphersuite.includes("Pallas") && (
+        <NavLink to={`/groups/${current.id}/wallet`} className="nav-subsubitem">
+          Wallet
+        </NavLink>
       )}
     </div>
   );
@@ -133,34 +120,15 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   },
 ];
 
-/** Sidebar profile switch: a two-state slider toggling the active session
- *  profile (Coordinator / Participant). Clicking anywhere flips it; the current
- *  side is highlighted and bold. Persists the choice. */
-function ProfileSlider() {
-  const queryClient = useQueryClient();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
-  const role = settings.data?.session_role === "participant" ? "participant" : "coordinator";
-
-  const toggle = useMutation({
-    mutationFn: () => setSessionRole(role === "coordinator" ? "participant" : "coordinator"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
-  });
-
-  const isCoord = role === "coordinator";
+/** A red dot with a white "!", shown against a nav entry that needs the user to
+ *  do something: a signing session waiting in their inbox, or a DKG ceremony in
+ *  flight. Ceremonies stall if a participant doesn't notice they were invited,
+ *  so this has to be visible from wherever they are in the app. */
+function AttentionBadge({ title }: { title: string }) {
   return (
-    <button
-      className="profile-slider"
-      onClick={() => toggle.mutate()}
-      title="Switch session profile"
-      aria-label={`Session profile: ${role}. Click to switch.`}
-    >
-      <span
-        className="profile-slider-thumb"
-        style={{ left: isCoord ? "3px" : "calc(50% + 0px)" }}
-      />
-      <span className={`profile-slider-opt ${isCoord ? "on" : ""}`}>Coordinator</span>
-      <span className={`profile-slider-opt ${!isCoord ? "on" : ""}`}>Participant</span>
-    </button>
+    <span className="nav-alert" role="status" aria-label={title} title={title}>
+      !
+    </span>
   );
 }
 
@@ -173,6 +141,21 @@ function Layout() {
     queryFn: getSettings,
     enabled: loaded && unlocked,
   });
+
+  // Signing sessions waiting on this user. Polled here, not just on the Inbox
+  // screen, so an invitation is noticed from anywhere in the app — a signer who
+  // never opens their inbox stalls the whole ceremony. Shares its query key with
+  // the Inbox, so the two dedupe into a single poll rather than two.
+  // Only meaningful once a server is configured; without one the call errors, so
+  // don't issue it (and don't retry a config problem on a timer).
+  const pendingSessions = useQuery({
+    queryKey: ["pending-sessions"],
+    queryFn: () => listPendingSessions(null),
+    enabled: loaded && unlocked && !!settings.data?.server_url,
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const pendingCount = pendingSessions.data?.length ?? 0;
 
   // Auto-lock: reflect a backend-initiated idle lock in the UI, and report user
   // activity (throttled) so the idle timer only fires when truly inactive.
@@ -219,7 +202,6 @@ function Layout() {
         <div className="sidebar-brand">
           <Logo markSize={24} showTagline />
         </div>
-        <ProfileSlider />
         {NAV_SECTIONS.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>
@@ -230,7 +212,14 @@ function Layout() {
                 <NavLink key={link.to} to={link.to} end={link.to === "/"}>
                   {link.label}
                   {link.to === "/dkg" && dkgInProgress && (
-                    <span className="nav-pulse" title="A DKG ceremony is running" />
+                    <AttentionBadge title="A DKG ceremony is running — it needs your attention" />
+                  )}
+                  {link.to === "/inbox" && pendingCount > 0 && (
+                    <AttentionBadge
+                      title={`${pendingCount} signing ${
+                        pendingCount === 1 ? "session is" : "sessions are"
+                      } waiting for you`}
+                    />
                   )}
                 </NavLink>
               )

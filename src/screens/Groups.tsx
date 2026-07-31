@@ -14,6 +14,7 @@ import {
   walletGroupStatus,
   walletInitAccount,
   walletSync,
+  walletCancelSync,
   walletSyncProgress,
   walletPrepareSend,
   walletSend,
@@ -35,10 +36,20 @@ import {
   type CeremonyState,
 } from "../stores/ceremonies";
 
-/** ZEC display from zatoshis (1 ZEC = 1e8 zatoshis). */
+/** Amount display from zatoshis (1 unit = 1e8 zatoshis). */
 function zec(zats: number): string {
   return (zats / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
+
+/** The currency ticker for the active network: ZEC on mainnet, TAZ on testnet. */
+function unit(isMainnet: boolean): string {
+  return isMainnet ? "ZEC" : "TAZ";
+}
+
+/** How long an unconfirmed send is still worth showing. A transaction's expiry
+ *  is ~40 blocks (≈50 min), so past an hour with no on-chain row it can never
+ *  confirm — it stalled or expired, and is noise rather than pending state. */
+const STALE_PENDING_MS = 60 * 60 * 1000;
 
 /** Full-page overlay confirmation required before broadcasting a mainnet send.
  *  The user must explicitly check a box acknowledging irreversibility. */
@@ -325,11 +336,13 @@ type WalletTab = "receive" | "send" | "notes";
  *  a one-click self-send consolidation to merge fragmented notes into one. */
 function ReviewNotesTab({
   groupId,
+  isMainnet,
   onConsolidate,
   consolidatePending,
   disabledReason,
 }: {
   groupId: string;
+  isMainnet: boolean;
   onConsolidate: () => void;
   consolidatePending: boolean;
   disabledReason: string | null;
@@ -369,7 +382,7 @@ function ReviewNotesTab({
             Your balance is made of <strong>{spendable.length}</strong> spendable
             note{spendable.length === 1 ? "" : "s"}
             {pending.length > 0 && <> (plus {pending.length} pending)</>}, totalling{" "}
-            <strong>{zec(totalSpendable)} ZEC</strong> spendable. Each note is a
+            <strong>{zec(totalSpendable)} {unit(isMainnet)}</strong> spendable. Each note is a
             separate spend authorization, so a full-balance send needs{" "}
             <strong>
               {rounds} signing round{rounds === 1 ? "" : "s"}
@@ -420,7 +433,7 @@ function ReviewNotesTab({
                 return (
                   <tr key={n.received_txid + i}>
                     <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-                      {zec(n.value_zatoshis)} ZEC
+                      {zec(n.value_zatoshis)} {unit(isMainnet)}
                     </td>
                     <td>
                       <span className={`badge ${b.cls}`}>{b.label}</span>
@@ -454,6 +467,10 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     queryKey: ["wallet-status", group.id],
     queryFn: () => walletGroupStatus(group.id),
     enabled: group.ciphersuite.includes("Pallas"),
+    // Balances are read straight from the local db (no network), so polling is
+    // cheap — and without it the figures only moved when a sync happened to
+    // finish, so a confirmation could sit on screen unreflected.
+    refetchInterval: 5_000,
   });
   const [err, setErr] = useState<string | null>(null);
   const [walletTab, setWalletTab] = useState<WalletTab>("receive");
@@ -469,18 +486,33 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   const [autoSyncOff, setAutoSyncOff] = useState(false);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  // A sync can fail for reasons that clear on their own — a dropped connection,
+  // a lightwalletd blip. Switching auto-sync off after a single one of those left
+  // the wallet frozen for the rest of the session: nothing refreshed until the
+  // user navigated away and back (which remounts and resets this), which is
+  // exactly the "it only updates if I leave the page" behaviour. Only give up
+  // after it keeps failing.
+  const failures = useRef(0);
+  const AUTO_SYNC_GIVE_UP_AFTER = 3;
   const sync = useMutation({
     mutationFn: () => walletSync(group.id),
     onSuccess: (s) => {
       setErr(null);
+      failures.current = 0;
       setLastSynced(new Date());
       queryClient.setQueryData(["wallet-status", group.id], s);
       queryClient.invalidateQueries({ queryKey: ["wallet-history", group.id] });
       queryClient.invalidateQueries({ queryKey: ["wallet-notes", group.id] });
     },
     onError: (e) => {
-      setErr((e as unknown as AppError).message);
-      setAutoSyncOff(true);
+      const msg = (e as unknown as AppError).message ?? String(e);
+      // A sync we deliberately cancelled (via "Sync Now" restarting it) is not a
+      // failure — a fresh sync is already taking over, so don't count it toward
+      // the give-up threshold or surface it as an error.
+      if (/cancel/i.test(msg)) return;
+      setErr(msg);
+      failures.current += 1;
+      if (failures.current >= AUTO_SYNC_GIVE_UP_AFTER) setAutoSyncOff(true);
     },
   });
 
@@ -511,6 +543,17 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // from notes the wallet hasn't scanned yet and fails with a spurious
   // "insufficient funds", so hold sends until that first sync succeeds.
   const initialSyncDone = lastSynced !== null;
+
+  // Gate the send form on what is actually spendable. Confirmed-but-unspendable
+  // funds are the norm right after receiving (ZIP-317 wants 10 confirmations on
+  // received notes, 3 on our own change), so offering a Prepare button that can
+  // only fail with "insufficient funds" is a trap.
+  const spendableBalance = status.data?.orchard.spendable_zatoshis ?? 0;
+  const pendingBalance = status.data?.orchard.pending_zatoshis ?? 0;
+  const noSpendableBalance = spendableBalance <= 0;
+  const exceedsBalance =
+    Number(amountZec) > 0 && Math.round(Number(amountZec) * 1e8) > spendableBalance;
+
   const prepare = useMutation({
     mutationFn: () =>
       walletPrepareSend(
@@ -538,7 +581,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       const spendable = status.data?.spendable_zatoshis ?? 0;
       if (!addr) throw new Error("wallet address not available — try syncing first");
       if (spendable <= CONSOLIDATE_FEE_BUFFER)
-        throw new Error("balance too low to consolidate (need > 0.001 ZEC above fees)");
+        throw new Error(`balance too low to consolidate (need > 0.001 ${unit(isMainnet)} above fees)`);
       return walletPrepareSend(group.id, addr, spendable - CONSOLIDATE_FEE_BUFFER);
     },
     onSuccess: (d) => {
@@ -641,6 +684,44 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.data?.initialized]);
+
+  /**
+   * Force a sync and refresh every panel that reads the wallet.
+   *
+   * `sync` alone updates the status it returns, but the notes, history and
+   * pending/settled views read their own queries — so a user pressing this while
+   * staring at a stale history would still see stale history. Invalidate them all
+   * so "Sync Now" means the whole wallet, not just the balance. Also clears a
+   * latched auto-sync failure: pressing this is an explicit "try again".
+   */
+  const forceSync = useCallback(async () => {
+    setAutoSyncOff(false);
+    failures.current = 0;
+    for (const key of ["wallet-status", "wallet-history", "wallet-notes"]) {
+      queryClient.invalidateQueries({ queryKey: [key, group.id] });
+    }
+    // Abandon any in-flight sync first — including a stalled one, which is the
+    // whole point of an always-available "Sync Now": the backend returns the
+    // stuck run promptly, then we start a clean one. Harmless when idle.
+    try {
+      await walletCancelSync(group.id);
+    } catch {
+      // best-effort
+    }
+    syncRef.current.mutate();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group.id, queryClient]);
+
+  // A ceremony just moved funds (a send we ran, or a session we signed). Sync now
+  // rather than waiting out the poll interval, so the wallet reflects what the
+  // user just did. The wallet screen is the only place that syncs, so this cannot
+  // race a second writer; if one is already running, the poll picks it up next.
+  const walletRefreshTick = useCeremonies((s) => s.walletRefreshTick);
+  useEffect(() => {
+    if (walletRefreshTick === 0) return;
+    if (status.data?.initialized) forceSync();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletRefreshTick]);
   useEffect(() => {
     const t = setInterval(() => {
       const cur = syncRef.current;
@@ -659,6 +740,11 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const syncedHeight = live?.[0] ?? s?.synced_height ?? 0;
   const tipHeight = live?.[1] ?? s?.chain_tip_height ?? 0;
   const blocksRemaining = Math.max(0, tipHeight - syncedHeight);
+  // "Syncing" should mean *fetching blocks*, not merely "a sync call is in
+  // flight". At the tip a sync is a quick no-op check, and a stalled sync sits
+  // pending forever — both showed a permanent "Syncing…" that looked broken.
+  const catchingUp = sync.isPending && blocksRemaining > 0;
+  const atTip = tipHeight > 0 && blocksRemaining === 0;
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
@@ -683,48 +769,65 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               <div>
                 <label>Spendable (Orchard)</label>
                 <div style={{ fontSize: 18, color: "var(--accent)" }}>
-                  {zec(s.orchard.spendable_zatoshis)} ZEC
+                  {zec(s.orchard.spendable_zatoshis)} {unit(isMainnet)}
                 </div>
               </div>
               <div>
                 <label>Pending</label>
-                <div style={{ fontSize: 18 }}>{zec(s.orchard.pending_zatoshis)} ZEC</div>
+                <div style={{ fontSize: 18 }}>{zec(s.orchard.pending_zatoshis)} {unit(isMainnet)}</div>
               </div>
               <div>
                 <label>Total</label>
-                <div style={{ fontSize: 18 }}>{zec(s.orchard.total_zatoshis)} ZEC</div>
+                <div style={{ fontSize: 18 }}>{zec(s.orchard.total_zatoshis)} {unit(isMainnet)}</div>
               </div>
             </div>
             <div className="sync-box">
               <div className="dim" style={{ fontSize: 12 }}>
                 Block {syncedHeight.toLocaleString()}
                 {tipHeight > 0 && <> / {tipHeight.toLocaleString()}</>}
-                {sync.isPending && blocksRemaining > 0 && (
-                  <> · {blocksRemaining.toLocaleString()} to go</>
-                )}
+                {catchingUp && <> · {blocksRemaining.toLocaleString()} to go</>}
               </div>
               <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
-                {sync.isPending ? (
+                {catchingUp ? (
                   <span>↻ Syncing…</span>
+                ) : atTip ? (
+                  <span>
+                    ✓ Up to date
+                    {lastSynced && (
+                      <> · {lastSynced.toLocaleTimeString(undefined, { timeStyle: "short" })}</>
+                    )}
+                  </span>
                 ) : lastSynced ? (
                   <span>
                     ✓ Synced {lastSynced.toLocaleTimeString(undefined, { timeStyle: "short" })}
-                    {autoSyncOff && (
-                      <>
-                        {" · "}
-                        <button
-                          style={{ all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
-                          onClick={() => { setAutoSyncOff(false); sync.mutate(); }}
-                        >
-                          Resume auto-sync
-                        </button>
-                      </>
-                    )}
                   </span>
                 ) : (
                   <span className="dim">Auto-syncing every 10s</span>
                 )}
+                {autoSyncOff && !catchingUp && (
+                  <>
+                    {" · "}
+                    <button
+                      style={{ all: "unset", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
+                      onClick={() => forceSync()}
+                    >
+                      Resume auto-sync
+                    </button>
+                  </>
+                )}
               </div>
+              {/* Always available — auto-sync can lag or stall (a slow endpoint,
+                  a dropped stream), and there is no way to tell "nothing changed"
+                  from "wedged". Clicking mid-sync abandons the current run and
+                  starts a clean one, and refreshes every wallet panel. */}
+              <button
+                className="secondary"
+                style={{ marginTop: 8, fontSize: 11, padding: "4px 10px" }}
+                onClick={() => forceSync()}
+                title="Restart the sync and refresh balances, notes, and history"
+              >
+                {catchingUp ? "Restart sync" : "Sync Now"}
+              </button>
             </div>
           </div>
 
@@ -779,6 +882,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           {walletTab === "notes" && (
             <ReviewNotesTab
               groupId={group.id}
+              isMainnet={isMainnet}
               onConsolidate={() => {
                 consolidate.mutate();
                 setWalletTab("send");
@@ -807,6 +911,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     setIsConsolidation(false);
                     setShowConfirm(false);
                   }}
+                  isMainnet={isMainnet}
                 />
               ) : (
                 <>
@@ -876,7 +981,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       {recipientErr}
                     </div>
                   )}
-                  <label>Amount (ZEC)</label>
+                  <label>Amount ({unit(isMainnet)})</label>
                   <input
                     type="text"
                     placeholder="0.001"
@@ -906,6 +1011,8 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     disabled={
                       prepare.isPending ||
                       !initialSyncDone ||
+                      noSpendableBalance ||
+                      exceedsBalance ||
                       !recipient.trim() ||
                       !(Number(amountZec) > 0) ||
                       !!recipientErr
@@ -915,10 +1022,39 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       ? "Building…"
                       : !initialSyncDone
                         ? "Syncing wallet…"
-                        : sendMode === "unshield"
-                          ? "Prepare unshield transaction"
-                          : "Prepare draft transaction"}
+                        : noSpendableBalance
+                          ? "No spendable balance"
+                          : exceedsBalance
+                            ? "Amount exceeds balance"
+                            : sendMode === "unshield"
+                              ? "Prepare unshield transaction"
+                              : "Prepare draft transaction"}
                   </button>
+                  {/* Explain a disabled button rather than leaving it inert. Funds
+                      need confirmations before they are spendable (ZIP-317: 10 for
+                      received notes, 3 for our own change), so a balance that is
+                      "there" but still pending is the common surprise. */}
+                  {initialSyncDone && noSpendableBalance && (
+                    <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
+                      Nothing is spendable yet.
+                      {pendingBalance > 0 ? (
+                        <>
+                          {" "}
+                          {zec(pendingBalance)} {unit(isMainnet)} is still awaiting
+                          confirmations — received funds need 10 confirmations
+                          (your own change needs 3) before they can be spent.
+                        </>
+                      ) : (
+                        <> Receive funds to this group's address first.</>
+                      )}
+                    </p>
+                  )}
+                  {initialSyncDone && !noSpendableBalance && exceedsBalance && (
+                    <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
+                      You can spend at most {zec(spendableBalance)} {unit(isMainnet)}{" "}
+                      right now (a network fee is taken on top of the amount).
+                    </p>
+                  )}
                   {!initialSyncDone && (
                     <p className="dim" style={{ marginTop: 6, fontSize: 12 }}>
                       Waiting for the first sync to finish so the wallet knows
@@ -951,7 +1087,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       {!isConsolidation && draft.is_unshield && (
                         <div className="callout warn" style={{ marginBottom: 12 }}>
                           <span>
-                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} ZEC</strong> from
+                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</strong> from
                             the group's shielded Orchard pool to a transparent address. The amount
                             and recipient will be <strong>publicly visible on-chain</strong>.
                           </span>
@@ -967,15 +1103,15 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                           </tr>
                           <tr>
                             <td>Amount to send</td>
-                            <td>{zec(draft.amount_zatoshis)} ZEC</td>
+                            <td>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</td>
                           </tr>
                           <tr>
                             <td>Fee</td>
-                            <td>{zec(draft.fee_zatoshis)} ZEC</td>
+                            <td>{zec(draft.fee_zatoshis)} {unit(isMainnet)}</td>
                           </tr>
                           <tr>
                             <td>Total</td>
-                            <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} ZEC</td>
+                            <td>{zec(draft.amount_zatoshis + draft.fee_zatoshis)} {unit(isMainnet)}</td>
                           </tr>
                           <tr>
                             <td>Sighash</td>
@@ -1197,10 +1333,12 @@ function SendSessionPanel({
   ceremonyId,
   ceremony,
   onDismiss,
+  isMainnet,
 }: {
   ceremonyId: string;
   ceremony: CeremonyState;
   onDismiss: () => void;
+  isMainnet: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -1249,7 +1387,7 @@ function SendSessionPanel({
             <tbody>
               <tr>
                 <td>{meta.isUnshield ? "Unshielding" : "Sending"}</td>
-                <td>{zec(meta.amountZatoshis)} ZEC</td>
+                <td>{zec(meta.amountZatoshis)} {unit(isMainnet)}</td>
               </tr>
               <tr>
                 <td>To</td>
@@ -1259,7 +1397,7 @@ function SendSessionPanel({
               </tr>
               <tr>
                 <td>Fee</td>
-                <td>{zec(meta.feeZatoshis)} ZEC</td>
+                <td>{zec(meta.feeZatoshis)} {unit(isMainnet)}</td>
               </tr>
               {meta.memo && (
                 <tr>
@@ -1455,7 +1593,7 @@ export function GroupKeys({ group, masked = false }: { group: GroupSummary; mask
               spendable only by a threshold of the group. The UFVK grants{" "}
               <em>viewing</em> access — share it only within the group. The
               address is encoded for the network selected on the{" "}
-              <Link to="/wallet">Wallet</Link> page (testnet by default).
+              <Link to="/wallet">Wallet</Link> page (mainnet by default).
             </span>
           </div>
         </>
@@ -1916,7 +2054,7 @@ export function GroupWalletPage() {
       <div className="card">
         <GroupWallet group={group} isMainnet={isMainnet} />
       </div>
-      <WalletTxHistory group={group} />
+      <WalletTxHistory group={group} isMainnet={isMainnet} />
     </div>
   );
 }
@@ -1930,12 +2068,15 @@ export function GroupWalletPage() {
  *
  *  Columns: Date & Time | Type | Amount | Address | Tx Hash | [+]
  */
-function WalletTxHistory({ group }: { group: GroupSummary }) {
+function WalletTxHistory({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
   const history = useQuery({
     queryKey: ["wallet-history", group.id],
     queryFn: () => walletHistory(group.id),
     enabled: group.ciphersuite.includes("Pallas"),
-    refetchInterval: 35_000,
+    // Read from the local db, so polling is cheap. At 35s a just-confirmed
+    // transaction could sit invisible for over half a minute while the user
+    // stared at the page it should have appeared on.
+    refetchInterval: 8_000,
   });
   const walletStatus = useQuery({
     queryKey: ["wallet-status", group.id],
@@ -1954,6 +2095,14 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
     () => new Set((history.data ?? []).map((t) => t.txid)),
     [history.data]
   );
+  // Re-evaluate staleness on a timer, so a pending row that ages out disappears
+  // on its own instead of lingering until some unrelated re-render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
   const pendingRows = useMemo(
     () =>
       Object.entries(ceremonies)
@@ -1963,11 +2112,16 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
             c.groupId === group.id &&
             id !== activeId &&
             // If it landed on-chain, let the SQLite row be authoritative.
-            !(c.txid && onchainTxids.has(c.txid))
+            !(c.txid && onchainTxids.has(c.txid)) &&
+            // A transaction's expiry is ~40 blocks (≈50 min). Past an hour with
+            // no on-chain row, it never confirmed and never can — the ceremony
+            // stalled, or it expired before broadcast. Keeping it would leave a
+            // permanent ⏳ row claiming funds are in flight that never moved.
+            !(c.startedAt != null && now - c.startedAt > STALE_PENDING_MS)
         )
         .map(([id, c]) => ({ ...c, id }))
         .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
-    [ceremonies, group.id, activeId, onchainTxids]
+    [ceremonies, group.id, activeId, onchainTxids, now]
   );
 
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -2029,6 +2183,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
                 myPubkey={identity.data?.pubkey ?? undefined}
                 isExpanded={expandedKey === row.id}
                 onToggle={() => toggle(row.id)}
+                isMainnet={isMainnet}
               />
             ))}
             {/* On-chain confirmed rows from SQLite */}
@@ -2042,6 +2197,7 @@ function WalletTxHistory({ group }: { group: GroupSummary }) {
                 myPubkey={identity.data?.pubkey ?? undefined}
                 isExpanded={expandedKey === tx.txid}
                 onToggle={() => toggle(tx.txid)}
+                isMainnet={isMainnet}
               />
             ))}
           </tbody>
@@ -2073,6 +2229,7 @@ function TxDetail({
   contacts,
   myPubkey,
   error,
+  isMainnet,
 }: {
   colSpan: number;
   txid?: string;
@@ -2088,6 +2245,7 @@ function TxDetail({
   contacts?: ContactDto[];
   myPubkey?: string;
   error?: string;
+  isMainnet: boolean;
 }) {
   const dateStr = timestamp
     ? fmtDate(new Date(timestamp * 1000))
@@ -2101,8 +2259,21 @@ function TxDetail({
   if (blockHeight != null) rows.push({ label: "Block", value: `#${blockHeight.toLocaleString()}` });
   if (txid) rows.push({ label: "Transaction ID", value: txid, mono: true });
   if (direction) rows.push({ label: "Type", value: direction === "receive" ? "Received" : "Sent" });
-  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ZEC` });
-  if (fee != null) rows.push({ label: "Network Fee", value: `${zec(fee)} ZEC` });
+  if (amount != null) rows.push({ label: "Amount", value: `${direction === "receive" ? "+" : "−"}${zec(amount)} ${unit(isMainnet)}` });
+  // Always report the fee, for every transaction type. It used to be omitted
+  // whenever it was unknown, which is precisely the received case — leaving no
+  // indication of whether a fee existed at all. A received transaction's fee was
+  // paid by the sender out of their inputs, which this wallet cannot see, so say
+  // that rather than showing nothing.
+  rows.push({
+    label: "Network Fee",
+    value:
+      fee != null
+        ? `${zec(fee)} ${unit(isMainnet)}`
+        : direction === "receive"
+          ? "Paid by the sender (not visible to this wallet)"
+          : "—",
+  });
   if (direction === "receive") {
     rows.push({ label: "From", value: "Shielded sender (private)" });
   } else if (fromAddress) {
@@ -2168,6 +2339,34 @@ function TxDetail({
 
 type PendingRow = CeremonyState & { id: string };
 
+/** A full-width sub-row under a transaction, showing its memo inline so it is
+ *  readable in the history list without expanding the row. */
+function MemoRow({ memo }: { memo: string }) {
+  return (
+    <tr>
+      <td colSpan={6} style={{ padding: "0 8px 6px 8px", borderTop: "none" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            alignItems: "baseline",
+            fontSize: 11,
+            color: "var(--fg-muted)",
+          }}
+        >
+          <span title="Memo" aria-hidden>💬</span>
+          <span
+            style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+            title={memo}
+          >
+            {memo}
+          </span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function PendingTxRow({
   row,
   contacts,
@@ -2175,6 +2374,7 @@ function PendingTxRow({
   myPubkey,
   isExpanded,
   onToggle,
+  isMainnet,
 }: {
   row: PendingRow;
   contacts: ContactDto[];
@@ -2182,6 +2382,7 @@ function PendingTxRow({
   myPubkey?: string;
   isExpanded: boolean;
   onToggle: () => void;
+  isMainnet: boolean;
 }) {
   const meta = row.send;
   const isUnshield = meta?.isUnshield;
@@ -2205,7 +2406,7 @@ function PendingTxRow({
           )}
         </td>
         <td style={{ textAlign: "right", paddingRight: 12, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: pendingColor }}>
-          {meta ? `−${zec(meta.amountZatoshis)} ZEC` : "—"}
+          {meta ? `−${zec(meta.amountZatoshis)} ${unit(isMainnet)}` : "—"}
         </td>
         <td className="mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: pendingColor ?? "var(--fg-muted)" }}>
           {addrDisplay}
@@ -2227,9 +2428,11 @@ function PendingTxRow({
           </button>
         </td>
       </tr>
+      {meta?.memo && !isExpanded && <MemoRow memo={meta.memo} />}
       {isExpanded && (
         <TxDetail
           colSpan={6}
+          isMainnet={isMainnet}
           txid={row.txid}
           blockHeight={undefined}
           direction={isUnshield ? "send" : "send"}
@@ -2256,6 +2459,7 @@ function OnchainTxRow({
   myPubkey,
   isExpanded,
   onToggle,
+  isMainnet,
 }: {
   tx: TxRecord;
   contacts: ContactDto[];
@@ -2264,6 +2468,7 @@ function OnchainTxRow({
   myPubkey?: string;
   isExpanded: boolean;
   onToggle: () => void;
+  isMainnet: boolean;
 }) {
   const isReceive = tx.direction === "receive";
   const addrDisplay = isReceive
@@ -2292,7 +2497,7 @@ function OnchainTxRow({
         <td style={{ textAlign: "right", paddingRight: 12, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
           <span style={{ color: isReceive ? "#4ade80" : undefined }}>
             {isReceive ? "+" : "−"}
-            {zec(tx.amount_zatoshis)} ZEC
+            {zec(tx.amount_zatoshis)} {unit(isMainnet)}
           </span>
         </td>
         <td className="dim mono-cell" style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>
@@ -2310,9 +2515,13 @@ function OnchainTxRow({
           </button>
         </td>
       </tr>
+      {/* Memo, shown inline so it is readable without expanding the row. Hidden
+          when expanded, where the detail panel shows the full text. */}
+      {tx.memo && !isExpanded && <MemoRow memo={tx.memo} />}
       {isExpanded && (
         <TxDetail
           colSpan={6}
+          isMainnet={isMainnet}
           txid={tx.txid}
           timestamp={tx.timestamp}
           blockHeight={tx.block_height}

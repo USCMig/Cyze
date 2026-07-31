@@ -9,6 +9,14 @@ import {
 } from "../ipc/commands";
 import { useCeremonies } from "../stores/ceremonies";
 
+/** Signer-side ceremony phases, as a human would say them. */
+const SIGNER_PHASES: Record<string, string> = {
+  connecting: "Connecting to the coordinator's server",
+  connected: "Connection established",
+  commitments_sent: "Commitments sent — waiting for the signing package",
+  share_sent: "Signature share sent",
+};
+
 function hexToUtf8(hex: string): string {
   try {
     const bytes = new Uint8Array(hex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
@@ -138,7 +146,19 @@ export default function Inbox() {
 
               {ceremony && !awaiting && !ceremony.done && (
                 <p>
-                  <span className="badge blue">{ceremony.phase}</span>
+                  <span className="badge blue">
+                    {SIGNER_PHASES[ceremony.phase] ?? ceremony.phase}
+                  </span>
+                </p>
+              )}
+
+              {/* Confirm which server we actually reached. A signer is handed a
+                  URL (often an opaque tunnel hostname) by the coordinator, so
+                  show that the connection is up and to whom — before they
+                  approve anything. Sticky, so it stays visible past `connected`. */}
+              {ceremony?.server && !ceremony.done && (
+                <p className="ok" style={{ marginTop: 4 }}>
+                  ✓ Connection established — <span className="mono">{ceremony.server}</span>
                 </p>
               )}
 

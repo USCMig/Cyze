@@ -48,6 +48,11 @@ pub struct SigningContext {
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum DkgEvent {
     Connecting,
+    /// Logged in to the coordination server — the connection is up and
+    /// authenticated. `server` is the host:port actually reached (a tunnel URL
+    /// when the coordinator exposed one), so the user can confirm they joined
+    /// the server they expected.
+    Connected { server: String },
     /// Session established; identifiers derived for all participants.
     SessionReady {
         session_id: Uuid,
@@ -67,6 +72,8 @@ pub enum DkgEvent {
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum CoordinatorEvent {
     Connecting,
+    /// Logged in to the coordination server. See [`DkgEvent::Connected`].
+    Connected { server: String },
     SessionCreated { session_id: Uuid },
     WaitingForCommitments,
     SigningPackageSent,
@@ -86,6 +93,11 @@ pub enum CoordinatorEvent {
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum ParticipantEvent {
     Connecting,
+    /// Logged in to the coordinator's server — the connection is established and
+    /// authenticated. `server` is the host:port actually reached (a tunnel URL
+    /// when the coordinator exposed one), so the signer can confirm they are
+    /// talking to the server they were given before approving anything.
+    Connected { server: String },
     /// Commitments sent (message-independent round 1).
     CommitmentsSent,
     /// Signing package received — paused until the user approves.

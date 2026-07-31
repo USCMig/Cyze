@@ -55,6 +55,7 @@ export default function ServerSettings() {
   const [url, setUrl] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testOk, setTestOk] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [certPem, setCertPem] = useState("");
   const [trustMsg, setTrustMsg] = useState<string | null>(null);
   const [exportedCert, setExportedCert] = useState<string | null>(null);
@@ -313,7 +314,16 @@ export default function ServerSettings() {
               try {
                 const r = await testServerConnection(effectiveUrl);
                 setTestOk(r.ok);
-                setTestResult(r.ok ? "Connection OK" : (r.error ?? "failed"));
+                // Name what we reached and how it was trusted: a participant is
+                // usually handed an opaque tunnel URL, so "OK" alone doesn't tell
+                // them they're on the right server.
+                setTestResult(
+                  r.ok
+                    ? `✓ Connection established — ${r.server} · certificate: ${
+                        r.tls === "pinned" ? "pinned (self-signed)" : "public CA"
+                      }${r.latency_ms != null ? ` · ${r.latency_ms} ms` : ""}`
+                    : (r.error ?? "failed"),
+                );
               } catch (e) {
                 setTestOk(false);
                 setTestResult((e as AppError).message);
@@ -323,13 +333,35 @@ export default function ServerSettings() {
             Test
           </button>
           <button
-            disabled={!effectiveUrl}
+            disabled={!effectiveUrl || saving}
             onClick={async () => {
-              await setServerUrl(effectiveUrl);
-              queryClient.invalidateQueries({ queryKey: ["settings"] });
+              setSaving(true);
+              setTestResult(null);
+              try {
+                await setServerUrl(effectiveUrl);
+                queryClient.invalidateQueries({ queryKey: ["settings"] });
+                // Saving a URL that doesn't work is the failure worth catching:
+                // it looks identical to saving one that does, and the user only
+                // finds out later when a ceremony won't connect. So probe it now
+                // and say plainly whether this server is actually reachable.
+                const r = await testServerConnection(effectiveUrl);
+                setTestOk(r.ok);
+                setTestResult(
+                  r.ok
+                    ? `✓ Saved — connected to ${r.server} · certificate: ${
+                        r.tls === "pinned" ? "pinned (self-signed)" : "public CA"
+                      }${r.latency_ms != null ? ` · ${r.latency_ms} ms` : ""}`
+                    : `Saved, but this server did not respond: ${r.error ?? "failed"}`,
+                );
+              } catch (e) {
+                setTestOk(false);
+                setTestResult((e as AppError).message);
+              } finally {
+                setSaving(false);
+              }
             }}
           >
-            Save
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
         {testResult && (
