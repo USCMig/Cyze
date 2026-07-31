@@ -688,25 +688,30 @@ fn pool_balance(b: &zcash_client_backend::data_api::Balance) -> PoolBalance {
     }
 }
 
-/// First block a new testnet group's wallet scans when no birthday is recorded
-/// or supplied. Sits comfortably before the NU6.3/Ironwood activation
-/// (4,134,000), so a group funded any time during Ironwood testing is found by
-/// a rebuilt wallet without the user having to supply a height.
-const DEFAULT_TESTNET_BIRTHDAY: u64 = 3_800_000;
+/// A deep-rescan floor for testnet: sits comfortably before the NU6.3/Ironwood
+/// activation (4,134,000), so scanning from here finds a group funded any time
+/// during Ironwood testing.
+///
+/// This is NOT applied automatically. A brand-new group has no prior funds, so
+/// it starts at the chain tip and syncs in seconds; scanning ~350k blocks of
+/// pre-creation history was the single largest source of slow first syncs.
+/// Recovery of a wiped wallet uses the birthday persisted in settings instead
+/// (see the command layer). This constant is only for an *explicit* deep rescan
+/// — a user who lost both the wallet db and the recorded birthday and wants to
+/// re-discover funds — supplied through `birthday_height`, never as a default.
+pub const DEFAULT_TESTNET_BIRTHDAY: u64 = 3_800_000;
 
 /// The birthday a brand-new wallet starts from when the caller gives no height
-/// and none was recorded for the group.
+/// and none was recorded for the group: the chain tip, on both networks.
 ///
-/// Mainnet deliberately has no constant: its chain tip is around 3.4M (NU6.2
-/// activated at 3,364,600), so any fixed height chosen for testnet would sit in
-/// mainnet's *future* — the treestate would not exist and the wallet would scan
-/// nothing. Mainnet therefore starts at the chain tip, which is correct for a
-/// newly created group that cannot hold prior funds.
-pub fn default_birthday_height(network: WalletNetwork) -> Option<u64> {
-    match network {
-        WalletNetwork::Test => Some(DEFAULT_TESTNET_BIRTHDAY),
-        WalletNetwork::Main => None,
-    }
+/// A newly created group cannot hold funds mined before it existed, so there is
+/// nothing to find below the tip — scanning earlier is pure cost. Returning
+/// `None` lets [`resolve_scan_from`] resolve the start to the current tip. To
+/// recover funds that predate a rebuilt wallet, pass an explicit
+/// `birthday_height` (the command layer supplies the persisted one); for a
+/// from-scratch testnet rescan, pass [`DEFAULT_TESTNET_BIRTHDAY`].
+pub fn default_birthday_height(_network: WalletNetwork) -> Option<u64> {
+    None
 }
 
 /// Pick the first block to scan: the requested birthday held inside
@@ -727,9 +732,11 @@ fn resolve_scan_from(requested: Option<u64>, nu5: u64, tip: u64) -> u64 {
 /// scanning starts from. Idempotent: returns 0 if the account already exists.
 /// Touches the network (fetches the tip and a treestate).
 ///
-/// `birthday_height` is the first block to scan. Pass `Some(h)` to recover a
-/// group whose funds arrived at or after `h` — for example after rebuilding a
-/// wiped wallet database. Pass `None` to use [`default_birthday_height`].
+/// `birthday_height` is the first block to scan. Pass `None` for a brand-new
+/// group: it holds no prior funds, so it starts at the chain tip and syncs in
+/// seconds. Pass `Some(h)` to recover a group whose funds arrived at or after
+/// `h` — after rebuilding a wiped wallet database (the command layer supplies
+/// the persisted birthday), or [`DEFAULT_TESTNET_BIRTHDAY`] for a full rescan.
 ///
 /// Blocks before the birthday are never scanned, so a birthday set too late
 /// makes existing funds invisible. The height is clamped into
@@ -771,6 +778,8 @@ pub async fn init_group_account(
     let nu5 = params
         .activation_height(NetworkUpgrade::Nu5)
         .map_or(0, |a| u64::from(u32::from(a)));
+    // No requested birthday means a brand-new group: start at the tip. Recovery
+    // passes an explicit height (persisted birthday or a deep-rescan floor).
     let scan_from = resolve_scan_from(
         birthday_height.or_else(|| default_birthday_height(network)),
         nu5,
@@ -904,16 +913,38 @@ impl BlockCache for FsCache {
     }
 }
 
+/// How many blocks each sync batch downloads and scans at once when the caller
+/// gives no override. Larger batches amortize the per-batch gRPC round-trip and
+/// database-transaction overhead across more blocks, which is the dominant cost
+/// once trial decryption finds nothing (the common case for a wallet catching up
+/// over empty history). Compact blocks are small, so a few thousand per batch is
+/// comfortable in memory. Tunable per-install via settings; see [`sync_group`].
+pub const DEFAULT_SYNC_BATCH_SIZE: u32 = 5_000;
+
+/// Clamp bounds for a caller-supplied batch size. Below the floor the round-trip
+/// overhead dominates; above the ceiling a batch's worth of compact blocks can
+/// spike memory (they are all held in a `Vec` while the batch is scanned).
+pub const MIN_SYNC_BATCH_SIZE: u32 = 500;
+pub const MAX_SYNC_BATCH_SIZE: u32 = 25_000;
+
 /// Sync the group's wallet: download and trial-decrypt compact blocks from
 /// lightwalletd into the local db. Long-running; touches the network.
+///
+/// `batch_size` is how many blocks to download and scan per batch; `None` uses
+/// [`DEFAULT_SYNC_BATCH_SIZE`]. Any value is clamped into
+/// `[MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE]`.
 pub async fn sync_group(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
     lightwalletd_url: &str,
     db_key: &[u8],
+    batch_size: Option<u32>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), CoreError> {
+    let batch_size = batch_size
+        .unwrap_or(DEFAULT_SYNC_BATCH_SIZE)
+        .clamp(MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE);
     let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
     std::fs::create_dir_all(&blocks_dir)?;
     let mut db = open_db(&db_path, network, db_key)?;
@@ -940,7 +971,7 @@ pub async fn sync_group(
         biased;
         _ = cancel.cancelled() => Err(CoreError::Cancelled),
         res = zcash_client_backend::sync::run(
-            &mut client, &params, &cache, &mut db, 1000,
+            &mut client, &params, &cache, &mut db, batch_size,
         ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
     }
 }
@@ -1813,12 +1844,23 @@ mod tests {
     }
 
     #[test]
-    fn default_birthday_is_testnet_only() {
-        assert_eq!(
-            default_birthday_height(WalletNetwork::Test),
-            Some(DEFAULT_TESTNET_BIRTHDAY)
-        );
-        // A fixed height would be in mainnet's future; it starts at the tip.
+    fn new_wallets_start_at_the_tip_on_both_networks() {
+        // A brand-new group holds no pre-creation funds, so with no requested or
+        // recorded birthday it starts at the chain tip (None -> tip) rather than
+        // scanning hundreds of thousands of blocks of empty history. The testnet
+        // deep-rescan floor is opt-in via `birthday_height`, never a default.
+        assert_eq!(default_birthday_height(WalletNetwork::Test), None);
         assert_eq!(default_birthday_height(WalletNetwork::Main), None);
+        assert_eq!(resolve_scan_from(None, TEST_NU5, 4_200_000), 4_200_000);
+    }
+
+    #[test]
+    fn explicit_deep_rescan_floor_is_honoured_when_requested() {
+        // Passing DEFAULT_TESTNET_BIRTHDAY explicitly (an opt-in deep rescan)
+        // still scans from that floor when it sits inside [NU5, tip].
+        assert_eq!(
+            resolve_scan_from(Some(DEFAULT_TESTNET_BIRTHDAY), TEST_NU5, 4_200_000),
+            DEFAULT_TESTNET_BIRTHDAY
+        );
     }
 }

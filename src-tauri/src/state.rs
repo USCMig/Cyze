@@ -65,6 +65,11 @@ pub struct Settings {
     /// scans the blocks that funded the group, so the balance reads zero.
     #[serde(default)]
     pub wallet_birthdays: HashMap<String, u64>,
+    /// Blocks downloaded and scanned per sync batch. `None` uses the core
+    /// default; larger values reduce per-batch overhead on slow links at the
+    /// cost of memory. Clamped by the core to a sane range.
+    #[serde(default)]
+    pub sync_batch_size: Option<u32>,
     /// Active session profile: "coordinator" or "participant". Toggled by the
     /// sidebar profile switch; drives which saved configuration is in use.
     #[serde(default)]

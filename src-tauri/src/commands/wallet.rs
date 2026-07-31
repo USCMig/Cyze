@@ -225,8 +225,9 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
         }
     }
 
+    let batch_size = state.load_settings().sync_batch_size;
     let result = wallet::sync_group(
-        &state.data_dir, &group_id, network, &url, db_key.as_ref(), &cancel,
+        &state.data_dir, &group_id, network, &url, db_key.as_ref(), batch_size, &cancel,
     )
     .await;
 
