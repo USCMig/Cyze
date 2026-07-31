@@ -823,11 +823,26 @@ pub async fn sync_group(
     Ok(())
 }
 
-/// One Orchard spend that the group must FROST-sign: its action index and the
-/// per-spend re-randomization value α (hex of the canonical scalar encoding),
-/// which becomes the FROST coordinator's `randomizer` for that signature.
+/// Which shielded pool an action belongs to. Post-NU6.3 a single transaction can
+/// carry both bundles at once — e.g. a turnstile send spends Orchard notes (an
+/// Orchard-bundle action) while delivering the payment through the Ironwood
+/// bundle — so every spend must record which bundle holds it. The two bundles
+/// use the same `orchard::pczt` types, so signing differs only in which
+/// low-level-signer method reaches the bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpendPool {
+    Orchard,
+    Ironwood,
+}
+
+/// One shielded spend the group must FROST-sign: which pool's bundle holds it,
+/// its action index within that bundle, and the per-spend re-randomization value
+/// α (hex of the canonical scalar encoding), which becomes the FROST
+/// coordinator's `randomizer` for that signature.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpendToSign {
+    pub pool: SpendPool,
     pub index: usize,
     pub alpha_hex: String,
 }
@@ -878,9 +893,8 @@ pub async fn prepare_send(
     db_key: &[u8],
 ) -> Result<DraftTransaction, CoreError> {
     use zcash_keys::address::Address;
-    use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::value::Zatoshis;
-    use zcash_protocol::ShieldedProtocol;
+    use zcash_protocol::ShieldedPool;
 
     let params = network.params();
     let (db_path, _) = wallet_paths(data_dir, group_id);
@@ -934,17 +948,13 @@ pub async fn prepare_send(
         })
     };
 
-    // Constrain the proposal to a version-5 transaction so it matches what the
-    // PCZT builder can actually construct.
-    //
-    // `create_pczt_from_proposal` hardcodes TxVersion::V5 and rejects any step
-    // that touches the Ironwood pool ("PCZT construction cannot yet produce an
-    // Ironwood bundle"). Left unconstrained (`None`), the proposal is free to
-    // route the payment or its change through Ironwood — which post-NU6.3 it
-    // will, since the Orchard pool is sealed — and the PCZT builder then fails
-    // with the opaque `ProposalNotSupported`. Passing the version here makes the
-    // proposal itself avoid Ironwood, so an unbuildable plan is rejected during
-    // proposal (with a specific reason) rather than after input selection.
+    // Let the backend choose the transaction version from the target height:
+    // version 6 (carrying an Ironwood bundle) once NU6.3 is active, version 5
+    // before it. Passing `None` is what enables Ironwood sends — post-NU6.3 the
+    // Orchard pool is sealed, so a shielded payment to a unified address is
+    // delivered through the Ironwood bundle of a V6 transaction. `lock_inputs`
+    // is None: Cyze builds and signs one transaction at a time, so there is no
+    // need to reserve inputs across concurrent proposals.
     let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
         &mut db,
         &params,
@@ -955,8 +965,9 @@ pub async fn prepare_send(
         amount,
         memo_bytes,
         None, // change memo
-        ShieldedProtocol::Orchard,
-        Some(TxVersion::V5),
+        ShieldedPool::Orchard,
+        None, // lock_inputs
+        None, // proposed_version: derive V5/V6 from the target height
     )
     .map_err(|e| CoreError::Ceremony(format!("propose transfer: {e:?}")))?;
 
@@ -968,23 +979,12 @@ pub async fn prepare_send(
         account_id,
         OvkPolicy::Sender,
         &proposal,
-        None, // target_expiry_height: use the proposal's default expiry
+        None, // expiry_height: use the proposal's default expiry
+        // Orchard-bundle padding; the Ironwood bundle derives its own from the
+        // proposal so it matches the action count the fee was computed from.
+        zcash_primitives::transaction::builder::BundlePadding::DEFAULT,
     )
-    .map_err(|e| match e {
-        // The PCZT builder only emits version-5 transactions, so it refuses any
-        // plan that moves value through the Ironwood pool. Cyze signs via PCZT
-        // (FROST needs it to expose each spend's α and to apply the group's
-        // signature), so there is no fallback path until the Zcash crates can
-        // build Ironwood PCZTs.
-        zcash_client_backend::data_api::error::Error::ProposalNotSupported => CoreError::Ceremony(
-            "this transaction needs the Ironwood pool, which the Zcash PCZT builder \
-             cannot construct yet (it only builds version-5 transactions). Since \
-             NU6.3 sealed the Orchard pool, shielded sends and shielded change now \
-             require Ironwood. Unshielding to a transparent address may still work."
-                .to_string(),
-        ),
-        other => CoreError::Ceremony(format!("create pczt: {other:?}")),
-    })?;
+    .map_err(|e| CoreError::Ceremony(format!("create pczt: {e:?}")))?;
 
     // Ironwood cohort: Pczt::serialize now consumes self and returns Result
     // (postcard EncodingError). Serialize a clone since `pczt` is still needed
@@ -999,9 +999,9 @@ pub async fn prepare_send(
         .map_err(|e| CoreError::Ceremony(format!("signer: {e:?}")))?
         .shielded_sighash();
 
-    // Read each real Orchard spend's α (the re-randomization the FROST signers
-    // must use). Dummy padding actions have zero value and are skipped.
-    let spends = orchard_spends_to_sign(pczt)?;
+    // Read each real spend's α (the re-randomization the FROST signers must
+    // use), across both the Orchard and Ironwood bundles.
+    let spends = spends_to_sign(pczt)?;
 
     Ok(DraftTransaction {
         pczt_hex,
@@ -1015,47 +1015,81 @@ pub async fn prepare_send(
     })
 }
 
-/// Extract the (index, α) of each real Orchard spend in a PCZT. Requires
-/// orchard's `unstable-frost` feature (which exposes `spend().alpha()`).
-fn orchard_spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
+/// Collect every real spend the group must sign, across both the Orchard and
+/// Ironwood bundles, tagged with its pool and α. Requires orchard's
+/// `unstable-frost` feature (which exposes `spend().alpha()`). Dummy padding
+/// actions (zero value) are skipped. Orchard spends are listed first, then
+/// Ironwood; the order only needs to be stable, since each spend carries its own
+/// pool + index for application.
+fn spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
     use ff::PrimeField;
     use orchard::value::NoteValue;
-    use pczt::roles::low_level_signer::OrchardParseError;
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
+
+    // Append the real spends of one already-parsed bundle, tagging their pool.
+    fn collect(bundle: &orchard::pczt::Bundle, pool: SpendPool, out: &mut Vec<SpendToSign>) {
+        for (index, action) in bundle.actions().iter().enumerate() {
+            let is_real = action.spend().value().is_some_and(|v| v != NoteValue::default());
+            if let (true, Some(alpha)) = (is_real, action.spend().alpha()) {
+                out.push(SpendToSign {
+                    pool,
+                    index,
+                    alpha_hex: hex::encode(alpha.to_repr()),
+                });
+            }
+        }
+    }
 
     let mut spends = Vec::new();
-    let mut parse_err: Option<String> = None;
-    pczt::roles::low_level_signer::Signer::new(pczt)
+    let signer = Signer::new(pczt)
         .sign_orchard_with(|_pczt, bundle, _| {
-            for (index, action) in bundle.actions().iter().enumerate() {
-                let is_real = action.spend().value().is_some_and(|v| v != NoteValue::default());
-                if let (true, Some(alpha)) = (is_real, action.spend().alpha()) {
-                    spends.push(SpendToSign {
-                        index,
-                        alpha_hex: hex::encode(alpha.to_repr()),
-                    });
-                }
-            }
+            collect(bundle, SpendPool::Orchard, &mut spends);
             Ok::<_, OrchardParseError>(())
         })
-        .map_err(|e: OrchardParseError| {
-            parse_err = Some(format!("{e:?}"));
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read orchard spends: {e:?}")))?;
+    signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            collect(bundle, SpendPool::Ironwood, &mut spends);
+            Ok::<_, OrchardParseError>(())
         })
-        .ok();
-    if let Some(e) = parse_err {
-        return Err(CoreError::Ceremony(format!("read orchard spends: {e}")));
-    }
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read ironwood spends: {e:?}")))?;
     Ok(spends)
 }
 
-/// Apply FROST-produced Orchard spend-auth signatures to a draft PCZT, returning
-/// the signed PCZT (hex). `signatures` are (spend index, 64-byte sig hex).
-pub fn apply_orchard_signatures(
+/// Whether the PCZT carries any actions in each pool's bundle, as
+/// `(orchard, ironwood)`. Used to prove only the bundles a transaction actually
+/// has — proving an empty bundle fails its anchor check.
+fn bundle_presence(pczt: &pczt::Pczt) -> Result<(bool, bool), CoreError> {
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
+
+    let mut has_orchard = false;
+    let mut has_ironwood = false;
+    let signer = Signer::new(pczt.clone())
+        .sign_orchard_with(|_pczt, bundle, _| {
+            has_orchard = !bundle.actions().is_empty();
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read orchard bundle: {e:?}")))?;
+    signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            has_ironwood = !bundle.actions().is_empty();
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read ironwood bundle: {e:?}")))?;
+    Ok((has_orchard, has_ironwood))
+}
+
+/// Apply FROST-produced spend-auth signatures to a draft PCZT, returning the
+/// signed PCZT (hex). Each entry is `(pool, action index, 64-byte sig hex)`; the
+/// pool selects which bundle the signature is applied to, so a turnstile
+/// transaction that spends from both pools is signed correctly.
+pub fn apply_signatures(
     pczt_hex: &str,
     sighash_hex: &str,
-    signatures: Vec<(usize, String)>,
+    signatures: Vec<(SpendPool, usize, String)>,
 ) -> Result<String, CoreError> {
     use orchard::primitives::redpallas::{Signature, SpendAuth};
-    use pczt::roles::low_level_signer::OrchardParseError;
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 
     let pczt = pczt::Pczt::parse(
         &hex::decode(pczt_hex.trim()).map_err(|e| CoreError::Ceremony(format!("pczt hex: {e}")))?,
@@ -1066,33 +1100,52 @@ pub fn apply_orchard_signatures(
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| CoreError::Ceremony("sighash must be 32 bytes hex".into()))?;
 
-    let sigs: Vec<(usize, Signature<SpendAuth>)> = signatures
-        .into_iter()
-        .map(|(idx, sig_hex)| {
-            let bytes: [u8; 64] = hex::decode(sig_hex.trim())
-                .ok()
-                .and_then(|b| b.try_into().ok())
-                .ok_or_else(|| CoreError::Ceremony("signature must be 64 bytes hex".into()))?;
-            Ok((idx, Signature::<SpendAuth>::from(bytes)))
-        })
-        .collect::<Result<_, CoreError>>()?;
+    // Decode and split the signatures by pool.
+    let mut orchard_sigs: Vec<(usize, Signature<SpendAuth>)> = Vec::new();
+    let mut ironwood_sigs: Vec<(usize, Signature<SpendAuth>)> = Vec::new();
+    for (pool, idx, sig_hex) in signatures {
+        let bytes: [u8; 64] = hex::decode(sig_hex.trim())
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| CoreError::Ceremony("signature must be 64 bytes hex".into()))?;
+        let sig = Signature::<SpendAuth>::from(bytes);
+        match pool {
+            SpendPool::Orchard => orchard_sigs.push((idx, sig)),
+            SpendPool::Ironwood => ironwood_sigs.push((idx, sig)),
+        }
+    }
 
+    // Applying a signature to the wrong action index is a hard error rather than
+    // a bad-signature rejection at broadcast, so surface it precisely.
     let mut apply_err: Option<String> = None;
-    let signer = pczt::roles::low_level_signer::Signer::new(pczt)
-        .sign_orchard_with(|_pczt, bundle, _| {
-            for (idx, sig) in sigs {
-                if let Err(e) = bundle.actions_mut()[idx].apply_signature(sighash, sig) {
-                    apply_err = Some(format!("spend {idx}: {e:?}"));
-                    break;
-                }
+    let apply = |bundle: &mut orchard::pczt::Bundle,
+                 sigs: &[(usize, Signature<SpendAuth>)],
+                 pool: &str,
+                 err: &mut Option<String>| {
+        for (idx, sig) in sigs {
+            if let Err(e) = bundle.actions_mut()[*idx].apply_signature(sighash, sig.clone()) {
+                *err = Some(format!("{pool} spend {idx}: {e:?}"));
+                break;
             }
+        }
+    };
+
+    let signer = Signer::new(pczt)
+        .sign_orchard_with(|_pczt, bundle, _| {
+            apply(bundle, &orchard_sigs, "orchard", &mut apply_err);
             Ok::<_, OrchardParseError>(())
         })
-        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply: {e:?}")))?;
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply orchard: {e:?}")))?;
+    let signer = signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            apply(bundle, &ironwood_sigs, "ironwood", &mut apply_err);
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply ironwood: {e:?}")))?;
     if let Some(e) = apply_err {
         return Err(CoreError::Ceremony(format!("invalid signature for {e}")));
     }
-    // Ironwood cohort: Pczt::serialize now returns Result (postcard EncodingError).
+    // Pczt::serialize consumes self and returns Result (postcard EncodingError).
     Ok(hex::encode(signer.finish().serialize().map_err(|e| {
         CoreError::Ceremony(format!("serialize pczt: {e:?}"))
     })?))
@@ -1103,7 +1156,7 @@ pub fn apply_orchard_signatures(
 /// key takes several seconds), so it runs on a blocking thread.
 ///
 /// This is the final leg of the send pipeline: the group has already applied
-/// its threshold signature to every spend ([`apply_orchard_signatures`]); here
+/// its threshold signature to every spend ([`apply_signatures`]); here
 /// we attach the zero-knowledge proof, finalize, extract the transaction (which
 /// creates the binding signature), and submit it to lightwalletd.
 pub async fn broadcast_signed(
@@ -1117,6 +1170,12 @@ pub async fn broadcast_signed(
     )
     .map_err(|e| CoreError::Ceremony(format!("parse pczt: {e:?}")))?;
 
+    // Prove only the bundles this transaction actually carries: a turnstile send
+    // has both an Orchard bundle (the spends) and an Ironwood bundle (the
+    // outputs); a pure Ironwood send has only Ironwood; a legacy unshield only
+    // Orchard. Proving an empty bundle fails its anchor check, so gate on it.
+    let (has_orchard, has_ironwood) = bundle_presence(&pczt)?;
+
     // Proving + finalize + extract is synchronous, CPU-bound work; keep it off
     // the async runtime so progress events and other tasks stay responsive.
     let (raw, txid) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), CoreError> {
@@ -1125,32 +1184,37 @@ pub async fn broadcast_signed(
             prover::Prover, spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor,
         };
 
-        // Ironwood cohort: ProvingKey/VerifyingKey::build now take an
-        // OrchardCircuitVersion. Testnet has activated NU6.3, so Orchard-pool
-        // actions prove/verify against the post-NU6.3 circuit (ProtocolVersion
-        // V3 → PostNu6_3, the fixed circuit plus the disableCrossAddress
-        // constraint). A fully network-agnostic build would derive this from the
-        // PCZT's consensus branch id (as pczt's tx_extractor does via
-        // `bundle.bundle_version().circuit_version()`); pinned here for the
-        // testnet spike.
-        // TODO(ironwood-phase3): turnstile sends also populate an *Ironwood*
-        // output bundle that needs `Prover::create_ironwood_proof` with an
-        // ironwood_v3 ProvingKey; wire that once the send path targets Ironwood.
+        // Both the Orchard and Ironwood pools use the post-NU6.3 Action circuit
+        // (ProtocolVersion V3 → PostNu6_3), so one proving/verifying key serves
+        // both bundles — which is exactly why the extractor takes a single
+        // orchard vk for both. Both testnet and mainnet have activated NU6.3, so
+        // PostNu6_3 is correct for every live send; a pre-activation (regtest)
+        // build would need to derive this from the PCZT's branch id.
         let circuit_version = OrchardCircuitVersion::PostNu6_3;
-
-        // 1. Orchard zero-knowledge proof.
         let pk = ProvingKey::build(circuit_version);
-        let pczt = Prover::new(pczt)
-            .create_orchard_proof(&pk)
-            .map_err(|e| CoreError::Ceremony(format!("orchard proof: {e:?}")))?
-            .finish();
+
+        // 1. Zero-knowledge proof for each present bundle.
+        let mut prover = Prover::new(pczt);
+        if has_orchard {
+            prover = prover
+                .create_orchard_proof(&pk)
+                .map_err(|e| CoreError::Ceremony(format!("orchard proof: {e:?}")))?;
+        }
+        if has_ironwood {
+            prover = prover
+                .create_ironwood_proof(&pk)
+                .map_err(|e| CoreError::Ceremony(format!("ironwood proof: {e:?}")))?;
+        }
+        let pczt = prover.finish();
 
         // 2. Finalize spends (spend-auth signatures are already applied).
         let pczt = SpendFinalizer::new(pczt)
             .finalize_spends()
             .map_err(|e| CoreError::Ceremony(format!("finalize spends: {e:?}")))?;
 
-        // 3. Extract the final transaction (creates the binding signature).
+        // 3. Extract the final transaction (creates the binding signature). The
+        // extractor verifies both the Orchard and Ironwood bundles with this one
+        // vk, since they share the PostNu6_3 circuit.
         let vk = VerifyingKey::build(circuit_version);
         let tx = TransactionExtractor::new(pczt)
             .with_orchard(&vk)

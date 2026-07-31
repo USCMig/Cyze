@@ -195,6 +195,9 @@ export const walletNewReceiveAddress = (groupId: string) =>
   invoke<ReceiveAddress>("wallet_new_receive_address", { groupId });
 
 export interface SpendToSign {
+  /** Which pool's bundle holds this spend. Post-NU6.3 one transaction can carry
+   *  both (a turnstile send spends Orchard notes but delivers via Ironwood). */
+  pool: "orchard" | "ironwood";
   index: number;
   alpha_hex: string;
 }
