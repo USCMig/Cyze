@@ -29,6 +29,17 @@ current build depends on them.
 - [ ] **Tailscale `serve` as a fourth hosting option** — alongside Direct URL,
       Cloudflare Tunnel, and NGINX in Session Configuration.
 
+      **Feasibility/impact (2026-08-01):** effort Med, impact Med–High, not gated
+      by the testnet-send validation. Slots in as a fourth `coordinator_exposure`
+      variant reusing the existing exposure plumbing + a status probe; no crypto
+      change (frostd's Noise layer still authenticates end-to-end). Structural
+      difference from cloudflared: **detect-and-drive a system `tailscale` CLI,
+      do NOT bundle** — it needs the `tailscaled` daemon (privileged) and a
+      logged-in tailnet, so the sidecar-spawn pattern doesn't apply. Read the
+      stable MagicDNS hostname back via `tailscale status --json` as the saved
+      server URL. Verdict: **do** — best fix for the disposable-quick-tunnel URL
+      pain (stable, savable, auto-TLS, tailnet-scoped).
+
       Why it is attractive: `tailscale serve https / http://127.0.0.1:<port>`
       exposes the loopback frostd over the tailnet with a **stable** MagicDNS
       hostname and an automatically-provisioned, publicly-valid TLS certificate.

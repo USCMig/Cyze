@@ -106,21 +106,22 @@ pub fn branch_id_for_height(network: WalletNetwork, height: u64) -> String {
 /// The NU6.3 / Ironwood consensus branch id (little-endian u32, printed as
 /// 8-digit hex). Orchard actions mined under this upgrade prove against the
 /// `PostNu6_3` circuit (the fixed circuit plus the `disableCrossAddress`
-/// constraint). Testnet activated it at 4,134,000; mainnet has not (yet).
+/// constraint). Activated on testnet at 4,134,000 and on mainnet at 3,428,143
+/// (see `zcash_protocol` activation tables), so both live networks are past it.
 const NU6_3_BRANCH_ID: &str = "37a5165b";
 
 /// The Orchard proving/verifying circuit version to use for a transaction mined
 /// at `height` on `network`. This MUST match the consensus branch active at that
 /// height, or the proof is rejected by the network:
 ///
-/// - Post-NU6.3 (Ironwood, currently testnet only) → `PostNu6_3`.
-/// - Post-NU6.2 (mainnet's current activation) → `FixedPostNu6_2`.
+/// - Post-NU6.3 (Ironwood; both testnet and mainnet are past it) → `PostNu6_3`.
+/// - Post-NU6.2 but pre-NU6.3 → `FixedPostNu6_2`.
 ///
 /// Deriving it from the live branch id — rather than hardcoding one network's
 /// value — is what lets the same build produce valid transactions on both
-/// networks, and automatically switches mainnet over once it activates NU6.3.
-/// Both live networks are past NU6.2, so `FixedPostNu6_2` is the correct floor;
-/// the historical `InsecurePreNu6_2` circuit is never used for new sends.
+/// networks, each picking the circuit for the upgrade active at that height.
+/// `FixedPostNu6_2` is the pre-Ironwood floor; the historical `InsecurePreNu6_2`
+/// circuit is never used for new sends.
 #[cfg(feature = "wallet")]
 fn orchard_circuit_version_for_height(
     network: WalletNetwork,
@@ -1232,6 +1233,61 @@ fn bundle_presence(pczt: &pczt::Pczt) -> Result<(bool, bool), CoreError> {
     Ok((has_orchard, has_ironwood))
 }
 
+/// Find every shielded spend that still lacks a spend-authorization signature,
+/// across both Orchard-protocol bundles, described precisely.
+///
+/// The `TransactionExtractor` requires a `spend_auth_sig` on *every* action and
+/// otherwise fails late and opaquely with `MissingSpendAuthSig`. By the time we
+/// reach it, dummy padding spends have been signed by the IO Finalizer (it
+/// consumes their `dummy_sk`) and real spends have been FROST-signed and applied
+/// ([`apply_signatures`]). Anything still unsigned is a bug in *this* signing
+/// path — most likely a real spend that [`spends_to_sign`] failed to enumerate,
+/// or a dummy the IO Finalizer skipped — and we want to surface it here, before
+/// the expensive proving/broadcast, with enough detail to fix it. The returned
+/// strings distinguish the two cases (a real spend still carrying `value`/`alpha`
+/// vs. a dummy whose `dummy_sk` was never consumed).
+fn find_unsigned_spends(pczt: &pczt::Pczt) -> Result<Vec<String>, CoreError> {
+    use orchard::value::NoteValue;
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
+
+    fn scan(bundle: &orchard::pczt::Bundle, pool: &str, out: &mut Vec<String>) {
+        for (index, action) in bundle.actions().iter().enumerate() {
+            let spend = action.spend();
+            if spend.spend_auth_sig().is_some() {
+                continue; // already authorized
+            }
+            let is_real = spend.value().is_some_and(|v| v != NoteValue::default());
+            let has_alpha = spend.alpha().is_some();
+            let has_dummy_sk = spend.dummy_sk().is_some();
+            let kind = if is_real {
+                "REAL spend never FROST-signed (spends_to_sign missed it?)"
+            } else if has_dummy_sk {
+                "dummy with unconsumed dummy_sk (IO Finalizer skipped it?)"
+            } else {
+                "zero-value spend left unsigned"
+            };
+            out.push(format!(
+                "{pool} bundle action {index}: {kind} [alpha_present={has_alpha}]"
+            ));
+        }
+    }
+
+    let mut unsigned = Vec::new();
+    let signer = Signer::new(pczt.clone())
+        .sign_orchard_with(|_pczt, bundle, _| {
+            scan(bundle, "orchard", &mut unsigned);
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read orchard bundle: {e:?}")))?;
+    signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            scan(bundle, "ironwood", &mut unsigned);
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read ironwood bundle: {e:?}")))?;
+    Ok(unsigned)
+}
+
 /// Apply FROST-produced spend-auth signatures to a draft PCZT, returning the
 /// signed PCZT (hex). Each entry is `(pool, action index, 64-byte sig hex)`; the
 /// pool selects which bundle the signature is applied to, so a turnstile
@@ -1298,8 +1354,26 @@ pub fn apply_signatures(
     if let Some(e) = apply_err {
         return Err(CoreError::Ceremony(format!("invalid signature for {e}")));
     }
+    let signed = signer.finish();
+
+    // Completeness guard: every shielded spend must now be authorized, or the
+    // TransactionExtractor fails late and opaquely with `MissingSpendAuthSig`
+    // (and only after the expensive proving step). Catch it here instead, naming
+    // the exact unsigned action(s), so a signing-path gap surfaces early and
+    // actionably rather than as a doomed broadcast. No transaction is built.
+    let unsigned = find_unsigned_spends(&signed)?;
+    if !unsigned.is_empty() {
+        return Err(CoreError::Ceremony(format!(
+            "not all spends were authorized, so this transaction would be rejected at \
+             broadcast (MissingSpendAuthSig). Unsigned: {}. No transaction was built or \
+             sent. This is a bug in the pool-aware signing path — please report it with \
+             this message.",
+            unsigned.join("; ")
+        )));
+    }
+
     // Pczt::serialize consumes self and returns Result (postcard EncodingError).
-    Ok(hex::encode(signer.finish().serialize().map_err(|e| {
+    Ok(hex::encode(signed.serialize().map_err(|e| {
         CoreError::Ceremony(format!("serialize pczt: {e:?}"))
     })?))
 }
