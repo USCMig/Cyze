@@ -1169,27 +1169,38 @@ pub async fn prepare_send(
     })
 }
 
-/// Collect every real spend the group must sign, across both the Orchard and
+/// Collect every spend the group must FROST-sign, across both the Orchard and
 /// Ironwood bundles, tagged with its pool and α. Requires orchard's
-/// `unstable-frost` feature (which exposes `spend().alpha()`). Dummy padding
-/// actions (zero value) are skipped. Orchard spends are listed first, then
-/// Ironwood; the order only needs to be stable, since each spend carries its own
-/// pool + index for application.
+/// `unstable-frost` feature (which exposes `spend().alpha()`). Orchard spends are
+/// listed first, then Ironwood; the order only needs to be stable, since each
+/// spend carries its own pool + index for application.
+///
+/// A spend needs the group's signature iff it still lacks a `spend_auth_sig`:
+/// this runs after `create_pczt_from_proposal`, whose IO Finalizer has already
+/// signed every dummy padding spend from its `dummy_sk`, so the only spends left
+/// unsigned are the wallet's own notes. Each carries an α to sign with. The old
+/// heuristic keyed on `value != 0`, which wrongly skipped the **zero-value real
+/// spend** the turnstile-out construction adds to the Orchard bundle — leaving it
+/// unauthorized and failing extraction with `MissingSpendAuthSig`.
 fn spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
     use ff::PrimeField;
-    use orchard::value::NoteValue;
     use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 
-    // Append the real spends of one already-parsed bundle, tagging their pool.
+    // Append every not-yet-signed spend of one already-parsed bundle, tagging
+    // its pool. `spend_auth_sig().is_none()` selects exactly the spends the group
+    // must authorize (dummies were already signed by the IO Finalizer); `alpha`
+    // is the re-randomization those signatures must use.
     fn collect(bundle: &orchard::pczt::Bundle, pool: SpendPool, out: &mut Vec<SpendToSign>) {
         for (index, action) in bundle.actions().iter().enumerate() {
-            let is_real = action.spend().value().is_some_and(|v| v != NoteValue::default());
-            if let (true, Some(alpha)) = (is_real, action.spend().alpha()) {
-                out.push(SpendToSign {
-                    pool,
-                    index,
-                    alpha_hex: hex::encode(alpha.to_repr()),
-                });
+            let spend = action.spend();
+            if spend.spend_auth_sig().is_none() {
+                if let Some(alpha) = spend.alpha() {
+                    out.push(SpendToSign {
+                        pool,
+                        index,
+                        alpha_hex: hex::encode(alpha.to_repr()),
+                    });
+                }
             }
         }
     }
