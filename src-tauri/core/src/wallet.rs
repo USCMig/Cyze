@@ -562,13 +562,18 @@ pub struct WalletStatus {
     pub initialized: bool,
     /// Receiving unified address (from the UFVK), for the configured network.
     pub address: Option<String>,
-    /// Aggregate totals (kept for back-compat; equal to the Orchard pool since
-    /// the group's UFVK is Orchard-only).
+    /// Aggregate totals across *all* pools the account holds. Post-Ironwood a
+    /// group's funds are split between the sealed `orchard` pool and the new
+    /// `ironwood` pool (a turnstile send moves value from the former to the
+    /// latter), so this is the sum of both — not the Orchard pool alone.
     pub total_zatoshis: u64,
     pub spendable_zatoshis: u64,
-    /// Per-pool breakdown. With an Orchard-only group UFVK, `sapling` and
-    /// `transparent` are zero — the group cannot hold/spend those pools.
+    /// Per-pool breakdown. `orchard` is the sealed legacy pool (can be spent but
+    /// never received into again); `ironwood` is the pool all new shielded value
+    /// lands in post-NU6.3. `sapling` and `transparent` are zero for an
+    /// Orchard/Ironwood group UFVK.
     pub orchard: PoolBalance,
+    pub ironwood: PoolBalance,
     pub sapling: PoolBalance,
     pub transparent: PoolBalance,
     /// Highest fully-scanned block, and the chain tip the wallet knows about.
@@ -593,6 +598,7 @@ pub fn group_status(
             total_zatoshis: 0,
             spendable_zatoshis: 0,
             orchard: PoolBalance::default(),
+            ironwood: PoolBalance::default(),
             sapling: PoolBalance::default(),
             transparent: PoolBalance::default(),
             synced_height: 0,
@@ -613,6 +619,7 @@ pub fn group_status(
             total_zatoshis: 0,
             spendable_zatoshis: 0,
             orchard: PoolBalance::default(),
+            ironwood: PoolBalance::default(),
             sapling: PoolBalance::default(),
             transparent: PoolBalance::default(),
             synced_height: 0,
@@ -622,14 +629,16 @@ pub fn group_status(
     let summary = db
         .get_wallet_summary(ConfirmationsPolicy::default())
         .map_err(|e| CoreError::Crypto(format!("wallet summary: {e}")))?;
-    let (total, spendable, orchard, sapling, transparent, synced, tip) = match summary {
+    let (total, spendable, orchard, ironwood, sapling, transparent, synced, tip) = match summary {
         Some(s) => {
             let bal = s.account_balances().values().next();
             let total = bal.map(|b| u64::from(b.total())).unwrap_or(0);
             let spendable = bal.map(|b| u64::from(b.spendable_value())).unwrap_or(0);
-            // Per-pool breakdown. Orchard is the only pool the group can hold;
-            // sapling/transparent read 0 with an Orchard-only UFVK.
+            // Per-pool breakdown. Orchard (sealed) and Ironwood (post-NU6.3) are
+            // the pools the group holds; sapling/transparent read 0 with an
+            // Orchard/Ironwood-only UFVK.
             let orchard = bal.map(|b| pool_balance(b.orchard_balance())).unwrap_or_default();
+            let ironwood = bal.map(|b| pool_balance(b.ironwood_balance())).unwrap_or_default();
             let sapling = bal.map(|b| pool_balance(b.sapling_balance())).unwrap_or_default();
             let transparent = bal
                 .map(|b| {
@@ -647,6 +656,7 @@ pub fn group_status(
                 total,
                 spendable,
                 orchard,
+                ironwood,
                 sapling,
                 transparent,
                 u64::from(s.fully_scanned_height()),
@@ -656,6 +666,7 @@ pub fn group_status(
         None => (
             0,
             0,
+            PoolBalance::default(),
             PoolBalance::default(),
             PoolBalance::default(),
             PoolBalance::default(),
@@ -669,6 +680,7 @@ pub fn group_status(
         total_zatoshis: total,
         spendable_zatoshis: spendable,
         orchard,
+        ironwood,
         sapling,
         transparent,
         synced_height: synced,
