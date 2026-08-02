@@ -225,8 +225,9 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
         }
     }
 
+    let batch_size = state.load_settings().sync_batch_size;
     let result = wallet::sync_group(
-        &state.data_dir, &group_id, network, &url, db_key.as_ref(), &cancel,
+        &state.data_dir, &group_id, network, &url, db_key.as_ref(), batch_size, &cancel,
     )
     .await;
 
@@ -306,7 +307,7 @@ async fn resolve_receive_address(
     let (network, _url, _ufvk) = group_wallet_ctx(state, group_id).await?;
     let db_key = state.wallet_db_key(group_id).await?;
     let current_notes =
-        wallet::count_orchard_received_notes(&state.data_dir, group_id, network, db_key.as_ref())?;
+        wallet::count_received_notes(&state.data_dir, group_id, network, db_key.as_ref())?;
 
     let mut settings = state.load_settings();
     let entry = settings.receive_state.entry(group_id.to_string()).or_default();
@@ -409,7 +410,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
     if draft.spends.is_empty() {
         return Err(AppError::new(
             "wallet",
-            "the transaction has no Orchard spends to sign",
+            "the transaction has no shielded spends to sign",
         ));
     }
     let message = hex::decode(draft.sighash_hex.trim())
@@ -422,9 +423,9 @@ pub async fn wallet_send<R: tauri::Runtime>(
         .map(|s| {
             let alpha = hex::decode(s.alpha_hex.trim())
                 .map_err(|e| AppError::new("wallet", format!("alpha: {e}")))?;
-            Ok((s.index, alpha))
+            Ok((s.pool, s.index, alpha))
         })
-        .collect::<AppResult<Vec<(usize, Vec<u8>)>>>()?;
+        .collect::<AppResult<Vec<(wallet::SpendPool, usize, Vec<u8>)>>>()?;
 
     // 2. Shared coordinator inputs (everything but the per-spend randomizer).
     let (group, server_url) =
@@ -513,7 +514,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
         // Multi-spend transactions use this same total budget across all spends.
         const SIGNING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35 * 60);
 
-        let signing_result: Result<Vec<(usize, String)>, String> = {
+        let signing_result: Result<Vec<(wallet::SpendPool, usize, String)>, String> = {
             let total = spends.len();
 
             // Sign each note in its own re-randomized FROST session, one note at
@@ -527,8 +528,9 @@ pub async fn wallet_send<R: tauri::Runtime>(
             // Atomic: the first note to fail/reject returns Err before any
             // broadcast, so a partially-signed transaction is never produced.
             let signing_fut = async {
-                let mut signatures: Vec<(usize, String)> = Vec::with_capacity(total);
-                for (i, (index, alpha)) in spends.into_iter().enumerate() {
+                let mut signatures: Vec<(wallet::SpendPool, usize, String)> =
+                    Vec::with_capacity(total);
+                for (i, (pool, index, alpha)) in spends.into_iter().enumerate() {
                     // Tell the UI which note is being signed; each is a separate
                     // approval in signers' inboxes.
                     let _ = task_app.emit(
@@ -564,7 +566,9 @@ pub async fn wallet_send<R: tauri::Runtime>(
                         send_context,
                     };
                     match run_coordinator(suite, params, tx.clone(), cancel.clone()).await {
-                        Ok(output) => signatures.push((index, hex::encode(&output.signature))),
+                        Ok(output) => {
+                            signatures.push((pool, index, hex::encode(&output.signature)))
+                        }
                         Err(e) => return Err(e.to_string()), // abort remaining notes
                     }
                 }
@@ -598,7 +602,7 @@ pub async fn wallet_send<R: tauri::Runtime>(
         };
 
         let signed_pczt_hex =
-            match wallet::apply_orchard_signatures(&pczt_hex, &sighash_hex, signatures) {
+            match wallet::apply_signatures(&pczt_hex, &sighash_hex, signatures) {
                 Ok(hex) => hex,
                 Err(e) => return fail(e.to_string()),
             };

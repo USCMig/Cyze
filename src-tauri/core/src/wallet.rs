@@ -106,21 +106,22 @@ pub fn branch_id_for_height(network: WalletNetwork, height: u64) -> String {
 /// The NU6.3 / Ironwood consensus branch id (little-endian u32, printed as
 /// 8-digit hex). Orchard actions mined under this upgrade prove against the
 /// `PostNu6_3` circuit (the fixed circuit plus the `disableCrossAddress`
-/// constraint). Testnet activated it at 4,134,000; mainnet has not (yet).
+/// constraint). Activated on testnet at 4,134,000 and on mainnet at 3,428,143
+/// (see `zcash_protocol` activation tables), so both live networks are past it.
 const NU6_3_BRANCH_ID: &str = "37a5165b";
 
 /// The Orchard proving/verifying circuit version to use for a transaction mined
 /// at `height` on `network`. This MUST match the consensus branch active at that
 /// height, or the proof is rejected by the network:
 ///
-/// - Post-NU6.3 (Ironwood, currently testnet only) → `PostNu6_3`.
-/// - Post-NU6.2 (mainnet's current activation) → `FixedPostNu6_2`.
+/// - Post-NU6.3 (Ironwood; both testnet and mainnet are past it) → `PostNu6_3`.
+/// - Post-NU6.2 but pre-NU6.3 → `FixedPostNu6_2`.
 ///
 /// Deriving it from the live branch id — rather than hardcoding one network's
 /// value — is what lets the same build produce valid transactions on both
-/// networks, and automatically switches mainnet over once it activates NU6.3.
-/// Both live networks are past NU6.2, so `FixedPostNu6_2` is the correct floor;
-/// the historical `InsecurePreNu6_2` circuit is never used for new sends.
+/// networks, each picking the circuit for the upgrade active at that height.
+/// `FixedPostNu6_2` is the pre-Ironwood floor; the historical `InsecurePreNu6_2`
+/// circuit is never used for new sends.
 #[cfg(feature = "wallet")]
 fn orchard_circuit_version_for_height(
     network: WalletNetwork,
@@ -561,13 +562,18 @@ pub struct WalletStatus {
     pub initialized: bool,
     /// Receiving unified address (from the UFVK), for the configured network.
     pub address: Option<String>,
-    /// Aggregate totals (kept for back-compat; equal to the Orchard pool since
-    /// the group's UFVK is Orchard-only).
+    /// Aggregate totals across *all* pools the account holds. Post-Ironwood a
+    /// group's funds are split between the sealed `orchard` pool and the new
+    /// `ironwood` pool (a turnstile send moves value from the former to the
+    /// latter), so this is the sum of both — not the Orchard pool alone.
     pub total_zatoshis: u64,
     pub spendable_zatoshis: u64,
-    /// Per-pool breakdown. With an Orchard-only group UFVK, `sapling` and
-    /// `transparent` are zero — the group cannot hold/spend those pools.
+    /// Per-pool breakdown. `orchard` is the sealed legacy pool (can be spent but
+    /// never received into again); `ironwood` is the pool all new shielded value
+    /// lands in post-NU6.3. `sapling` and `transparent` are zero for an
+    /// Orchard/Ironwood group UFVK.
     pub orchard: PoolBalance,
+    pub ironwood: PoolBalance,
     pub sapling: PoolBalance,
     pub transparent: PoolBalance,
     /// Highest fully-scanned block, and the chain tip the wallet knows about.
@@ -592,6 +598,7 @@ pub fn group_status(
             total_zatoshis: 0,
             spendable_zatoshis: 0,
             orchard: PoolBalance::default(),
+            ironwood: PoolBalance::default(),
             sapling: PoolBalance::default(),
             transparent: PoolBalance::default(),
             synced_height: 0,
@@ -612,6 +619,7 @@ pub fn group_status(
             total_zatoshis: 0,
             spendable_zatoshis: 0,
             orchard: PoolBalance::default(),
+            ironwood: PoolBalance::default(),
             sapling: PoolBalance::default(),
             transparent: PoolBalance::default(),
             synced_height: 0,
@@ -621,14 +629,16 @@ pub fn group_status(
     let summary = db
         .get_wallet_summary(ConfirmationsPolicy::default())
         .map_err(|e| CoreError::Crypto(format!("wallet summary: {e}")))?;
-    let (total, spendable, orchard, sapling, transparent, synced, tip) = match summary {
+    let (total, spendable, orchard, ironwood, sapling, transparent, synced, tip) = match summary {
         Some(s) => {
             let bal = s.account_balances().values().next();
             let total = bal.map(|b| u64::from(b.total())).unwrap_or(0);
             let spendable = bal.map(|b| u64::from(b.spendable_value())).unwrap_or(0);
-            // Per-pool breakdown. Orchard is the only pool the group can hold;
-            // sapling/transparent read 0 with an Orchard-only UFVK.
+            // Per-pool breakdown. Orchard (sealed) and Ironwood (post-NU6.3) are
+            // the pools the group holds; sapling/transparent read 0 with an
+            // Orchard/Ironwood-only UFVK.
             let orchard = bal.map(|b| pool_balance(b.orchard_balance())).unwrap_or_default();
+            let ironwood = bal.map(|b| pool_balance(b.ironwood_balance())).unwrap_or_default();
             let sapling = bal.map(|b| pool_balance(b.sapling_balance())).unwrap_or_default();
             let transparent = bal
                 .map(|b| {
@@ -646,6 +656,7 @@ pub fn group_status(
                 total,
                 spendable,
                 orchard,
+                ironwood,
                 sapling,
                 transparent,
                 u64::from(s.fully_scanned_height()),
@@ -655,6 +666,7 @@ pub fn group_status(
         None => (
             0,
             0,
+            PoolBalance::default(),
             PoolBalance::default(),
             PoolBalance::default(),
             PoolBalance::default(),
@@ -668,6 +680,7 @@ pub fn group_status(
         total_zatoshis: total,
         spendable_zatoshis: spendable,
         orchard,
+        ironwood,
         sapling,
         transparent,
         synced_height: synced,
@@ -688,25 +701,30 @@ fn pool_balance(b: &zcash_client_backend::data_api::Balance) -> PoolBalance {
     }
 }
 
-/// First block a new testnet group's wallet scans when no birthday is recorded
-/// or supplied. Sits comfortably before the NU6.3/Ironwood activation
-/// (4,134,000), so a group funded any time during Ironwood testing is found by
-/// a rebuilt wallet without the user having to supply a height.
-const DEFAULT_TESTNET_BIRTHDAY: u64 = 3_800_000;
+/// A deep-rescan floor for testnet: sits comfortably before the NU6.3/Ironwood
+/// activation (4,134,000), so scanning from here finds a group funded any time
+/// during Ironwood testing.
+///
+/// This is NOT applied automatically. A brand-new group has no prior funds, so
+/// it starts at the chain tip and syncs in seconds; scanning ~350k blocks of
+/// pre-creation history was the single largest source of slow first syncs.
+/// Recovery of a wiped wallet uses the birthday persisted in settings instead
+/// (see the command layer). This constant is only for an *explicit* deep rescan
+/// — a user who lost both the wallet db and the recorded birthday and wants to
+/// re-discover funds — supplied through `birthday_height`, never as a default.
+pub const DEFAULT_TESTNET_BIRTHDAY: u64 = 3_800_000;
 
 /// The birthday a brand-new wallet starts from when the caller gives no height
-/// and none was recorded for the group.
+/// and none was recorded for the group: the chain tip, on both networks.
 ///
-/// Mainnet deliberately has no constant: its chain tip is around 3.4M (NU6.2
-/// activated at 3,364,600), so any fixed height chosen for testnet would sit in
-/// mainnet's *future* — the treestate would not exist and the wallet would scan
-/// nothing. Mainnet therefore starts at the chain tip, which is correct for a
-/// newly created group that cannot hold prior funds.
-pub fn default_birthday_height(network: WalletNetwork) -> Option<u64> {
-    match network {
-        WalletNetwork::Test => Some(DEFAULT_TESTNET_BIRTHDAY),
-        WalletNetwork::Main => None,
-    }
+/// A newly created group cannot hold funds mined before it existed, so there is
+/// nothing to find below the tip — scanning earlier is pure cost. Returning
+/// `None` lets [`resolve_scan_from`] resolve the start to the current tip. To
+/// recover funds that predate a rebuilt wallet, pass an explicit
+/// `birthday_height` (the command layer supplies the persisted one); for a
+/// from-scratch testnet rescan, pass [`DEFAULT_TESTNET_BIRTHDAY`].
+pub fn default_birthday_height(_network: WalletNetwork) -> Option<u64> {
+    None
 }
 
 /// Pick the first block to scan: the requested birthday held inside
@@ -727,9 +745,11 @@ fn resolve_scan_from(requested: Option<u64>, nu5: u64, tip: u64) -> u64 {
 /// scanning starts from. Idempotent: returns 0 if the account already exists.
 /// Touches the network (fetches the tip and a treestate).
 ///
-/// `birthday_height` is the first block to scan. Pass `Some(h)` to recover a
-/// group whose funds arrived at or after `h` — for example after rebuilding a
-/// wiped wallet database. Pass `None` to use [`default_birthday_height`].
+/// `birthday_height` is the first block to scan. Pass `None` for a brand-new
+/// group: it holds no prior funds, so it starts at the chain tip and syncs in
+/// seconds. Pass `Some(h)` to recover a group whose funds arrived at or after
+/// `h` — after rebuilding a wiped wallet database (the command layer supplies
+/// the persisted birthday), or [`DEFAULT_TESTNET_BIRTHDAY`] for a full rescan.
 ///
 /// Blocks before the birthday are never scanned, so a birthday set too late
 /// makes existing funds invisible. The height is clamped into
@@ -771,6 +791,8 @@ pub async fn init_group_account(
     let nu5 = params
         .activation_height(NetworkUpgrade::Nu5)
         .map_or(0, |a| u64::from(u32::from(a)));
+    // No requested birthday means a brand-new group: start at the tip. Recovery
+    // passes an explicit height (persisted birthday or a deep-rescan floor).
     let scan_from = resolve_scan_from(
         birthday_height.or_else(|| default_birthday_height(network)),
         nu5,
@@ -904,16 +926,38 @@ impl BlockCache for FsCache {
     }
 }
 
+/// How many blocks each sync batch downloads and scans at once when the caller
+/// gives no override. Larger batches amortize the per-batch gRPC round-trip and
+/// database-transaction overhead across more blocks, which is the dominant cost
+/// once trial decryption finds nothing (the common case for a wallet catching up
+/// over empty history). Compact blocks are small, so a few thousand per batch is
+/// comfortable in memory. Tunable per-install via settings; see [`sync_group`].
+pub const DEFAULT_SYNC_BATCH_SIZE: u32 = 5_000;
+
+/// Clamp bounds for a caller-supplied batch size. Below the floor the round-trip
+/// overhead dominates; above the ceiling a batch's worth of compact blocks can
+/// spike memory (they are all held in a `Vec` while the batch is scanned).
+pub const MIN_SYNC_BATCH_SIZE: u32 = 500;
+pub const MAX_SYNC_BATCH_SIZE: u32 = 25_000;
+
 /// Sync the group's wallet: download and trial-decrypt compact blocks from
 /// lightwalletd into the local db. Long-running; touches the network.
+///
+/// `batch_size` is how many blocks to download and scan per batch; `None` uses
+/// [`DEFAULT_SYNC_BATCH_SIZE`]. Any value is clamped into
+/// `[MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE]`.
 pub async fn sync_group(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
     lightwalletd_url: &str,
     db_key: &[u8],
+    batch_size: Option<u32>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), CoreError> {
+    let batch_size = batch_size
+        .unwrap_or(DEFAULT_SYNC_BATCH_SIZE)
+        .clamp(MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE);
     let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
     std::fs::create_dir_all(&blocks_dir)?;
     let mut db = open_db(&db_path, network, db_key)?;
@@ -940,16 +984,31 @@ pub async fn sync_group(
         biased;
         _ = cancel.cancelled() => Err(CoreError::Cancelled),
         res = zcash_client_backend::sync::run(
-            &mut client, &params, &cache, &mut db, 1000,
+            &mut client, &params, &cache, &mut db, batch_size,
         ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
     }
 }
 
-/// One Orchard spend that the group must FROST-sign: its action index and the
-/// per-spend re-randomization value α (hex of the canonical scalar encoding),
-/// which becomes the FROST coordinator's `randomizer` for that signature.
+/// Which shielded pool an action belongs to. Post-NU6.3 a single transaction can
+/// carry both bundles at once — e.g. a turnstile send spends Orchard notes (an
+/// Orchard-bundle action) while delivering the payment through the Ironwood
+/// bundle — so every spend must record which bundle holds it. The two bundles
+/// use the same `orchard::pczt` types, so signing differs only in which
+/// low-level-signer method reaches the bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpendPool {
+    Orchard,
+    Ironwood,
+}
+
+/// One shielded spend the group must FROST-sign: which pool's bundle holds it,
+/// its action index within that bundle, and the per-spend re-randomization value
+/// α (hex of the canonical scalar encoding), which becomes the FROST
+/// coordinator's `randomizer` for that signature.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpendToSign {
+    pub pool: SpendPool,
     pub index: usize,
     pub alpha_hex: String,
 }
@@ -1000,7 +1059,6 @@ pub async fn prepare_send(
     db_key: &[u8],
 ) -> Result<DraftTransaction, CoreError> {
     use zcash_keys::address::Address;
-    use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::value::Zatoshis;
     use zcash_protocol::ShieldedPool;
 
@@ -1056,17 +1114,13 @@ pub async fn prepare_send(
         })
     };
 
-    // Constrain the proposal to a version-5 transaction so it matches what the
-    // PCZT builder can actually construct.
-    //
-    // `create_pczt_from_proposal` hardcodes TxVersion::V5 and rejects any step
-    // that touches the Ironwood pool ("PCZT construction cannot yet produce an
-    // Ironwood bundle"). Left unconstrained (`None`), the proposal is free to
-    // route the payment or its change through Ironwood — which post-NU6.3 it
-    // will, since the Orchard pool is sealed — and the PCZT builder then fails
-    // with the opaque `ProposalNotSupported`. Passing the version here makes the
-    // proposal itself avoid Ironwood, so an unbuildable plan is rejected during
-    // proposal (with a specific reason) rather than after input selection.
+    // Let the backend choose the transaction version from the target height:
+    // version 6 (carrying an Ironwood bundle) once NU6.3 is active, version 5
+    // before it. Passing `None` is what enables Ironwood sends — post-NU6.3 the
+    // Orchard pool is sealed, so a shielded payment to a unified address is
+    // delivered through the Ironwood bundle of a V6 transaction. `lock_inputs`
+    // is None: Cyze builds and signs one transaction at a time, so there is no
+    // need to reserve inputs across concurrent proposals.
     let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
         &mut db,
         &params,
@@ -1078,7 +1132,8 @@ pub async fn prepare_send(
         memo_bytes,
         None, // change memo
         ShieldedPool::Orchard,
-        Some(TxVersion::V5),
+        None, // lock_inputs
+        None, // proposed_version: derive V5/V6 from the target height
     )
     .map_err(|e| CoreError::Ceremony(format!("propose transfer: {e:?}")))?;
 
@@ -1090,23 +1145,12 @@ pub async fn prepare_send(
         account_id,
         OvkPolicy::Sender,
         &proposal,
-        None, // target_expiry_height: use the proposal's default expiry
+        None, // expiry_height: use the proposal's default expiry
+        // Orchard-bundle padding; the Ironwood bundle derives its own from the
+        // proposal so it matches the action count the fee was computed from.
+        zcash_primitives::transaction::builder::BundlePadding::DEFAULT,
     )
-    .map_err(|e| match e {
-        // The PCZT builder only emits version-5 transactions, so it refuses any
-        // plan that moves value through the Ironwood pool. Cyze signs via PCZT
-        // (FROST needs it to expose each spend's α and to apply the group's
-        // signature), so there is no fallback path until the Zcash crates can
-        // build Ironwood PCZTs.
-        zcash_client_backend::data_api::error::Error::ProposalNotSupported => CoreError::Ceremony(
-            "this transaction needs the Ironwood pool, which the Zcash PCZT builder \
-             cannot construct yet (it only builds version-5 transactions). Since \
-             NU6.3 sealed the Orchard pool, shielded sends and shielded change now \
-             require Ironwood. Unshielding to a transparent address may still work."
-                .to_string(),
-        ),
-        other => CoreError::Ceremony(format!("create pczt: {other:?}")),
-    })?;
+    .map_err(|e| CoreError::Ceremony(format!("create pczt: {e:?}")))?;
 
     // Ironwood cohort: Pczt::serialize now consumes self and returns Result
     // (postcard EncodingError). Serialize a clone since `pczt` is still needed
@@ -1121,9 +1165,9 @@ pub async fn prepare_send(
         .map_err(|e| CoreError::Ceremony(format!("signer: {e:?}")))?
         .shielded_sighash();
 
-    // Read each real Orchard spend's α (the re-randomization the FROST signers
-    // must use). Dummy padding actions have zero value and are skipped.
-    let spends = orchard_spends_to_sign(pczt)?;
+    // Read each real spend's α (the re-randomization the FROST signers must
+    // use), across both the Orchard and Ironwood bundles.
+    let spends = spends_to_sign(pczt)?;
 
     Ok(DraftTransaction {
         pczt_hex,
@@ -1137,47 +1181,147 @@ pub async fn prepare_send(
     })
 }
 
-/// Extract the (index, α) of each real Orchard spend in a PCZT. Requires
-/// orchard's `unstable-frost` feature (which exposes `spend().alpha()`).
-fn orchard_spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
+/// Collect every spend the group must FROST-sign, across both the Orchard and
+/// Ironwood bundles, tagged with its pool and α. Requires orchard's
+/// `unstable-frost` feature (which exposes `spend().alpha()`). Orchard spends are
+/// listed first, then Ironwood; the order only needs to be stable, since each
+/// spend carries its own pool + index for application.
+///
+/// A spend needs the group's signature iff it still lacks a `spend_auth_sig`:
+/// this runs after `create_pczt_from_proposal`, whose IO Finalizer has already
+/// signed every dummy padding spend from its `dummy_sk`, so the only spends left
+/// unsigned are the wallet's own notes. Each carries an α to sign with. The old
+/// heuristic keyed on `value != 0`, which wrongly skipped the **zero-value real
+/// spend** the turnstile-out construction adds to the Orchard bundle — leaving it
+/// unauthorized and failing extraction with `MissingSpendAuthSig`.
+fn spends_to_sign(pczt: pczt::Pczt) -> Result<Vec<SpendToSign>, CoreError> {
     use ff::PrimeField;
-    use orchard::value::NoteValue;
-    use pczt::roles::low_level_signer::OrchardParseError;
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 
-    let mut spends = Vec::new();
-    let mut parse_err: Option<String> = None;
-    pczt::roles::low_level_signer::Signer::new(pczt)
-        .sign_orchard_with(|_pczt, bundle, _| {
-            for (index, action) in bundle.actions().iter().enumerate() {
-                let is_real = action.spend().value().is_some_and(|v| v != NoteValue::default());
-                if let (true, Some(alpha)) = (is_real, action.spend().alpha()) {
-                    spends.push(SpendToSign {
+    // Append every not-yet-signed spend of one already-parsed bundle, tagging
+    // its pool. `spend_auth_sig().is_none()` selects exactly the spends the group
+    // must authorize (dummies were already signed by the IO Finalizer); `alpha`
+    // is the re-randomization those signatures must use.
+    fn collect(bundle: &orchard::pczt::Bundle, pool: SpendPool, out: &mut Vec<SpendToSign>) {
+        for (index, action) in bundle.actions().iter().enumerate() {
+            let spend = action.spend();
+            if spend.spend_auth_sig().is_none() {
+                if let Some(alpha) = spend.alpha() {
+                    out.push(SpendToSign {
+                        pool,
                         index,
                         alpha_hex: hex::encode(alpha.to_repr()),
                     });
                 }
             }
+        }
+    }
+
+    let mut spends = Vec::new();
+    let signer = Signer::new(pczt)
+        .sign_orchard_with(|_pczt, bundle, _| {
+            collect(bundle, SpendPool::Orchard, &mut spends);
             Ok::<_, OrchardParseError>(())
         })
-        .map_err(|e: OrchardParseError| {
-            parse_err = Some(format!("{e:?}"));
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read orchard spends: {e:?}")))?;
+    signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            collect(bundle, SpendPool::Ironwood, &mut spends);
+            Ok::<_, OrchardParseError>(())
         })
-        .ok();
-    if let Some(e) = parse_err {
-        return Err(CoreError::Ceremony(format!("read orchard spends: {e}")));
-    }
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read ironwood spends: {e:?}")))?;
     Ok(spends)
 }
 
-/// Apply FROST-produced Orchard spend-auth signatures to a draft PCZT, returning
-/// the signed PCZT (hex). `signatures` are (spend index, 64-byte sig hex).
-pub fn apply_orchard_signatures(
+/// Whether the PCZT carries any actions in each pool's bundle, as
+/// `(orchard, ironwood)`. Used to prove only the bundles a transaction actually
+/// has — proving an empty bundle fails its anchor check.
+fn bundle_presence(pczt: &pczt::Pczt) -> Result<(bool, bool), CoreError> {
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
+
+    let mut has_orchard = false;
+    let mut has_ironwood = false;
+    let signer = Signer::new(pczt.clone())
+        .sign_orchard_with(|_pczt, bundle, _| {
+            has_orchard = !bundle.actions().is_empty();
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read orchard bundle: {e:?}")))?;
+    signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            has_ironwood = !bundle.actions().is_empty();
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read ironwood bundle: {e:?}")))?;
+    Ok((has_orchard, has_ironwood))
+}
+
+/// Find every shielded spend that still lacks a spend-authorization signature,
+/// across both Orchard-protocol bundles, described precisely.
+///
+/// The `TransactionExtractor` requires a `spend_auth_sig` on *every* action and
+/// otherwise fails late and opaquely with `MissingSpendAuthSig`. By the time we
+/// reach it, dummy padding spends have been signed by the IO Finalizer (it
+/// consumes their `dummy_sk`) and real spends have been FROST-signed and applied
+/// ([`apply_signatures`]). Anything still unsigned is a bug in *this* signing
+/// path — most likely a real spend that [`spends_to_sign`] failed to enumerate,
+/// or a dummy the IO Finalizer skipped — and we want to surface it here, before
+/// the expensive proving/broadcast, with enough detail to fix it. The returned
+/// strings distinguish the two cases (a real spend still carrying `value`/`alpha`
+/// vs. a dummy whose `dummy_sk` was never consumed).
+fn find_unsigned_spends(pczt: &pczt::Pczt) -> Result<Vec<String>, CoreError> {
+    use orchard::value::NoteValue;
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
+
+    fn scan(bundle: &orchard::pczt::Bundle, pool: &str, out: &mut Vec<String>) {
+        for (index, action) in bundle.actions().iter().enumerate() {
+            let spend = action.spend();
+            if spend.spend_auth_sig().is_some() {
+                continue; // already authorized
+            }
+            let is_real = spend.value().is_some_and(|v| v != NoteValue::default());
+            let has_alpha = spend.alpha().is_some();
+            let has_dummy_sk = spend.dummy_sk().is_some();
+            let kind = if is_real {
+                "REAL spend never FROST-signed (spends_to_sign missed it?)"
+            } else if has_dummy_sk {
+                "dummy with unconsumed dummy_sk (IO Finalizer skipped it?)"
+            } else {
+                "zero-value spend left unsigned"
+            };
+            out.push(format!(
+                "{pool} bundle action {index}: {kind} [alpha_present={has_alpha}]"
+            ));
+        }
+    }
+
+    let mut unsigned = Vec::new();
+    let signer = Signer::new(pczt.clone())
+        .sign_orchard_with(|_pczt, bundle, _| {
+            scan(bundle, "orchard", &mut unsigned);
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read orchard bundle: {e:?}")))?;
+    signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            scan(bundle, "ironwood", &mut unsigned);
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("read ironwood bundle: {e:?}")))?;
+    Ok(unsigned)
+}
+
+/// Apply FROST-produced spend-auth signatures to a draft PCZT, returning the
+/// signed PCZT (hex). Each entry is `(pool, action index, 64-byte sig hex)`; the
+/// pool selects which bundle the signature is applied to, so a turnstile
+/// transaction that spends from both pools is signed correctly.
+pub fn apply_signatures(
     pczt_hex: &str,
     sighash_hex: &str,
-    signatures: Vec<(usize, String)>,
+    signatures: Vec<(SpendPool, usize, String)>,
 ) -> Result<String, CoreError> {
     use orchard::primitives::redpallas::{Signature, SpendAuth};
-    use pczt::roles::low_level_signer::OrchardParseError;
+    use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 
     let pczt = pczt::Pczt::parse(
         &hex::decode(pczt_hex.trim()).map_err(|e| CoreError::Ceremony(format!("pczt hex: {e}")))?,
@@ -1188,34 +1332,71 @@ pub fn apply_orchard_signatures(
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| CoreError::Ceremony("sighash must be 32 bytes hex".into()))?;
 
-    let sigs: Vec<(usize, Signature<SpendAuth>)> = signatures
-        .into_iter()
-        .map(|(idx, sig_hex)| {
-            let bytes: [u8; 64] = hex::decode(sig_hex.trim())
-                .ok()
-                .and_then(|b| b.try_into().ok())
-                .ok_or_else(|| CoreError::Ceremony("signature must be 64 bytes hex".into()))?;
-            Ok((idx, Signature::<SpendAuth>::from(bytes)))
-        })
-        .collect::<Result<_, CoreError>>()?;
+    // Decode and split the signatures by pool.
+    let mut orchard_sigs: Vec<(usize, Signature<SpendAuth>)> = Vec::new();
+    let mut ironwood_sigs: Vec<(usize, Signature<SpendAuth>)> = Vec::new();
+    for (pool, idx, sig_hex) in signatures {
+        let bytes: [u8; 64] = hex::decode(sig_hex.trim())
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| CoreError::Ceremony("signature must be 64 bytes hex".into()))?;
+        let sig = Signature::<SpendAuth>::from(bytes);
+        match pool {
+            SpendPool::Orchard => orchard_sigs.push((idx, sig)),
+            SpendPool::Ironwood => ironwood_sigs.push((idx, sig)),
+        }
+    }
 
+    // Applying a signature to the wrong action index is a hard error rather than
+    // a bad-signature rejection at broadcast, so surface it precisely.
     let mut apply_err: Option<String> = None;
-    let signer = pczt::roles::low_level_signer::Signer::new(pczt)
-        .sign_orchard_with(|_pczt, bundle, _| {
-            for (idx, sig) in sigs {
-                if let Err(e) = bundle.actions_mut()[idx].apply_signature(sighash, sig) {
-                    apply_err = Some(format!("spend {idx}: {e:?}"));
-                    break;
-                }
+    let apply = |bundle: &mut orchard::pczt::Bundle,
+                 sigs: &[(usize, Signature<SpendAuth>)],
+                 pool: &str,
+                 err: &mut Option<String>| {
+        for (idx, sig) in sigs {
+            if let Err(e) = bundle.actions_mut()[*idx].apply_signature(sighash, sig.clone()) {
+                *err = Some(format!("{pool} spend {idx}: {e:?}"));
+                break;
             }
+        }
+    };
+
+    let signer = Signer::new(pczt)
+        .sign_orchard_with(|_pczt, bundle, _| {
+            apply(bundle, &orchard_sigs, "orchard", &mut apply_err);
             Ok::<_, OrchardParseError>(())
         })
-        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply: {e:?}")))?;
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply orchard: {e:?}")))?;
+    let signer = signer
+        .sign_ironwood_with(|_pczt, bundle, _| {
+            apply(bundle, &ironwood_sigs, "ironwood", &mut apply_err);
+            Ok::<_, OrchardParseError>(())
+        })
+        .map_err(|e: OrchardParseError| CoreError::Ceremony(format!("apply ironwood: {e:?}")))?;
     if let Some(e) = apply_err {
         return Err(CoreError::Ceremony(format!("invalid signature for {e}")));
     }
-    // Ironwood cohort: Pczt::serialize now returns Result (postcard EncodingError).
-    Ok(hex::encode(signer.finish().serialize().map_err(|e| {
+    let signed = signer.finish();
+
+    // Completeness guard: every shielded spend must now be authorized, or the
+    // TransactionExtractor fails late and opaquely with `MissingSpendAuthSig`
+    // (and only after the expensive proving step). Catch it here instead, naming
+    // the exact unsigned action(s), so a signing-path gap surfaces early and
+    // actionably rather than as a doomed broadcast. No transaction is built.
+    let unsigned = find_unsigned_spends(&signed)?;
+    if !unsigned.is_empty() {
+        return Err(CoreError::Ceremony(format!(
+            "not all spends were authorized, so this transaction would be rejected at \
+             broadcast (MissingSpendAuthSig). Unsigned: {}. No transaction was built or \
+             sent. This is a bug in the pool-aware signing path — please report it with \
+             this message.",
+            unsigned.join("; ")
+        )));
+    }
+
+    // Pczt::serialize consumes self and returns Result (postcard EncodingError).
+    Ok(hex::encode(signed.serialize().map_err(|e| {
         CoreError::Ceremony(format!("serialize pczt: {e:?}"))
     })?))
 }
@@ -1225,7 +1406,7 @@ pub fn apply_orchard_signatures(
 /// key takes several seconds), so it runs on a blocking thread.
 ///
 /// This is the final leg of the send pipeline: the group has already applied
-/// its threshold signature to every spend ([`apply_orchard_signatures`]); here
+/// its threshold signature to every spend ([`apply_signatures`]); here
 /// we attach the zero-knowledge proof, finalize, extract the transaction (which
 /// creates the binding signature), and submit it to lightwalletd.
 pub async fn broadcast_signed(
@@ -1239,11 +1420,18 @@ pub async fn broadcast_signed(
     )
     .map_err(|e| CoreError::Ceremony(format!("parse pczt: {e:?}")))?;
 
+    // Prove only the bundles this transaction actually carries: a turnstile send
+    // has both an Orchard bundle (the spends) and an Ironwood bundle (the
+    // outputs); a pure Ironwood send has only Ironwood; a legacy unshield only
+    // Orchard. Proving an empty bundle fails its anchor check, so gate on it.
+    let (has_orchard, has_ironwood) = bundle_presence(&pczt)?;
+
     // Select the Orchard circuit from the consensus branch active at the live
     // chain tip, so the proof matches what THIS network's validators expect
-    // (PostNu6_3 on Ironwood testnet, FixedPostNu6_2 on mainnet-NU6.2). A stale
-    // or hardcoded circuit produces a proof the network rejects. This runs
-    // seconds before broadcast, so the tip is effectively the tx's mined branch.
+    // (PostNu6_3 on Ironwood, FixedPostNu6_2 pre-NU6.3). A stale or hardcoded
+    // circuit produces a proof the network rejects. This runs seconds before
+    // broadcast, so the tip is effectively the tx's mined branch. Both the
+    // Orchard and Ironwood pools share this circuit, so one key serves both.
     let mut client = connect(url).await?;
     let tip_height = client
         .get_latest_block(ChainSpec {})
@@ -1261,23 +1449,33 @@ pub async fn broadcast_signed(
             prover::Prover, spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor,
         };
 
-        // TODO(ironwood-phase3): turnstile sends also populate an *Ironwood*
-        // output bundle that needs `Prover::create_ironwood_proof` with an
-        // ironwood_v3 ProvingKey; wire that once the send path targets Ironwood.
-
-        // 1. Orchard zero-knowledge proof.
+        // `circuit_version` is chosen from the live chain tip above and captured
+        // by this move closure; one proving/verifying key serves both the
+        // Orchard and Ironwood bundles, which share that circuit.
         let pk = ProvingKey::build(circuit_version);
-        let pczt = Prover::new(pczt)
-            .create_orchard_proof(&pk)
-            .map_err(|e| CoreError::Ceremony(format!("orchard proof: {e:?}")))?
-            .finish();
+
+        // 1. Zero-knowledge proof for each present bundle.
+        let mut prover = Prover::new(pczt);
+        if has_orchard {
+            prover = prover
+                .create_orchard_proof(&pk)
+                .map_err(|e| CoreError::Ceremony(format!("orchard proof: {e:?}")))?;
+        }
+        if has_ironwood {
+            prover = prover
+                .create_ironwood_proof(&pk)
+                .map_err(|e| CoreError::Ceremony(format!("ironwood proof: {e:?}")))?;
+        }
+        let pczt = prover.finish();
 
         // 2. Finalize spends (spend-auth signatures are already applied).
         let pczt = SpendFinalizer::new(pczt)
             .finalize_spends()
             .map_err(|e| CoreError::Ceremony(format!("finalize spends: {e:?}")))?;
 
-        // 3. Extract the final transaction (creates the binding signature).
+        // 3. Extract the final transaction (creates the binding signature). The
+        // extractor verifies both the Orchard and Ironwood bundles with this one
+        // vk, since they share the PostNu6_3 circuit.
         let vk = VerifyingKey::build(circuit_version);
         let tx = TransactionExtractor::new(pczt)
             .with_orchard(&vk)
@@ -1337,11 +1535,17 @@ pub struct TxRecord {
 /// clean transaction-list API on `WalletRead`. The tables queried are stable
 /// parts of `zcash_client_sqlite`'s schema: `transactions`, `accounts`,
 /// `orchard_received_notes`, and `sent_notes`.
-/// Total number of Orchard notes this group has ever received. Used as a coarse
-/// "wallet activity" signal to decide when to rotate the receive address (#3):
-/// once the count grows, the currently-shown address may have been paid, so the
-/// next view hands out a fresh diversifier. Returns 0 when no wallet db exists.
-pub fn count_orchard_received_notes(
+/// Total number of shielded notes this group has ever received, across both the
+/// Orchard and Ironwood pools. Used as a coarse "wallet activity" signal to
+/// decide when to rotate the receive address (#3): once the count grows, the
+/// currently-shown address may have been paid, so the next view hands out a
+/// fresh diversifier. Returns 0 when no wallet db exists.
+///
+/// Counting Ironwood too matters post-NU6.3: a payment to the group's unified
+/// address now lands in the Ironwood pool, so an Orchard-only count would never
+/// grow on a new receive and the address would never rotate — silently reusing
+/// one address across payments.
+pub fn count_received_notes(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
@@ -1353,9 +1557,12 @@ pub fn count_orchard_received_notes(
     }
     let conn = open_readonly_connection(&db_path, db_key)?;
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM orchard_received_notes", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM orchard_received_notes) \
+                  + (SELECT COUNT(*) FROM ironwood_received_notes)",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|e| CoreError::Crypto(format!("count received notes: {e}")))?;
     Ok(count.max(0) as u64)
 }
@@ -1411,65 +1618,77 @@ pub fn wallet_notes(
         .flatten();
     let tip = tip.unwrap_or(0);
 
-    let mut stmt = conn
-        .prepare(
+    // Post-NU6.3 a group holds notes in two pools: the sealed Orchard pool and
+    // the Ironwood pool that all new value (and migrated funds) land in. The two
+    // tables are structurally identical, so query each with the same shape and
+    // merge. Table/column names are compile-time constants, not user input, so
+    // interpolating them into the SQL is safe.
+    let mut notes = Vec::new();
+    for (notes_table, spends_table, fk_col) in [
+        ("orchard_received_notes", "orchard_received_note_spends", "orchard_received_note_id"),
+        ("ironwood_received_notes", "ironwood_received_note_spends", "ironwood_received_note_id"),
+    ] {
+        let sql = format!(
             "SELECT t.txid, orn.value, orn.is_change, orn.memo, t.mined_height, \
              MAX(CASE WHEN spend_t.mined_height IS NOT NULL THEN 1 ELSE 0 END) AS spent_mined, \
-             MAX(CASE WHEN s.orchard_received_note_id IS NOT NULL THEN 1 ELSE 0 END) AS has_spend \
-             FROM orchard_received_notes orn \
+             MAX(CASE WHEN s.{fk_col} IS NOT NULL THEN 1 ELSE 0 END) AS has_spend \
+             FROM {notes_table} orn \
              JOIN transactions t ON orn.transaction_id = t.id_tx \
-             LEFT JOIN orchard_received_note_spends s ON s.orchard_received_note_id = orn.id \
+             LEFT JOIN {spends_table} s ON s.{fk_col} = orn.id \
              LEFT JOIN transactions spend_t ON spend_t.id_tx = s.transaction_id \
              WHERE orn.account_id = ?1 \
-             GROUP BY orn.id \
-             ORDER BY orn.value DESC",
-        )
-        .map_err(|e| CoreError::Crypto(format!("prepare notes query: {e}")))?;
+             GROUP BY orn.id"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| CoreError::Crypto(format!("prepare notes query: {e}")))?;
 
-    let rows = stmt
-        .query_map([account_id], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, u64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Option<Vec<u8>>>(3)?,
-                row.get::<_, Option<u64>>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-            ))
-        })
-        .map_err(|e| CoreError::Crypto(format!("execute notes query: {e}")))?;
+        let rows = stmt
+            .query_map([account_id], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, Option<u64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|e| CoreError::Crypto(format!("execute notes query: {e}")))?;
 
-    let mut notes = Vec::new();
-    for row in rows {
-        let (mut txid_bytes, value, is_change, memo_bytes, received_height, spent_mined, has_spend) =
-            row.map_err(|e| CoreError::Crypto(format!("note row: {e}")))?;
-        // A note spent in a mined transaction is gone — not part of the balance.
-        if spent_mined == 1 {
-            continue;
+        for row in rows {
+            let (mut txid_bytes, value, is_change, memo_bytes, received_height, spent_mined, has_spend) =
+                row.map_err(|e| CoreError::Crypto(format!("note row: {e}")))?;
+            // A note spent in a mined transaction is gone — not part of the balance.
+            if spent_mined == 1 {
+                continue;
+            }
+            txid_bytes.reverse();
+            let confirmations = match received_height {
+                Some(h) if tip as u64 >= h => tip as u64 - h + 1,
+                _ => 0,
+            };
+            let status = if received_height.is_none() {
+                "pending" // incoming, not yet mined
+            } else if has_spend == 1 {
+                "spending" // a broadcast-but-unmined send is consuming it
+            } else {
+                "spendable"
+            };
+            notes.push(NoteRecord {
+                received_txid: hex::encode(&txid_bytes),
+                value_zatoshis: value,
+                status: status.to_string(),
+                received_height,
+                confirmations,
+                is_change: is_change != 0,
+                memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
+            });
         }
-        txid_bytes.reverse();
-        let confirmations = match received_height {
-            Some(h) if tip as u64 >= h => tip as u64 - h + 1,
-            _ => 0,
-        };
-        let status = if received_height.is_none() {
-            "pending" // incoming, not yet mined
-        } else if has_spend == 1 {
-            "spending" // a broadcast-but-unmined send is consuming it
-        } else {
-            "spendable"
-        };
-        notes.push(NoteRecord {
-            received_txid: hex::encode(&txid_bytes),
-            value_zatoshis: value,
-            status: status.to_string(),
-            received_height,
-            confirmations,
-            is_change: is_change != 0,
-            memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
-        });
     }
+    // Largest notes first, across both pools.
+    notes.sort_by(|a, b| b.value_zatoshis.cmp(&a.value_zatoshis));
     Ok(notes)
 }
 
@@ -1499,30 +1718,40 @@ pub fn wallet_history(
     let mut records: Vec<TxRecord> = Vec::new();
 
     // ── Received ────────────────────────────────────────────────────────────
-    // Orchard notes for our account that are not change (is_change = 0 means
+    // Shielded notes for our account that are not change (is_change = 0 means
     // this note arrived in a transaction that we did NOT also spend from —
-    // i.e., someone else sent us funds). Group by transaction so one tx = one
-    // history entry, sum the note values, and pick the first real memo.
+    // i.e., someone else sent us funds). Post-NU6.3 a receive lands in the
+    // Ironwood pool while legacy receipts are in Orchard, so union both note
+    // tables (identical columns) before grouping — one tx = one history entry,
+    // even if a tx somehow deposited into both pools. Sum the note values, pick
+    // the first real memo.
     {
+        // A derived table unioning both pools' non-dummy columns. Table names are
+        // compile-time constants, so this static SQL carries no injection risk.
+        const RECEIVED_NOTES_UNION: &str = "( \
+            SELECT transaction_id, account_id, value, is_change, memo FROM orchard_received_notes \
+            UNION ALL \
+            SELECT transaction_id, account_id, value, is_change, memo FROM ironwood_received_notes )";
+        let sql = format!(
+            "SELECT t.txid, t.mined_height, b.time, SUM(rn.value), \
+             ( SELECT rn2.memo \
+               FROM {RECEIVED_NOTES_UNION} rn2 \
+               WHERE rn2.transaction_id = t.id_tx \
+                 AND rn2.account_id = ?1 \
+                 AND rn2.is_change = 0 \
+                 AND rn2.memo IS NOT NULL \
+               LIMIT 1 ), \
+             ( SELECT vt.fee_paid FROM v_transactions vt WHERE vt.txid = t.txid LIMIT 1 ) \
+             FROM {RECEIVED_NOTES_UNION} rn \
+             JOIN transactions t ON rn.transaction_id = t.id_tx \
+             LEFT JOIN blocks b ON b.height = t.mined_height \
+             WHERE rn.account_id = ?1 AND rn.is_change = 0 \
+             GROUP BY t.id_tx \
+             HAVING SUM(rn.value) > 0 \
+             ORDER BY t.mined_height DESC NULLS LAST"
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT t.txid, t.mined_height, b.time, SUM(orn.value), \
-                 ( SELECT orn2.memo \
-                   FROM orchard_received_notes orn2 \
-                   WHERE orn2.transaction_id = t.id_tx \
-                     AND orn2.account_id = ?1 \
-                     AND orn2.is_change = 0 \
-                     AND orn2.memo IS NOT NULL \
-                   LIMIT 1 ), \
-                 ( SELECT vt.fee_paid FROM v_transactions vt WHERE vt.txid = t.txid LIMIT 1 ) \
-                 FROM orchard_received_notes orn \
-                 JOIN transactions t ON orn.transaction_id = t.id_tx \
-                 LEFT JOIN blocks b ON b.height = t.mined_height \
-                 WHERE orn.account_id = ?1 AND orn.is_change = 0 \
-                 GROUP BY t.id_tx \
-                 HAVING SUM(orn.value) > 0 \
-                 ORDER BY t.mined_height DESC NULLS LAST",
-            )
+            .prepare(&sql)
             .map_err(|e| CoreError::Crypto(format!("prepare receive query: {e}")))?;
 
         let rows = stmt
@@ -1743,12 +1972,23 @@ mod tests {
     }
 
     #[test]
-    fn default_birthday_is_testnet_only() {
-        assert_eq!(
-            default_birthday_height(WalletNetwork::Test),
-            Some(DEFAULT_TESTNET_BIRTHDAY)
-        );
-        // A fixed height would be in mainnet's future; it starts at the tip.
+    fn new_wallets_start_at_the_tip_on_both_networks() {
+        // A brand-new group holds no pre-creation funds, so with no requested or
+        // recorded birthday it starts at the chain tip (None -> tip) rather than
+        // scanning hundreds of thousands of blocks of empty history. The testnet
+        // deep-rescan floor is opt-in via `birthday_height`, never a default.
+        assert_eq!(default_birthday_height(WalletNetwork::Test), None);
         assert_eq!(default_birthday_height(WalletNetwork::Main), None);
+        assert_eq!(resolve_scan_from(None, TEST_NU5, 4_200_000), 4_200_000);
+    }
+
+    #[test]
+    fn explicit_deep_rescan_floor_is_honoured_when_requested() {
+        // Passing DEFAULT_TESTNET_BIRTHDAY explicitly (an opt-in deep rescan)
+        // still scans from that floor when it sits inside [NU5, tip].
+        assert_eq!(
+            resolve_scan_from(Some(DEFAULT_TESTNET_BIRTHDAY), TEST_NU5, 4_200_000),
+            DEFAULT_TESTNET_BIRTHDAY
+        );
     }
 }

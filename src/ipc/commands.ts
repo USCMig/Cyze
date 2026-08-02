@@ -128,12 +128,15 @@ export interface PoolBalance {
 export interface WalletStatus {
   initialized: boolean;
   address: string | null;
-  /** Aggregate totals (kept for back-compat; equal to the Orchard pool). */
+  /** Aggregate totals across *all* pools — the sum of the sealed `orchard` pool
+   *  and the new `ironwood` pool, not the Orchard pool alone. */
   total_zatoshis: number;
   spendable_zatoshis: number;
-  /** Per-pool breakdown. With an Orchard-only group UFVK, sapling & transparent
-   *  are 0 — the threshold group cannot hold or spend those pools. */
+  /** Per-pool breakdown. `orchard` is the sealed legacy pool (spendable but can
+   *  never receive again); `ironwood` is where new shielded value lands
+   *  post-NU6.3. sapling & transparent are 0 for an Orchard/Ironwood group. */
   orchard: PoolBalance;
+  ironwood: PoolBalance;
   sapling: PoolBalance;
   transparent: PoolBalance;
   synced_height: number;
@@ -205,6 +208,9 @@ export const walletNewReceiveAddress = (groupId: string) =>
   invoke<ReceiveAddress>("wallet_new_receive_address", { groupId });
 
 export interface SpendToSign {
+  /** Which pool's bundle holds this spend. Post-NU6.3 one transaction can carry
+   *  both (a turnstile send spends Orchard notes but delivers via Ironwood). */
+  pool: "orchard" | "ironwood";
   index: number;
   alpha_hex: string;
 }

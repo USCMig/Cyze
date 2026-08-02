@@ -2,8 +2,37 @@
 
 ## Planned for a future iteration
 
-Larger pieces from external user testing. Both are additive — nothing in the
+Larger pieces from external user testing. All are additive — nothing in the
 current build depends on them.
+
+- [ ] **ZcashNames (ZNS) integration** — human-readable names for FROST
+      groups/wallets (e.g. `treasury.zcash` → the group's shielded receive
+      address). Repo: https://github.com/zcashme/zcashnames
+
+      How ZNS works: names are claimed/updated **on-chain via ZIP-321 payment
+      URIs + signed memos**, and a separate **ZNS Indexer / Directory** service
+      (SQL-backed, with a web app) indexes them for resolution — so a wallet
+      resolves a name by querying that directory, not by scanning the chain
+      itself. Two directions, very different effort:
+
+      - **Resolve (read) — low effort, high value.** Accept a `name.zcash` in the
+        Send recipient field and in contact entries; resolve it to an address via
+        the ZNS directory before building the tx. Pairs naturally with the
+        avatars/account-profile identity work. Gated on the directory exposing a
+        public resolver API (likely HTTP; no confirmed Rust crate yet — verify).
+        **Trust caveat:** the resolver is external infrastructure, so ALWAYS show
+        the resolved shielded address for confirmation before a send — a wrong or
+        compromised resolver could otherwise redirect funds. Never send to a name
+        without surfacing what it resolved to.
+
+      - **Register/claim (write) — higher effort.** Let a group publish a name for
+        its receive address. This is a threshold-authorised on-chain action, so it
+        fits Cyze's existing FROST send + memo path — but confirm the exact
+        claim/update memo + ZIP-321 format against the ZNS spec first, and decide
+        who in the group is allowed to initiate a (re)claim.
+
+      Do the resolver first; it's the piece that makes long unified addresses
+      usable and is independent of the write path.
 
 - [ ] **User avatars** — let a user pick an avatar, shown next to their name
       everywhere they are referenced (contacts, group participant lists, the
@@ -28,6 +57,17 @@ current build depends on them.
 
 - [ ] **Tailscale `serve` as a fourth hosting option** — alongside Direct URL,
       Cloudflare Tunnel, and NGINX in Session Configuration.
+
+      **Feasibility/impact (2026-08-01):** effort Med, impact Med–High, not gated
+      by the testnet-send validation. Slots in as a fourth `coordinator_exposure`
+      variant reusing the existing exposure plumbing + a status probe; no crypto
+      change (frostd's Noise layer still authenticates end-to-end). Structural
+      difference from cloudflared: **detect-and-drive a system `tailscale` CLI,
+      do NOT bundle** — it needs the `tailscaled` daemon (privileged) and a
+      logged-in tailnet, so the sidecar-spawn pattern doesn't apply. Read the
+      stable MagicDNS hostname back via `tailscale status --json` as the saved
+      server URL. Verdict: **do** — best fix for the disposable-quick-tunnel URL
+      pain (stable, savable, auto-TLS, tailnet-scoped).
 
       Why it is attractive: `tailscale serve https / http://127.0.0.1:<port>`
       exposes the loopback frostd over the tailnet with a **stable** MagicDNS

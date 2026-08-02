@@ -220,12 +220,13 @@ function validateRecipient(
   return null;
 }
 
-/** Receive / shield-into-group card: shows the group's *rotating* Orchard
- *  unified address. Each address is a fresh diversifier of the same viewing key
+/** Receive / shield-into-group card: shows the group's *rotating* unified
+ *  address. Each address is a fresh diversifier of the same viewing key
  *  (#3), so incoming payments aren't linkable by a reused address. The address
  *  auto-advances once the group has received new notes; the user can also force
  *  a fresh one. "Shielding" into the group means sending to this address from a
- *  personal wallet — the group then holds the funds as spendable Orchard. */
+ *  personal wallet — post-NU6.3 the group then holds the funds as spendable
+ *  Ironwood. */
 function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: string | null }) {
   const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
@@ -245,9 +246,9 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
       <h3 style={{ marginTop: 0 }}>Receive / Shield into group</h3>
       <p className="dim" style={{ marginTop: 0 }}>
         Send Zcash to this unified address to fund the group. Funds arrive in the
-        group's shielded <strong>Orchard</strong> pool and become spendable by the
-        threshold. To <strong>shield</strong> transparent funds, send them here
-        from a personal wallet — the receive itself is the shielding step.
+        group's shielded <strong>Ironwood</strong> pool and become spendable by
+        the threshold. To <strong>shield</strong> transparent funds, send them
+        here from a personal wallet — the receive itself is the shielding step.
       </p>
       <label>
         Group Orchard unified address
@@ -330,8 +331,8 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
 
 type WalletTab = "receive" | "send" | "notes";
 
-/** "Review Notes" tab: lists the unspent Orchard notes that make up the
- *  balance. Because each note is one spend authorization (one FROST round per
+/** "Review Notes" tab: lists the unspent shielded notes (Orchard + Ironwood)
+ *  that make up the balance. Because each note is one spend authorization (one FROST round per
  *  signer), this also surfaces the round-cost of a full-balance send and offers
  *  a one-click self-send consolidation to merge fragmented notes into one. */
 function ReviewNotesTab({
@@ -531,6 +532,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   const [memo, setMemo] = useState("");
   const [draft, setDraft] = useState<DraftTransaction | null>(null);
   const [isConsolidation, setIsConsolidation] = useState(false);
+  // A migration (Orchard → Ironwood) is a self-send like a consolidation, so it
+  // reuses the isConsolidation plumbing, but is labelled distinctly for review.
+  const [isMigration, setIsMigration] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   // Shielded send (Orchard → Orchard) vs. unshield (Orchard → transparent).
   // Both reuse the same prepare/sign machinery; the mode only drives the
@@ -548,8 +552,14 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // funds are the norm right after receiving (ZIP-317 wants 10 confirmations on
   // received notes, 3 on our own change), so offering a Prepare button that can
   // only fail with "insufficient funds" is a trap.
-  const spendableBalance = status.data?.orchard.spendable_zatoshis ?? 0;
-  const pendingBalance = status.data?.orchard.pending_zatoshis ?? 0;
+  // Spend across every pool the group holds. Post-NU6.3 its funds are split
+  // between the sealed Orchard pool and the new Ironwood pool; the backend
+  // selects inputs from either, so gating on Orchard alone would wrongly hide
+  // migrated Ironwood funds as unspendable.
+  const spendableBalance = status.data?.spendable_zatoshis ?? 0;
+  const pendingBalance =
+    (status.data?.orchard.pending_zatoshis ?? 0) +
+    (status.data?.ironwood.pending_zatoshis ?? 0);
   const noSpendableBalance = spendableBalance <= 0;
   const exceedsBalance =
     Number(amountZec) > 0 && Math.round(Number(amountZec) * 1e8) > spendableBalance;
@@ -565,6 +575,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     onSuccess: (d) => {
       setErr(null);
       setIsConsolidation(false);
+      setIsMigration(false);
       setDraft(d);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -590,6 +601,37 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       setAmountZec(String(d.amount_zatoshis / 1e8));
       setDraft(d);
       setIsConsolidation(true);
+      setIsMigration(false);
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  // Migrate the sealed Orchard pool into Ironwood: a self-send sized to the
+  // Orchard spendable balance. Post-NU6.3 the Orchard pool can never receive
+  // again (Ironwood sealed it), so any Orchard funds should be swept across the
+  // turnstile into Ironwood — a self-send spends the Orchard notes and, because
+  // every post-NU6.3 shielded output lands in Ironwood, delivers them there. It
+  // reuses the self-send review UI (isConsolidation), so the user still reviews
+  // and runs the normal signing ceremony.
+  const migrate = useMutation({
+    mutationFn: () => {
+      const addr = status.data?.address;
+      const orchard = status.data?.orchard.spendable_zatoshis ?? 0;
+      if (!addr) throw new Error("wallet address not available — try syncing first");
+      if (orchard <= CONSOLIDATE_FEE_BUFFER)
+        throw new Error(
+          `Orchard balance too low to migrate (need > 0.001 ${unit(isMainnet)} above fees)`
+        );
+      return walletPrepareSend(group.id, addr, orchard - CONSOLIDATE_FEE_BUFFER);
+    },
+    onSuccess: (d) => {
+      setErr(null);
+      setRecipient(status.data?.address ?? "");
+      setAmountZec(String(d.amount_zatoshis / 1e8));
+      setDraft(d);
+      setIsConsolidation(true);
+      setIsMigration(true);
+      setWalletTab("send");
     },
     onError: (e) => setErr((e as unknown as AppError).message),
   });
@@ -748,7 +790,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-      <h3 style={{ marginTop: 0 }}>Wallet (Zcash Orchard)</h3>
+      <h3 style={{ marginTop: 0 }}>Wallet (Zcash · Orchard + Ironwood)</h3>
       {!s || (!s.initialized && (init.isPending || !err)) ? (
         <p className="dim">Setting up the group's view-only wallet…</p>
       ) : !s.initialized ? (
@@ -763,24 +805,61 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         </>
       ) : (
         <>
-          {/* Balance summary — always visible at top */}
+          {/* Balance summary — always visible at top. Totals span every pool the
+              group holds; the per-pool line below shows the Orchard/Ironwood
+              split, since post-NU6.3 funds live in both. */}
           <div className="wallet-summary">
             <div className="row" style={{ gap: 28 }}>
               <div>
-                <label>Spendable (Orchard)</label>
+                <label>Spendable</label>
                 <div style={{ fontSize: 18, color: "var(--accent)" }}>
-                  {zec(s.orchard.spendable_zatoshis)} {unit(isMainnet)}
+                  {zec(s.spendable_zatoshis)} {unit(isMainnet)}
                 </div>
               </div>
               <div>
                 <label>Pending</label>
-                <div style={{ fontSize: 18 }}>{zec(s.orchard.pending_zatoshis)} {unit(isMainnet)}</div>
+                <div style={{ fontSize: 18 }}>
+                  {zec(s.orchard.pending_zatoshis + s.ironwood.pending_zatoshis)} {unit(isMainnet)}
+                </div>
               </div>
               <div>
                 <label>Total</label>
-                <div style={{ fontSize: 18 }}>{zec(s.orchard.total_zatoshis)} {unit(isMainnet)}</div>
+                <div style={{ fontSize: 18 }}>{zec(s.total_zatoshis)} {unit(isMainnet)}</div>
               </div>
             </div>
+            {/* Per-pool breakdown: Orchard is the sealed legacy pool, Ironwood is
+                where all new value lands post-NU6.3. */}
+            <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>
+              Orchard (sealed): {zec(s.orchard.total_zatoshis)} {unit(isMainnet)}
+              {"  ·  "}
+              Ironwood: {zec(s.ironwood.total_zatoshis)} {unit(isMainnet)}
+            </div>
+            {/* Prompt to sweep the sealed Orchard pool into Ironwood. Shown only
+                while a meaningful, spendable Orchard balance remains (above the
+                fee buffer) and no send is already in flight. */}
+            {s.orchard.spendable_zatoshis > CONSOLIDATE_FEE_BUFFER &&
+              !(activeSend && !activeSend.done) && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: "10px 12px",
+                    border: "1px solid var(--accent)",
+                    borderRadius: 6,
+                    fontSize: 13,
+                  }}
+                >
+                  <strong>Migrate Orchard → Ironwood.</strong> This group holds{" "}
+                  {zec(s.orchard.spendable_zatoshis)} {unit(isMainnet)} in the legacy
+                  Orchard pool, which can no longer receive funds after the Ironwood
+                  (NU6.3) upgrade. Sweep it into Ironwood so all funds stay in the
+                  active pool.
+                  <div style={{ marginTop: 8 }}>
+                    <button onClick={() => migrate.mutate()} disabled={migrate.isPending}>
+                      {migrate.isPending ? "Preparing…" : "Migrate to Ironwood"}
+                    </button>
+                  </div>
+                </div>
+              )}
             <div className="sync-box">
               <div className="dim" style={{ fontSize: 12 }}>
                 Block {syncedHeight.toLocaleString()}
@@ -1068,20 +1147,33 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       style={{ marginTop: 12, background: "var(--bg-elevated)" }}
                     >
                       <h3 style={{ marginTop: 0 }}>
-                        {isConsolidation
-                          ? "Consolidation transaction"
-                          : draft.is_unshield
-                            ? "Unshield transaction"
-                            : "Prepared transaction"}
+                        {isMigration
+                          ? "Migrate Orchard → Ironwood"
+                          : isConsolidation
+                            ? "Consolidation transaction"
+                            : draft.is_unshield
+                              ? "Unshield transaction"
+                              : "Prepared transaction"}
                       </h3>
                       {isConsolidation && (
                         <div className="callout" style={{ marginBottom: 12 }}>
-                          <span>
-                            Self-transfer — sends funds back to this group's own address, merging{" "}
-                            <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong> into
-                            one. After signing, future sends will need only a single signing round.
-                            A small network fee applies.
-                          </span>
+                          {isMigration ? (
+                            <span>
+                              Sweeps the group's sealed <strong>Orchard</strong> balance back to
+                              its own address; because every post-NU6.3 shielded output lands in
+                              the <strong>Ironwood</strong> pool, this moves the funds across the
+                              turnstile into Ironwood.{" "}
+                              <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong>{" "}
+                              will be signed (one round each). A small network fee applies.
+                            </span>
+                          ) : (
+                            <span>
+                              Self-transfer — sends funds back to this group's own address, merging{" "}
+                              <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong> into
+                              one. After signing, future sends will need only a single signing round.
+                              A small network fee applies.
+                            </span>
+                          )}
                         </div>
                       )}
                       {!isConsolidation && draft.is_unshield && (
