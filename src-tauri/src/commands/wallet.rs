@@ -369,6 +369,80 @@ pub async fn wallet_prepare_send(
     .await?)
 }
 
+/// One answer in a cast vote, as sent from the UI. Maps to
+/// `frost_app_core::voting::VoteEntry`.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VoteInput {
+    /// Abstain on this question.
+    Abstain,
+    /// Select the fixed response at `index`.
+    Choice { index: usize },
+    /// Provide a free-form answer (only where the question allows it).
+    FreeForm { text: String },
+}
+
+impl From<VoteInput> for frost_app_core::voting::VoteEntry {
+    fn from(v: VoteInput) -> Self {
+        use frost_app_core::voting::VoteEntry;
+        match v {
+            VoteInput::Abstain => VoteEntry::Abstain,
+            VoteInput::Choice { index } => VoteEntry::Choice(index),
+            VoteInput::FreeForm { text } => VoteEntry::FreeForm(text),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct WalletPrepareVoteArgs {
+    pub group_id: String,
+    /// The poll's vote-reception Z-address (the memo's destination).
+    pub reception_address: String,
+    /// The published ballot definition JSON, verbatim — hashed as-is for the
+    /// memo's `poll-hash`, so it must be byte-identical to what the poll posted.
+    pub ballot_json: String,
+    /// One answer per ballot question.
+    pub votes: Vec<VoteInput>,
+    /// Dust value delivered with the vote memo. Vote weight comes from the poll's
+    /// balance snapshot, not this amount, so it is intentionally minimal.
+    pub amount_zatoshis: u64,
+}
+
+/// Build (but do not sign or broadcast) a coinholder-poll vote: a shielded
+/// payment to the poll's reception address carrying the encoded Vote Cast Memo.
+/// Returns the same draft a normal send does, so `wallet_send` casts it unchanged
+/// (pass the returned `memo` and the reception address through). Moves no funds
+/// until signed and broadcast.
+#[tauri::command]
+pub async fn wallet_prepare_vote(
+    state: State<'_, AppState>,
+    args: WalletPrepareVoteArgs,
+) -> AppResult<wallet::DraftTransaction> {
+    use frost_app_core::voting::{BallotDefinition, VoteEntry};
+    let (network, url, _ufvk) = group_wallet_ctx(&state, &args.group_id).await?;
+    let db_key = state.wallet_db_key(&args.group_id).await?;
+
+    // Parse the ballot to derive the per-question validation shapes; the raw
+    // bytes (not this parse) are what the poll-hash is taken from.
+    let ballot = BallotDefinition::parse(&args.ballot_json)?;
+    let shapes = ballot.question_shapes();
+    let votes: Vec<VoteEntry> = args.votes.into_iter().map(Into::into).collect();
+
+    Ok(wallet::prepare_vote(
+        &state.data_dir,
+        &args.group_id,
+        network,
+        &args.reception_address,
+        args.ballot_json.as_bytes(),
+        &shapes,
+        &votes,
+        args.amount_zatoshis,
+        &url,
+        db_key.as_ref(),
+    )
+    .await?)
+}
+
 #[derive(Deserialize)]
 pub struct WalletSendArgs {
     pub group_id: String,

@@ -242,6 +242,33 @@ export const walletPrepareSend = (
     memo: memo ?? null,
   });
 
+// ── Coinholder-poll voting ────────────────────────────────────────────────
+/** One question in a manually-entered ballot definition. */
+export interface BallotQuestion {
+  prompt: string;
+  /** Selectable fixed responses, in order; a choice vote indexes this. */
+  fixed_responses: string[];
+  /** Prompt for a free-form answer; null/absent means free-form isn't allowed. */
+  other_prompt?: string | null;
+}
+/** One cast answer, mapping to the backend VoteInput. */
+export type VoteInput =
+  | { kind: "abstain" }
+  | { kind: "choice"; index: number }
+  | { kind: "free_form"; text: string };
+
+/** Build (no sign/broadcast) a poll vote: a shielded payment to the poll's
+ *  reception address carrying the encoded Vote Cast Memo. Returns a normal
+ *  DraftTransaction whose `memo` is the encoded vote — pass that memo and the
+ *  reception address to `walletSend` to cast it. */
+export const walletPrepareVote = (args: {
+  group_id: string;
+  reception_address: string;
+  ballot_json: string;
+  votes: VoteInput[];
+  amount_zatoshis: number;
+}) => invoke<DraftTransaction>("wallet_prepare_vote", { args });
+
 /** Build, FROST-sign, and (next) broadcast a transfer. Returns the ceremony id;
  *  progress arrives via send:progress / send:complete / send:failed events. */
 export const walletSend = (args: {
