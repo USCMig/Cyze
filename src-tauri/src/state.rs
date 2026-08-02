@@ -70,6 +70,13 @@ pub struct Settings {
     /// cost of memory. Clamped by the core to a sane range.
     #[serde(default)]
     pub sync_batch_size: Option<u32>,
+    /// Opt into the experimental pipelined sync driver (downloads the next batch
+    /// while scanning the current one). `None`/`false` uses the stock
+    /// `zcash_client_backend::sync::run`. Off by default until the pipelined
+    /// driver is validated against the stock driver on testnet; see
+    /// `docs/SYNC_OPTIMIZATION.md`.
+    #[serde(default)]
+    pub experimental_pipelined_sync: Option<bool>,
     /// Active session profile: "coordinator" or "participant". Toggled by the
     /// sidebar profile switch; drives which saved configuration is in use.
     #[serde(default)]

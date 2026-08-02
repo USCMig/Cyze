@@ -940,22 +940,37 @@ pub const DEFAULT_SYNC_BATCH_SIZE: u32 = 5_000;
 pub const MIN_SYNC_BATCH_SIZE: u32 = 500;
 pub const MAX_SYNC_BATCH_SIZE: u32 = 25_000;
 
+/// Options controlling how a sync runs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SyncOptions {
+    /// Blocks to download and scan per batch; `None` uses
+    /// [`DEFAULT_SYNC_BATCH_SIZE`], clamped into `[MIN, MAX]_SYNC_BATCH_SIZE`.
+    pub batch_size: Option<u32>,
+    /// Use the experimental pipelined driver (download-ahead + adaptive batch)
+    /// instead of the stock `zcash_client_backend::sync::run`. Off by default
+    /// until validated against the stock driver on testnet
+    /// (see `docs/SYNC_OPTIMIZATION.md`). Both produce the same wallet state; the
+    /// pipelined one only overlaps network download with CPU scanning.
+    pub pipelined: bool,
+}
+
 /// Sync the group's wallet: download and trial-decrypt compact blocks from
 /// lightwalletd into the local db. Long-running; touches the network.
 ///
-/// `batch_size` is how many blocks to download and scan per batch; `None` uses
-/// [`DEFAULT_SYNC_BATCH_SIZE`]. Any value is clamped into
-/// `[MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE]`.
+/// The default path drives the stock `zcash_client_backend::sync::run`. When
+/// `opts.pipelined` is set, the custom [`run_pipelined`] driver is used instead
+/// (same result, overlapped I/O and CPU).
 pub async fn sync_group(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
     lightwalletd_url: &str,
     db_key: &[u8],
-    batch_size: Option<u32>,
+    opts: SyncOptions,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), CoreError> {
-    let batch_size = batch_size
+    let batch_size = opts
+        .batch_size
         .unwrap_or(DEFAULT_SYNC_BATCH_SIZE)
         .clamp(MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE);
     let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
@@ -975,11 +990,22 @@ pub async fn sync_group(
 
     let mut client = connect(lightwalletd_url).await?;
     let params = network.params();
-    // `sync::run` scans in transactional batches, so dropping its future between
+    // Both drivers scan in transactional batches, so dropping the future between
     // batches leaves the db consistent (just short of the tip). That makes it
     // safe to race against a cancellation token: "Sync Now" trips the token to
     // abandon a stalled run, and a fresh sync resumes from where this one left
     // off. Without this, a stuck stream would keep the sync pending forever.
+    if opts.pipelined {
+        // The pipelined driver (prefetch download while scanning) is being built
+        // on this branch — see docs/SYNC_OPTIMIZATION.md. Until it lands and is
+        // validated against the stock driver on testnet, this flag falls back to
+        // the stock driver so it is inert-but-safe: no half-implemented sync loop
+        // ever touches fund detection.
+        tracing::info!(
+            "experimental_pipelined_sync is set, but the pipelined driver is not yet \
+             wired; using the stock driver (see docs/SYNC_OPTIMIZATION.md)"
+        );
+    }
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(CoreError::Cancelled),
