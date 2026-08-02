@@ -269,6 +269,21 @@ export const walletPrepareVote = (args: {
   amount_zatoshis: number;
 }) => invoke<DraftTransaction>("wallet_prepare_vote", { args });
 
+// ── ZcashNames (ZNS) resolution ───────────────────────────────────────────
+/** A resolved ZNS registration. `address` is the unified address to pay. */
+export interface ZnsResolution {
+  name: string;
+  address: string;
+  last_action?: string | null;
+  listing?: { price?: number | null; pay_taddr?: string | null } | null;
+}
+/** Resolve a ZNS name (e.g. "alice" or "alice.zcash") to a unified address via
+ *  the public indexer. Returns null if unregistered. The caller MUST show the
+ *  resolved address for confirmation before sending — the resolver is external
+ *  infrastructure, not an authorization. */
+export const resolveZnsName = (name: string) =>
+  invoke<ZnsResolution | null>("resolve_zns_name", { name });
+
 /** Build, FROST-sign, and (next) broadcast a transfer. Returns the ceremony id;
  *  progress arrives via send:progress / send:complete / send:failed events. */
 export const walletSend = (args: {

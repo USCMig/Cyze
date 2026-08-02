@@ -16,6 +16,7 @@ pub mod signing;
 pub mod tls;
 pub mod transport;
 pub mod voting;
+pub mod zns;
 #[cfg(feature = "zcash")]
 pub mod zcash;
 #[cfg(feature = "wallet")]

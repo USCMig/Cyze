@@ -19,7 +19,9 @@ import {
   walletPrepareSend,
   walletPrepareVote,
   walletSend,
+  resolveZnsName,
   type VoteInput,
+  type ZnsResolution,
   walletHistory,
   walletNotes,
   walletReceiveAddress,
@@ -750,7 +752,46 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // recipient validation, placeholder, and labeling — the backend decides the
   // authoritative is_unshield flag from the decoded address.
   const [sendMode, setSendMode] = useState<SendMode>("shielded");
-  const recipientErr = validateRecipient(recipient, isMainnet, sendMode);
+
+  // ZcashNames: a recipient like "alice.zcash" is resolved to a unified address
+  // via the public indexer. The name is only accepted once resolved, the send
+  // uses the resolved address, and that address is shown for the user to confirm
+  // (the resolver is external infrastructure, not an authorization).
+  const [znsResult, setZnsResult] = useState<ZnsResolution | null>(null);
+  const recipientLooksLikeName = /\.zcash\s*$/i.test(recipient);
+  const resolveZns = useMutation({
+    mutationFn: () => resolveZnsName(recipient.trim()),
+    onSuccess: (r) => {
+      if (!r) {
+        setZnsResult(null);
+        setErr(`No ZcashNames registration found for "${recipient.trim()}".`);
+      } else {
+        setZnsResult(r);
+        setErr(null);
+      }
+    },
+    onError: (e) => {
+      setZnsResult(null);
+      setErr((e as unknown as AppError).message);
+    },
+  });
+  // Drop a stale resolution once the field no longer matches the resolved name.
+  useEffect(() => {
+    if (
+      znsResult &&
+      recipient.trim().replace(/\.zcash$/i, "").toLowerCase() !== znsResult.name.toLowerCase()
+    ) {
+      setZnsResult(null);
+    }
+  }, [recipient, znsResult]);
+
+  // The address actually sent to: a confirmed ZNS resolution, else the typed
+  // value. A `.zcash` name that hasn't resolved yet blocks Prepare.
+  const effectiveRecipient = znsResult?.address ?? recipient.trim();
+  const mustResolveName = recipientLooksLikeName && !znsResult;
+  const recipientErr = mustResolveName
+    ? null
+    : validateRecipient(effectiveRecipient, isMainnet, sendMode);
   // Balances are read from the local wallet database, which is empty (or stale)
   // until the first sync finishes. Building a transaction before then selects
   // from notes the wallet hasn't scanned yet and fails with a spurious
@@ -777,7 +818,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     mutationFn: () =>
       walletPrepareSend(
         group.id,
-        recipient.trim(),
+        effectiveRecipient,
         Math.round(Number(amountZec) * 1e8),
         sendMode === "shielded" && memo.trim() ? memo.trim() : undefined,
       ),
@@ -1321,6 +1362,44 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       {recipientErr}
                     </div>
                   )}
+                  {/* ZcashNames resolution: a `name.zcash` recipient is looked up
+                      to a unified address, shown here for the user to confirm. */}
+                  {recipientLooksLikeName && (
+                    <div style={{ marginTop: 2, marginBottom: 6, fontSize: 12 }}>
+                      {!znsResult ? (
+                        <button
+                          className="secondary"
+                          style={{ fontSize: 12, padding: "4px 10px" }}
+                          onClick={() => resolveZns.mutate()}
+                          disabled={resolveZns.isPending}
+                        >
+                          {resolveZns.isPending ? "Resolving…" : "Look up name →"}
+                        </button>
+                      ) : (
+                        <div
+                          style={{
+                            padding: "8px 10px",
+                            border: "1px solid var(--accent)",
+                            borderRadius: 6,
+                          }}
+                        >
+                          <div className="dim">
+                            <strong>{znsResult.name}.zcash</strong> resolves to — confirm this
+                            is correct before sending:
+                          </div>
+                          <div className="mono-cell" style={{ wordBreak: "break-all", marginTop: 4 }}>
+                            {znsResult.address}
+                          </div>
+                          {znsResult.listing && (
+                            <div className="error" style={{ marginTop: 4 }}>
+                              ⚠ This name is currently listed for sale — its owner (and so its
+                              address) may change. Double-check before sending.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <label>Amount ({unit(isMainnet)})</label>
                   <input
                     type="text"
@@ -1355,6 +1434,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       exceedsBalance ||
                       !recipient.trim() ||
                       !(Number(amountZec) > 0) ||
+                      mustResolveName ||
                       !!recipientErr
                     }
                   >

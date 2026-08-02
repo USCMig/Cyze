@@ -11,12 +11,13 @@ authorize any spend.
 
 > ### ⚠️ Beta software — unaudited — use at your own risk
 >
-> Cyze is in **beta** and has **not been security-audited**. It depends on
-> pre-release Zcash libraries (Orchard/PCZT for the Ironwood network upgrade).
-> Do not use it to hold funds you cannot afford to lose. You are solely
-> responsible for backing up your key shares and recovery code, and for any
-> transaction you broadcast. **No warranty is provided.** Start on testnet, and
-> if you use mainnet, use small amounts.
+> Cyze is in **beta** and has **not been security-audited**. It targets the
+> **Ironwood (NU6.3)** network upgrade and depends on some release-candidate
+> Zcash libraries (`zcash_client_backend`/`zcash_client_sqlite`). Do not use it
+> to hold funds you cannot afford to lose. You are solely responsible for backing
+> up your key shares and recovery code, and for any transaction you broadcast.
+> **No warranty is provided.** Start on testnet, and if you use mainnet, use
+> small amounts.
 
 ---
 
@@ -28,10 +29,23 @@ authorize any spend.
 - **Threshold signing** — coordinate a signing session (the coordinator can also
   be a signer), or participate through an inbox with an explicit review/approve
   step before your signature share is produced.
-- **Zcash wallet** — for RedPallas (Orchard) groups: sync from a lightwalletd
-  server, view shielded balances, receive to a group address (with QR), and
-  **send** — each spend is authorized by a live FROST signing ceremony among the
-  group. Includes on-chain and local transaction/message history.
+- **Zcash wallet (Ironwood-ready)** — for RedPallas (Orchard) groups: sync from a
+  lightwalletd server, view **per-pool shielded balances** — the sealed legacy
+  **Orchard** pool and the post-NU6.3 **Ironwood** pool — receive to a rotating
+  group address (with QR), and **send** — each spend is authorized by a live
+  FROST signing ceremony among the group. After the **Ironwood (NU6.3)** upgrade,
+  sends build **V6 transactions** with pool-aware Orchard/Ironwood spend
+  authorization, and a one-click **Orchard → Ironwood migration** sweeps the
+  sealed legacy pool across the turnstile. Includes on-chain and local
+  transaction/message history.
+- **Coinholder voting** — cast a Zcash coinholder-poll vote from a group: paste
+  the poll's published ballot, answer, and the vote is delivered as a shielded
+  memo (Vote Cast Memo v1) to the poll's reception address through the same FROST
+  signing path. Vote weight is set by the poll's balance snapshot, not the wallet.
+- **ZcashNames (ZNS)** — send to a human-readable `name.zcash` in the recipient
+  field: it is resolved to a unified address via the public ZNS indexer and shown
+  for you to confirm before signing (the resolver is external, never an
+  authorization).
 - **Server hosting** — run the `frostd` coordination server embedded
   (auto-generated, pinned self-signed TLS), expose it to off-LAN peers through a
   built-in **Cloudflare tunnel** (public HTTPS URL, no port-forwarding), or point
@@ -134,8 +148,9 @@ drives the full Tauri command layer (`cargo test -p frost-app --test smoke`).
 ## Layout
 
 - `src-tauri/core` — `frost-app-core`: keystore, frostd transport (pinned-cert
-  TLS), DKG/signing ceremony engines, and the Zcash wallet/PCZT send path. No
-  Tauri dependency.
+  TLS), DKG/signing ceremony engines, the Zcash wallet/PCZT send path (Orchard +
+  Ironwood), coinholder-poll voting (`voting.rs`), and ZcashNames resolution
+  (`zns.rs`). No Tauri dependency.
 - `src-tauri/src` — Tauri adapter: commands, event forwarding, sidecar lifecycle.
 - `src/` — React + TypeScript frontend.
 - `scripts/PINNED_REV` — the frost-tools revision used for both the
