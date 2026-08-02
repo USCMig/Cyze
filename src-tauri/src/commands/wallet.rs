@@ -443,6 +443,26 @@ pub async fn wallet_prepare_vote(
     .await?)
 }
 
+/// Resolve a ZcashNames (ZNS) name (e.g. `alice` or `alice.zcash`) to a unified
+/// address via the public ZNS indexer, using the wallet's configured network.
+/// Returns the registration (whose `address` is the send recipient) or `None`
+/// when the name is unregistered.
+///
+/// The resolver is external infrastructure, so the UI MUST display the resolved
+/// address for the user to confirm before sending — a name is a convenience, not
+/// an authorization.
+#[tauri::command]
+pub async fn resolve_zns_name(
+    state: State<'_, AppState>,
+    name: String,
+) -> AppResult<Option<frost_app_core::zns::ResolveResult>> {
+    let mainnet = matches!(
+        network_from_str(&resolve_config(&state).network),
+        WalletNetwork::Main
+    );
+    Ok(frost_app_core::zns::resolve_name(&name, mainnet).await?)
+}
+
 #[derive(Deserialize)]
 pub struct WalletSendArgs {
     pub group_id: String,
