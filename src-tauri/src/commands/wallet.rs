@@ -307,7 +307,7 @@ async fn resolve_receive_address(
     let (network, _url, _ufvk) = group_wallet_ctx(state, group_id).await?;
     let db_key = state.wallet_db_key(group_id).await?;
     let current_notes =
-        wallet::count_orchard_received_notes(&state.data_dir, group_id, network, db_key.as_ref())?;
+        wallet::count_received_notes(&state.data_dir, group_id, network, db_key.as_ref())?;
 
     let mut settings = state.load_settings();
     let entry = settings.receive_state.entry(group_id.to_string()).or_default();

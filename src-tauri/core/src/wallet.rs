@@ -1535,11 +1535,17 @@ pub struct TxRecord {
 /// clean transaction-list API on `WalletRead`. The tables queried are stable
 /// parts of `zcash_client_sqlite`'s schema: `transactions`, `accounts`,
 /// `orchard_received_notes`, and `sent_notes`.
-/// Total number of Orchard notes this group has ever received. Used as a coarse
-/// "wallet activity" signal to decide when to rotate the receive address (#3):
-/// once the count grows, the currently-shown address may have been paid, so the
-/// next view hands out a fresh diversifier. Returns 0 when no wallet db exists.
-pub fn count_orchard_received_notes(
+/// Total number of shielded notes this group has ever received, across both the
+/// Orchard and Ironwood pools. Used as a coarse "wallet activity" signal to
+/// decide when to rotate the receive address (#3): once the count grows, the
+/// currently-shown address may have been paid, so the next view hands out a
+/// fresh diversifier. Returns 0 when no wallet db exists.
+///
+/// Counting Ironwood too matters post-NU6.3: a payment to the group's unified
+/// address now lands in the Ironwood pool, so an Orchard-only count would never
+/// grow on a new receive and the address would never rotate — silently reusing
+/// one address across payments.
+pub fn count_received_notes(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
@@ -1551,9 +1557,12 @@ pub fn count_orchard_received_notes(
     }
     let conn = open_readonly_connection(&db_path, db_key)?;
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM orchard_received_notes", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM orchard_received_notes) \
+                  + (SELECT COUNT(*) FROM ironwood_received_notes)",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|e| CoreError::Crypto(format!("count received notes: {e}")))?;
     Ok(count.max(0) as u64)
 }
@@ -1609,65 +1618,77 @@ pub fn wallet_notes(
         .flatten();
     let tip = tip.unwrap_or(0);
 
-    let mut stmt = conn
-        .prepare(
+    // Post-NU6.3 a group holds notes in two pools: the sealed Orchard pool and
+    // the Ironwood pool that all new value (and migrated funds) land in. The two
+    // tables are structurally identical, so query each with the same shape and
+    // merge. Table/column names are compile-time constants, not user input, so
+    // interpolating them into the SQL is safe.
+    let mut notes = Vec::new();
+    for (notes_table, spends_table, fk_col) in [
+        ("orchard_received_notes", "orchard_received_note_spends", "orchard_received_note_id"),
+        ("ironwood_received_notes", "ironwood_received_note_spends", "ironwood_received_note_id"),
+    ] {
+        let sql = format!(
             "SELECT t.txid, orn.value, orn.is_change, orn.memo, t.mined_height, \
              MAX(CASE WHEN spend_t.mined_height IS NOT NULL THEN 1 ELSE 0 END) AS spent_mined, \
-             MAX(CASE WHEN s.orchard_received_note_id IS NOT NULL THEN 1 ELSE 0 END) AS has_spend \
-             FROM orchard_received_notes orn \
+             MAX(CASE WHEN s.{fk_col} IS NOT NULL THEN 1 ELSE 0 END) AS has_spend \
+             FROM {notes_table} orn \
              JOIN transactions t ON orn.transaction_id = t.id_tx \
-             LEFT JOIN orchard_received_note_spends s ON s.orchard_received_note_id = orn.id \
+             LEFT JOIN {spends_table} s ON s.{fk_col} = orn.id \
              LEFT JOIN transactions spend_t ON spend_t.id_tx = s.transaction_id \
              WHERE orn.account_id = ?1 \
-             GROUP BY orn.id \
-             ORDER BY orn.value DESC",
-        )
-        .map_err(|e| CoreError::Crypto(format!("prepare notes query: {e}")))?;
+             GROUP BY orn.id"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| CoreError::Crypto(format!("prepare notes query: {e}")))?;
 
-    let rows = stmt
-        .query_map([account_id], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, u64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Option<Vec<u8>>>(3)?,
-                row.get::<_, Option<u64>>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-            ))
-        })
-        .map_err(|e| CoreError::Crypto(format!("execute notes query: {e}")))?;
+        let rows = stmt
+            .query_map([account_id], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, Option<u64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|e| CoreError::Crypto(format!("execute notes query: {e}")))?;
 
-    let mut notes = Vec::new();
-    for row in rows {
-        let (mut txid_bytes, value, is_change, memo_bytes, received_height, spent_mined, has_spend) =
-            row.map_err(|e| CoreError::Crypto(format!("note row: {e}")))?;
-        // A note spent in a mined transaction is gone — not part of the balance.
-        if spent_mined == 1 {
-            continue;
+        for row in rows {
+            let (mut txid_bytes, value, is_change, memo_bytes, received_height, spent_mined, has_spend) =
+                row.map_err(|e| CoreError::Crypto(format!("note row: {e}")))?;
+            // A note spent in a mined transaction is gone — not part of the balance.
+            if spent_mined == 1 {
+                continue;
+            }
+            txid_bytes.reverse();
+            let confirmations = match received_height {
+                Some(h) if tip as u64 >= h => tip as u64 - h + 1,
+                _ => 0,
+            };
+            let status = if received_height.is_none() {
+                "pending" // incoming, not yet mined
+            } else if has_spend == 1 {
+                "spending" // a broadcast-but-unmined send is consuming it
+            } else {
+                "spendable"
+            };
+            notes.push(NoteRecord {
+                received_txid: hex::encode(&txid_bytes),
+                value_zatoshis: value,
+                status: status.to_string(),
+                received_height,
+                confirmations,
+                is_change: is_change != 0,
+                memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
+            });
         }
-        txid_bytes.reverse();
-        let confirmations = match received_height {
-            Some(h) if tip as u64 >= h => tip as u64 - h + 1,
-            _ => 0,
-        };
-        let status = if received_height.is_none() {
-            "pending" // incoming, not yet mined
-        } else if has_spend == 1 {
-            "spending" // a broadcast-but-unmined send is consuming it
-        } else {
-            "spendable"
-        };
-        notes.push(NoteRecord {
-            received_txid: hex::encode(&txid_bytes),
-            value_zatoshis: value,
-            status: status.to_string(),
-            received_height,
-            confirmations,
-            is_change: is_change != 0,
-            memo: memo_bytes.as_deref().and_then(decode_zcash_memo),
-        });
     }
+    // Largest notes first, across both pools.
+    notes.sort_by(|a, b| b.value_zatoshis.cmp(&a.value_zatoshis));
     Ok(notes)
 }
 
@@ -1697,30 +1718,40 @@ pub fn wallet_history(
     let mut records: Vec<TxRecord> = Vec::new();
 
     // ── Received ────────────────────────────────────────────────────────────
-    // Orchard notes for our account that are not change (is_change = 0 means
+    // Shielded notes for our account that are not change (is_change = 0 means
     // this note arrived in a transaction that we did NOT also spend from —
-    // i.e., someone else sent us funds). Group by transaction so one tx = one
-    // history entry, sum the note values, and pick the first real memo.
+    // i.e., someone else sent us funds). Post-NU6.3 a receive lands in the
+    // Ironwood pool while legacy receipts are in Orchard, so union both note
+    // tables (identical columns) before grouping — one tx = one history entry,
+    // even if a tx somehow deposited into both pools. Sum the note values, pick
+    // the first real memo.
     {
+        // A derived table unioning both pools' non-dummy columns. Table names are
+        // compile-time constants, so this static SQL carries no injection risk.
+        const RECEIVED_NOTES_UNION: &str = "( \
+            SELECT transaction_id, account_id, value, is_change, memo FROM orchard_received_notes \
+            UNION ALL \
+            SELECT transaction_id, account_id, value, is_change, memo FROM ironwood_received_notes )";
+        let sql = format!(
+            "SELECT t.txid, t.mined_height, b.time, SUM(rn.value), \
+             ( SELECT rn2.memo \
+               FROM {RECEIVED_NOTES_UNION} rn2 \
+               WHERE rn2.transaction_id = t.id_tx \
+                 AND rn2.account_id = ?1 \
+                 AND rn2.is_change = 0 \
+                 AND rn2.memo IS NOT NULL \
+               LIMIT 1 ), \
+             ( SELECT vt.fee_paid FROM v_transactions vt WHERE vt.txid = t.txid LIMIT 1 ) \
+             FROM {RECEIVED_NOTES_UNION} rn \
+             JOIN transactions t ON rn.transaction_id = t.id_tx \
+             LEFT JOIN blocks b ON b.height = t.mined_height \
+             WHERE rn.account_id = ?1 AND rn.is_change = 0 \
+             GROUP BY t.id_tx \
+             HAVING SUM(rn.value) > 0 \
+             ORDER BY t.mined_height DESC NULLS LAST"
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT t.txid, t.mined_height, b.time, SUM(orn.value), \
-                 ( SELECT orn2.memo \
-                   FROM orchard_received_notes orn2 \
-                   WHERE orn2.transaction_id = t.id_tx \
-                     AND orn2.account_id = ?1 \
-                     AND orn2.is_change = 0 \
-                     AND orn2.memo IS NOT NULL \
-                   LIMIT 1 ), \
-                 ( SELECT vt.fee_paid FROM v_transactions vt WHERE vt.txid = t.txid LIMIT 1 ) \
-                 FROM orchard_received_notes orn \
-                 JOIN transactions t ON orn.transaction_id = t.id_tx \
-                 LEFT JOIN blocks b ON b.height = t.mined_height \
-                 WHERE orn.account_id = ?1 AND orn.is_change = 0 \
-                 GROUP BY t.id_tx \
-                 HAVING SUM(orn.value) > 0 \
-                 ORDER BY t.mined_height DESC NULLS LAST",
-            )
+            .prepare(&sql)
             .map_err(|e| CoreError::Crypto(format!("prepare receive query: {e}")))?;
 
         let rows = stmt

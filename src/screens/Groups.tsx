@@ -220,12 +220,13 @@ function validateRecipient(
   return null;
 }
 
-/** Receive / shield-into-group card: shows the group's *rotating* Orchard
- *  unified address. Each address is a fresh diversifier of the same viewing key
+/** Receive / shield-into-group card: shows the group's *rotating* unified
+ *  address. Each address is a fresh diversifier of the same viewing key
  *  (#3), so incoming payments aren't linkable by a reused address. The address
  *  auto-advances once the group has received new notes; the user can also force
  *  a fresh one. "Shielding" into the group means sending to this address from a
- *  personal wallet — the group then holds the funds as spendable Orchard. */
+ *  personal wallet — post-NU6.3 the group then holds the funds as spendable
+ *  Ironwood. */
 function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: string | null }) {
   const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
@@ -245,9 +246,9 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
       <h3 style={{ marginTop: 0 }}>Receive / Shield into group</h3>
       <p className="dim" style={{ marginTop: 0 }}>
         Send Zcash to this unified address to fund the group. Funds arrive in the
-        group's shielded <strong>Orchard</strong> pool and become spendable by the
-        threshold. To <strong>shield</strong> transparent funds, send them here
-        from a personal wallet — the receive itself is the shielding step.
+        group's shielded <strong>Ironwood</strong> pool and become spendable by
+        the threshold. To <strong>shield</strong> transparent funds, send them
+        here from a personal wallet — the receive itself is the shielding step.
       </p>
       <label>
         Group Orchard unified address
@@ -330,8 +331,8 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
 
 type WalletTab = "receive" | "send" | "notes";
 
-/** "Review Notes" tab: lists the unspent Orchard notes that make up the
- *  balance. Because each note is one spend authorization (one FROST round per
+/** "Review Notes" tab: lists the unspent shielded notes (Orchard + Ironwood)
+ *  that make up the balance. Because each note is one spend authorization (one FROST round per
  *  signer), this also surfaces the round-cost of a full-balance send and offers
  *  a one-click self-send consolidation to merge fragmented notes into one. */
 function ReviewNotesTab({
