@@ -185,6 +185,34 @@ impl BallotQuestion {
     }
 }
 
+/// A published ballot definition, parsed leniently from its JSON. Only used to
+/// render the questions and derive [`QuestionShape`]s — the `poll-hash` is always
+/// taken from the original bytes via [`poll_hash`], never from a re-serialization
+/// of this. Unknown top-level fields are ignored so it survives schema additions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BallotDefinition {
+    #[serde(default, alias = "poll-title", alias = "name")]
+    pub title: Option<String>,
+    pub questions: Vec<BallotQuestion>,
+}
+
+impl BallotDefinition {
+    /// Parse a ballot definition from its JSON text.
+    pub fn parse(json: &str) -> Result<Self, CoreError> {
+        serde_json::from_str(json).map_err(|e| {
+            CoreError::Config(format!(
+                "could not parse ballot definition (expected an object with a \
+                 \"questions\" array): {e}"
+            ))
+        })
+    }
+
+    /// The validation shapes for every question, in order.
+    pub fn question_shapes(&self) -> Vec<QuestionShape> {
+        self.questions.iter().map(BallotQuestion::shape).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +278,35 @@ mod tests {
         let shape = bq.shape();
         assert_eq!(shape.num_fixed_responses, 2);
         assert!(!shape.allows_freeform);
+    }
+
+    #[test]
+    fn ballot_definition_parses_and_yields_shapes() {
+        let j = r#"{
+            "title": "NU7 sentiment",
+            "questions": [
+              {"prompt":"Approve NU7?","fixed-responses":["Yes","No","Unsure"]},
+              {"prompt":"Comments","fixed-responses":[],"other-prompt":"Say more"}
+            ]
+        }"#;
+        let b = BallotDefinition::parse(j).unwrap();
+        assert_eq!(b.title.as_deref(), Some("NU7 sentiment"));
+        let shapes = b.question_shapes();
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(shapes[0].num_fixed_responses, 3);
+        assert!(!shapes[0].allows_freeform);
+        assert!(shapes[1].allows_freeform);
+        // A valid vote against this ballot passes validation.
+        assert!(validate_votes(
+            &[VoteEntry::Choice(1), VoteEntry::FreeForm("ok".into())],
+            &shapes
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn ballot_definition_rejects_non_ballot_json() {
+        assert!(BallotDefinition::parse("not json").is_err());
+        assert!(BallotDefinition::parse(r#"{"foo":1}"#).is_err()); // no questions
     }
 }

@@ -90,6 +90,23 @@ current build depends on them.
         still authenticates end-to-end, so the transport only provides
         reachability).
 
+## Voting (coinholder polling)
+
+- [ ] **Automated poll source / discovery** — voting currently uses **manual
+      ballot entry**: the user pastes the poll's published ballot-definition JSON
+      and its reception address, answers, and casts (a shielded memo via the FROST
+      send path; weight is set by the poll's off-chain balance snapshot). Replace
+      the manual paste with a programmatic source once one is available:
+      - Fetch active polls from a configurable **poll-source URL** (Zodl exposes a
+        "custom poll sources" config; confirm the feed format), render the ballot
+        automatically, and show live/closed status + results.
+      - The definitive protocol design is ValarDragon/Valar's; get the poll-feed +
+        registration/snapshot spec from there (or the Zodl integration docs) to
+        match eligibility exactly. Keep manual entry as the fallback/offline path.
+      - The casting core (`voting.rs`: memo v1 encode/validate/poll-hash,
+        `prepare_vote`) is source-agnostic and already done — this is only about
+        *where the ballot comes from* and surfacing results.
+
 ## Wallet (Zcash)
 
 - [ ] **Auto-sync polish** — auto-sync runs every 10s (see `GroupWallet` in

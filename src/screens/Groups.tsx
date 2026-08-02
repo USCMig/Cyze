@@ -17,7 +17,9 @@ import {
   walletCancelSync,
   walletSyncProgress,
   walletPrepareSend,
+  walletPrepareVote,
   walletSend,
+  type VoteInput,
   walletHistory,
   walletNotes,
   walletReceiveAddress,
@@ -329,7 +331,7 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
   );
 }
 
-type WalletTab = "receive" | "send" | "notes";
+type WalletTab = "receive" | "send" | "notes" | "vote";
 
 /** "Review Notes" tab: lists the unspent shielded notes (Orchard + Ironwood)
  *  that make up the balance. Because each note is one spend authorization (one FROST round per
@@ -461,6 +463,210 @@ function ReviewNotesTab({
   );
 }
 
+/** A leniently-parsed ballot question for rendering (mirrors the backend's
+ *  BallotQuestion aliases). The poll-hash is computed backend-side from the raw
+ *  pasted bytes, so this parse is display-only and need not be canonical. */
+type ParsedQuestion = { prompt: string; fixedResponses: string[]; otherPrompt: string | null };
+
+function parseBallot(
+  json: string,
+): { title?: string; questions: ParsedQuestion[] } | { error: string } {
+  let b: unknown;
+  try {
+    b = JSON.parse(json);
+  } catch {
+    return { error: "Invalid JSON." };
+  }
+  const obj = b as Record<string, unknown> | null;
+  const qs = obj && Array.isArray(obj.questions) ? (obj.questions as Record<string, unknown>[]) : null;
+  if (!qs || qs.length === 0) {
+    return { error: 'Ballot must be an object with a non-empty "questions" array.' };
+  }
+  const questions: ParsedQuestion[] = qs.map((q) => {
+    const fixed = q["fixed-responses"] ?? q.responses ?? q.fixed_responses ?? [];
+    const other = q["other-prompt"] ?? q.other_prompt ?? null;
+    return {
+      prompt: String(q.prompt ?? q.question ?? q.text ?? "(question)"),
+      fixedResponses: Array.isArray(fixed) ? fixed.map(String) : [],
+      otherPrompt: other == null ? null : String(other),
+    };
+  });
+  const title = obj?.title ?? obj?.["poll-title"] ?? obj?.name;
+  return { title: title == null ? undefined : String(title), questions };
+}
+
+/** "Vote" tab: manual coinholder-poll voting. The user pastes a published ballot
+ *  definition + the poll's reception address, answers each question, and casts —
+ *  the vote is a shielded memo sent via the normal review + FROST ceremony. Vote
+ *  weight is set by the poll's balance snapshot, not the amount sent. */
+function VoteTab({
+  isMainnet,
+  disabledReason,
+  pending,
+  onCastVote,
+}: {
+  isMainnet: boolean;
+  disabledReason: string | null;
+  pending: boolean;
+  onCastVote: (v: {
+    receptionAddress: string;
+    ballotJson: string;
+    votes: VoteInput[];
+    amountZatoshis: number;
+  }) => void;
+}) {
+  const [ballotJson, setBallotJson] = useState("");
+  const [receptionAddress, setReceptionAddress] = useState("");
+  const [amountZec, setAmountZec] = useState("0.00001");
+  const [answers, setAnswers] = useState<VoteInput[]>([]);
+
+  const parsed = useMemo(() => (ballotJson.trim() ? parseBallot(ballotJson) : null), [ballotJson]);
+  const questions = parsed && "questions" in parsed ? parsed.questions : null;
+  const title = parsed && "questions" in parsed ? parsed.title : undefined;
+  const parseError = parsed && "error" in parsed ? parsed.error : null;
+
+  // Keep one answer per question (default: abstain) as the ballot changes.
+  useEffect(() => {
+    setAnswers((prev) =>
+      questions ? questions.map((_, i) => prev[i] ?? { kind: "abstain" }) : [],
+    );
+    // Only the question count matters for resizing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questions?.length]);
+
+  const setAnswer = (i: number, a: VoteInput) =>
+    setAnswers((prev) => prev.map((x, j) => (j === i ? a : x)));
+
+  const amountZats = Math.round(Number(amountZec) * 1e8);
+  const canCast =
+    !disabledReason &&
+    !pending &&
+    !!questions &&
+    receptionAddress.trim().length > 0 &&
+    Number.isFinite(amountZats) &&
+    amountZats > 0;
+
+  return (
+    <div className="card" style={{ marginTop: 12, background: "var(--bg-elevated)" }}>
+      <h3 style={{ marginTop: 0 }}>Cast a coinholder-poll vote</h3>
+      <p className="dim" style={{ marginTop: 0, fontSize: 13 }}>
+        Paste the poll's published <strong>ballot definition</strong> and its{" "}
+        <strong>reception address</strong>, choose answers, then review and sign.
+        The vote is a shielded memo sent from the group. Vote <em>weight</em> is
+        set by the poll's balance snapshot, not the amount sent, so only a dust
+        amount accompanies the memo.{" "}
+        {disabledReason && <em>({disabledReason})</em>}
+      </p>
+
+      <label>Ballot definition (JSON)</label>
+      <textarea
+        value={ballotJson}
+        onChange={(e) => setBallotJson(e.target.value)}
+        rows={6}
+        spellCheck={false}
+        placeholder={'{"title":"…","questions":[{"prompt":"…","fixed-responses":["Yes","No"]}]}'}
+        style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
+      />
+      {parseError && ballotJson.trim() && (
+        <p style={{ color: "#d66", fontSize: 12, marginTop: 4 }}>{parseError}</p>
+      )}
+
+      <label style={{ marginTop: 10, display: "block" }}>Poll reception address</label>
+      <input
+        value={receptionAddress}
+        onChange={(e) => setReceptionAddress(e.target.value)}
+        placeholder="the poll's vote-reception shielded address"
+        style={{ width: "100%" }}
+      />
+
+      {questions && (
+        <div style={{ marginTop: 14 }}>
+          {title && <div style={{ fontWeight: 600, marginBottom: 8 }}>{title}</div>}
+          {questions.map((q, i) => {
+            const a = answers[i];
+            return (
+              <fieldset
+                key={i}
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  marginBottom: 10,
+                  padding: "8px 12px",
+                }}
+              >
+                <legend style={{ fontSize: 13, fontWeight: 600 }}>{q.prompt}</legend>
+                {q.fixedResponses.map((resp, idx) => (
+                  <label key={idx} style={{ display: "block", fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name={`q${i}`}
+                      checked={a?.kind === "choice" && a.index === idx}
+                      onChange={() => setAnswer(i, { kind: "choice", index: idx })}
+                    />{" "}
+                    {resp}
+                  </label>
+                ))}
+                {q.otherPrompt && (
+                  <label style={{ display: "block", fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name={`q${i}`}
+                      checked={a?.kind === "free_form"}
+                      onChange={() => setAnswer(i, { kind: "free_form", text: "" })}
+                    />{" "}
+                    {q.otherPrompt}:{" "}
+                    {a?.kind === "free_form" && (
+                      <input
+                        value={a.text}
+                        onChange={(e) => setAnswer(i, { kind: "free_form", text: e.target.value })}
+                        style={{ fontSize: 13 }}
+                      />
+                    )}
+                  </label>
+                )}
+                <label style={{ display: "block", fontSize: 13, cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name={`q${i}`}
+                    checked={!a || a.kind === "abstain"}
+                    onChange={() => setAnswer(i, { kind: "abstain" })}
+                  />{" "}
+                  Abstain
+                </label>
+              </fieldset>
+            );
+          })}
+
+          <label>Amount sent with vote ({unit(isMainnet)})</label>
+          <div>
+            <input
+              value={amountZec}
+              onChange={(e) => setAmountZec(e.target.value)}
+              style={{ width: 160 }}
+            />
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <button
+              disabled={!canCast}
+              onClick={() =>
+                onCastVote({
+                  receptionAddress: receptionAddress.trim(),
+                  ballotJson,
+                  votes: answers,
+                  amountZatoshis: amountZats,
+                })
+              }
+            >
+              {pending ? "Preparing…" : "Prepare vote →"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Per-group Zcash wallet: view-only account, receive address, balance. */
 function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boolean }) {
   const queryClient = useQueryClient();
@@ -535,6 +741,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   // A migration (Orchard → Ironwood) is a self-send like a consolidation, so it
   // reuses the isConsolidation plumbing, but is labelled distinctly for review.
   const [isMigration, setIsMigration] = useState(false);
+  // A cast vote is a shielded send to a poll's reception address carrying the
+  // vote memo; it reuses the send review + ceremony, labelled distinctly.
+  const [isVote, setIsVote] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   // Shielded send (Orchard → Orchard) vs. unshield (Orchard → transparent).
   // Both reuse the same prepare/sign machinery; the mode only drives the
@@ -576,6 +785,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       setErr(null);
       setIsConsolidation(false);
       setIsMigration(false);
+      setIsVote(false);
       setDraft(d);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -602,6 +812,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       setDraft(d);
       setIsConsolidation(true);
       setIsMigration(false);
+      setIsVote(false);
     },
     onError: (e) => setErr((e as unknown as AppError).message),
   });
@@ -631,6 +842,38 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       setDraft(d);
       setIsConsolidation(true);
       setIsMigration(true);
+      setIsVote(false);
+      setWalletTab("send");
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
+
+  // Cast a coinholder-poll vote: prepare a shielded send to the poll's reception
+  // address carrying the encoded vote memo, then hand off to the normal review +
+  // signing ceremony. `walletPrepareVote` validates the answers and encodes the
+  // memo backend-side; weight is set by the poll's snapshot, not the (dust) amount.
+  const prepareVote = useMutation({
+    mutationFn: (v: {
+      receptionAddress: string;
+      ballotJson: string;
+      votes: VoteInput[];
+      amountZatoshis: number;
+    }) =>
+      walletPrepareVote({
+        group_id: group.id,
+        reception_address: v.receptionAddress,
+        ballot_json: v.ballotJson,
+        votes: v.votes,
+        amount_zatoshis: v.amountZatoshis,
+      }),
+    onSuccess: (d) => {
+      setErr(null);
+      setRecipient(d.recipient);
+      setAmountZec(String(d.amount_zatoshis / 1e8));
+      setDraft(d);
+      setIsConsolidation(false);
+      setIsMigration(false);
+      setIsVote(true);
       setWalletTab("send");
     },
     onError: (e) => setErr((e as unknown as AppError).message),
@@ -920,16 +1163,18 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
               flexWrap: "wrap",
             }}
           >
-            {(["receive", "send", "notes"] as WalletTab[]).map((tab) => {
+            {(["receive", "send", "notes", "vote"] as WalletTab[]).map((tab) => {
               const active = walletTab === tab;
               const label =
                 tab === "receive"
                   ? "Receive / Shield"
                   : tab === "notes"
                     ? "Review Notes"
-                    : activeSend && !activeSend.done
-                      ? "Send / Unshield ●"
-                      : "Send / Unshield";
+                    : tab === "vote"
+                      ? "Vote"
+                      : activeSend && !activeSend.done
+                        ? "Send / Unshield ●"
+                        : "Send / Unshield";
               return (
                 <button
                   key={tab}
@@ -974,6 +1219,22 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     ? "Balance too low to consolidate."
                     : null
               }
+            />
+          )}
+
+          {/* Vote tab */}
+          {walletTab === "vote" && (
+            <VoteTab
+              isMainnet={isMainnet}
+              disabledReason={
+                activeSend && !activeSend.done
+                  ? "A transaction is already in progress."
+                  : (status.data?.spendable_zatoshis ?? 0) <= 0
+                    ? "The group needs a spendable balance to cast a vote."
+                    : null
+              }
+              pending={prepareVote.isPending}
+              onCastVote={(v) => prepareVote.mutate(v)}
             />
           )}
 
@@ -1147,14 +1408,29 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       style={{ marginTop: 12, background: "var(--bg-elevated)" }}
                     >
                       <h3 style={{ marginTop: 0 }}>
-                        {isMigration
-                          ? "Migrate Orchard → Ironwood"
-                          : isConsolidation
-                            ? "Consolidation transaction"
-                            : draft.is_unshield
-                              ? "Unshield transaction"
-                              : "Prepared transaction"}
+                        {isVote
+                          ? "Cast vote"
+                          : isMigration
+                            ? "Migrate Orchard → Ironwood"
+                            : isConsolidation
+                              ? "Consolidation transaction"
+                              : draft.is_unshield
+                                ? "Unshield transaction"
+                                : "Prepared transaction"}
                       </h3>
+                      {isVote && (
+                        <div className="callout" style={{ marginBottom: 12 }}>
+                          <span>
+                            Coinholder-poll <strong>vote</strong> — sends a shielded memo
+                            (your encoded answers) to the poll's reception address. Vote
+                            weight comes from the poll's balance snapshot, not the{" "}
+                            <strong>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</strong>{" "}
+                            dust sent with it. {draft.spends.length} note
+                            {draft.spends.length !== 1 ? "s" : ""} will be signed. Keep the
+                            group's balance through the poll's snapshot window to be counted.
+                          </span>
+                        </div>
+                      )}
                       {isConsolidation && (
                         <div className="callout" style={{ marginBottom: 12 }}>
                           {isMigration ? (
