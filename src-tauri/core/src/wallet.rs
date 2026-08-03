@@ -249,12 +249,16 @@ use rand::rngs::OsRng;
 use async_trait::async_trait;
 use prost::Message;
 use zcash_client_backend::data_api::chain::error::Error as ChainError;
-use zcash_client_backend::data_api::chain::{BlockCache, BlockSource};
-use zcash_client_backend::data_api::scanning::ScanRange;
+use zcash_client_backend::data_api::chain::{
+    BlockCache, BlockSource, ChainState, CommitmentTreeRoot,
+};
+use zcash_client_backend::data_api::scanning::{ScanPriority, ScanRange};
 use zcash_client_backend::data_api::wallet::{
     create_pczt_from_proposal, propose_standard_transfer_to_address, ConfirmationsPolicy,
 };
-use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
+use zcash_client_backend::data_api::{
+    AccountBirthday, AccountPurpose, WalletCommitmentTrees, WalletRead, WalletWrite,
+};
 use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_backend::proto::compact_formats::CompactBlock;
@@ -996,23 +1000,440 @@ pub async fn sync_group(
     // abandon a stalled run, and a fresh sync resumes from where this one left
     // off. Without this, a stuck stream would keep the sync pending forever.
     if opts.pipelined {
-        // The pipelined driver (prefetch download while scanning) is being built
-        // on this branch — see docs/SYNC_OPTIMIZATION.md. Until it lands and is
-        // validated against the stock driver on testnet, this flag falls back to
-        // the stock driver so it is inert-but-safe: no half-implemented sync loop
-        // ever touches fund detection.
-        tracing::info!(
-            "experimental_pipelined_sync is set, but the pipelined driver is not yet \
-             wired; using the stock driver (see docs/SYNC_OPTIMIZATION.md)"
-        );
+        // The custom pipelined driver overlaps block download with scanning; it
+        // produces the same wallet state as the stock driver but hides network
+        // latency behind CPU trial-decryption. Off by default, opted in via
+        // `Settings.experimental_pipelined_sync` — see docs/SYNC_OPTIMIZATION.md.
+        tracing::info!("using experimental pipelined sync driver");
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(CoreError::Cancelled),
+            res = run_pipelined(&mut client, &params, &mut db, batch_size) => res,
+        }
+    } else {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(CoreError::Cancelled),
+            res = zcash_client_backend::sync::run(
+                &mut client, &params, &cache, &mut db, batch_size,
+            ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
+        }
     }
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => Err(CoreError::Cancelled),
-        res = zcash_client_backend::sync::run(
-            &mut client, &params, &cache, &mut db, batch_size,
-        ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
+}
+
+/// An in-memory [`BlockSource`] over one batch of already-downloaded compact
+/// blocks. The pipelined driver hands each batch straight from the network to
+/// the scanner through this, so the pipelined path never touches the on-disk
+/// `FsCache` (no file writes, no cache mutex contention between the download-ahead
+/// producer and the scanning consumer). Scanning is fully transactional via
+/// `put_blocks`, so an interrupted batch leaves the db consistent, exactly as the
+/// stock disk-backed path does.
+struct MemBlockSource(Vec<CompactBlock>);
+
+impl BlockSource for MemBlockSource {
+    // Reading from an owned `Vec` can't fail.
+    type Error = std::convert::Infallible;
+
+    fn with_blocks<F, WalletErrT>(
+        &self,
+        from_height: Option<BlockHeight>,
+        limit: Option<usize>,
+        mut with_block: F,
+    ) -> Result<(), ChainError<WalletErrT, Self::Error>>
+    where
+        F: FnMut(CompactBlock) -> Result<(), ChainError<WalletErrT, Self::Error>>,
+    {
+        let start = from_height.map(u32::from);
+        let mut remaining = limit.unwrap_or(usize::MAX);
+        for cb in &self.0 {
+            if remaining == 0 {
+                break;
+            }
+            // The producer downloads exactly the requested range, but honour
+            // `from_height`/`limit` defensively so this matches the disk cache's
+            // contract (ascending, contiguous from `from_height`).
+            if let Some(s) = start {
+                if (cb.height as u32) < s {
+                    continue;
+                }
+            }
+            with_block(cb.clone())?;
+            remaining -= 1;
+        }
+        Ok(())
     }
+}
+
+/// One prefetched batch handed from the download producer to the scan consumer:
+/// the range it covers, its compact blocks, and the chain-state anchor immediately
+/// before the range (needed by `scan_cached_blocks`).
+type PrefetchedBatch = (ScanRange, Vec<CompactBlock>, ChainState);
+
+/// Split a suggested scan range into `batch_size`-block sub-ranges, preserving
+/// priority. Ported verbatim from the upstream `sync::running` step-7 splitter so
+/// the pipelined driver scans in the exact same units as the stock driver.
+fn split_scan_range(range: ScanRange, batch_size: u32) -> Vec<ScanRange> {
+    let mut acc = range;
+    let mut out = Vec::new();
+    loop {
+        if acc.is_empty() {
+            break;
+        }
+        match acc.split_at(acc.block_range().start + batch_size) {
+            Some((cur, next)) => {
+                out.push(cur);
+                acc = next;
+            }
+            None => {
+                out.push(acc);
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Custom pipelined sync driver: same control flow as
+/// `zcash_client_backend::sync::run`, but the historic-range scan overlaps block
+/// download with trial-decryption. Correctness-critical logic (subtree roots,
+/// chain-tip update, verify pass, reorg/continuity rewind, priority re-ordering)
+/// is ported faithfully from the upstream `sync.rs`; only the download/scan
+/// overlap in step 7 is new. Produces the same wallet state as the stock driver.
+///
+/// Note: the transparent-UTXO refresh in upstream `running` is gated on the
+/// `transparent-inputs` feature, which our `zcash_client_backend` build does not
+/// enable (group accounts are Orchard-only view keys), so the stock driver we run
+/// today does not perform it either. Omitting it here keeps the two byte-identical.
+async fn run_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    params: &Network,
+    db: &mut GroupDb,
+    batch_size: u32,
+) -> Result<(), CoreError> {
+    // 1) & 2) Download note-commitment subtree roots and hand them to the db, so
+    //    the trees are initialized without replaying all history. One-time; no
+    //    pipelining benefit, so it stays serial.
+    update_subtree_roots_pipelined(client, db).await?;
+
+    // Re-run the per-session loop until the wallet's view of the chain tip is
+    // valid (mirrors `while running(..).await? {}` upstream).
+    while running_pipelined(client, params, db, batch_size).await? {}
+
+    Ok(())
+}
+
+/// One pass of the pipelined sync loop. Returns `true` when the suggested scan
+/// ranges changed underneath us (continuity error, or a newly higher-priority
+/// range) and the caller should restart from a fresh `suggest_scan_ranges`.
+async fn running_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    params: &Network,
+    db: &mut GroupDb,
+    batch_size: u32,
+) -> Result<bool, CoreError> {
+    // 3) & 4) Refresh the chain tip so `suggest_scan_ranges` reflects new blocks.
+    update_chain_tip_pipelined(client, db).await?;
+
+    // 6) Verify pass. Any `Verify`-priority range is always first; it is small
+    //    (a short reorg-check window), so we scan it serially — pipelining it buys
+    //    nothing and the loop may re-request ranges after each one.
+    loop {
+        let scan_ranges = db
+            .suggest_scan_ranges()
+            .map_err(|e| CoreError::Crypto(format!("suggest_scan_ranges: {e}")))?;
+        match scan_ranges.first() {
+            Some(sr) if sr.priority() == ScanPriority::Verify => {
+                let sr = sr.clone();
+                let blocks = download_blocks_pipelined(client, &sr).await?;
+                let chain_state =
+                    download_chain_state_pipelined(client, sr.block_range().start - 1).await?;
+                let src = MemBlockSource(blocks);
+                if scan_batch(params, &src, db, &chain_state, &sr)? {
+                    // Ranges changed; re-request and re-check for a Verify range.
+                    continue;
+                }
+                // Cache and scanned data are locally consistent; done verifying.
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    // 7) Historic ranges, pipelined. Snapshot the suggested ranges, split them
+    //    into batches, and download-ahead while scanning.
+    let scan_ranges = db
+        .suggest_scan_ranges()
+        .map_err(|e| CoreError::Crypto(format!("suggest_scan_ranges: {e}")))?;
+    let batches: Vec<ScanRange> = scan_ranges
+        .into_iter()
+        .flat_map(|r| split_scan_range(r, batch_size))
+        .collect();
+    if batches.is_empty() {
+        return Ok(false);
+    }
+
+    // Producer: download each batch's blocks + chain-state anchor and hand them
+    // over a bounded channel (capacity 2) so download runs up to two batches
+    // ahead of scanning. A cloned tonic client shares the underlying HTTP/2
+    // connection, so this adds no new socket.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<PrefetchedBatch, CoreError>>(2);
+    let mut producer_client = client.clone();
+    let producer = tokio::spawn(async move {
+        for sr in batches {
+            let blocks = match download_blocks_pipelined(&mut producer_client, &sr).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            let chain_state = match download_chain_state_pipelined(
+                &mut producer_client,
+                sr.block_range().start - 1,
+            )
+            .await
+            {
+                Ok(cs) => cs,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            // If the consumer has hung up (ranges changed, or an error broke the
+            // loop) stop downloading.
+            if tx.send(Ok((sr, blocks, chain_state))).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    // Consumer: scan each prefetched batch in order. `scan_batch` is CPU-bound
+    // and synchronous; on a multi-threaded runtime the producer keeps downloading
+    // the next batches on other worker threads while this one scans, which is the
+    // whole point. Scanning is transactional per batch, so bailing out early (or
+    // being dropped on cancellation) leaves the db consistent at a batch boundary.
+    let mut result = Ok(false);
+    while let Some(item) = rx.recv().await {
+        let (sr, blocks, chain_state) = match item {
+            Ok(v) => v,
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        };
+        let src = MemBlockSource(blocks);
+        match scan_batch(params, &src, db, &chain_state, &sr) {
+            Ok(true) => {
+                // Ranges changed (continuity error or a new higher-priority
+                // range); restart the whole pass from fresh suggestions.
+                result = Ok(true);
+                break;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        }
+    }
+
+    // Stop the producer: either it already finished, or we broke early and it
+    // should abandon any in-flight download.
+    producer.abort();
+    result
+}
+
+/// Scan one batch and interpret the outcome, mirroring the upstream `scan_blocks`
+/// helper: on a continuity error, rewind the db and signal a restart; otherwise
+/// signal a restart if scanning surfaced a higher-priority range. The in-memory
+/// source needs no cache truncation on rewind (each batch is downloaded fresh).
+fn scan_batch(
+    params: &Network,
+    src: &MemBlockSource,
+    db: &mut GroupDb,
+    chain_state: &ChainState,
+    scan_range: &ScanRange,
+) -> Result<bool, CoreError> {
+    use zcash_client_backend::data_api::chain::scan_cached_blocks;
+
+    let scan_result = scan_cached_blocks(
+        params,
+        src,
+        db,
+        scan_range.block_range().start,
+        chain_state,
+        scan_range.len(),
+    );
+
+    match scan_result {
+        Err(ChainError::Scan(err)) if err.is_continuity_error() => {
+            // Rewind to at least one block before the error height, matching the
+            // upstream heuristic (10 blocks of slack).
+            let rewind_height = err.at_height().saturating_sub(10);
+            tracing::info!(
+                "chain reorg detected at {}, rewinding to {}",
+                err.at_height(),
+                rewind_height
+            );
+            db.truncate_to_height(rewind_height)
+                .map_err(|e| CoreError::Crypto(format!("truncate on reorg: {e}")))?;
+            Ok(true)
+        }
+        Ok(_) => {
+            // If scanning added a range of higher priority than the one we just
+            // scanned, invalidate the current ordering and restart.
+            let latest = db
+                .suggest_scan_ranges()
+                .map_err(|e| CoreError::Crypto(format!("suggest_scan_ranges: {e}")))?;
+            Ok(latest
+                .first()
+                .map(|r| r.priority() > scan_range.priority())
+                .unwrap_or(false))
+        }
+        Err(e) => Err(CoreError::Crypto(format!("scan: {e}"))),
+    }
+}
+
+/// Download the subtree roots for all three shielded pools and store them, so the
+/// note-commitment trees are initialized without replaying history. Ported from
+/// the upstream `update_subtree_roots` (Sapling + Orchard + Ironwood).
+async fn update_subtree_roots_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    db: &mut GroupDb,
+) -> Result<(), CoreError> {
+    use zcash_client_backend::proto::service::ShieldedProtocol;
+
+    // The concrete root-hash types (`sapling::Node`, `MerkleHashOrchard`) are
+    // inferred from the `put_*` calls below, so this compiles without naming the
+    // Sapling crate (not a direct dependency of this crate).
+    let sapling_roots = download_subtree_roots(client, ShieldedProtocol::Sapling).await?;
+    db.put_sapling_subtree_roots(0, &sapling_roots)
+        .map_err(|e| CoreError::Crypto(format!("put sapling subtree roots: {e}")))?;
+
+    let orchard_roots = download_subtree_roots(client, ShieldedProtocol::Orchard).await?;
+    db.put_orchard_subtree_roots(0, &orchard_roots)
+        .map_err(|e| CoreError::Crypto(format!("put orchard subtree roots: {e}")))?;
+
+    let ironwood_roots = download_subtree_roots(client, ShieldedProtocol::Ironwood).await?;
+    db.put_ironwood_subtree_roots(0, &ironwood_roots)
+        .map_err(|e| CoreError::Crypto(format!("put ironwood subtree roots: {e}")))?;
+
+    Ok(())
+}
+
+/// Stream the subtree roots for one shielded pool from lightwalletd. Ported from
+/// the upstream `download_subtree_roots`.
+async fn download_subtree_roots<H>(
+    client: &mut CompactTxStreamerClient<Channel>,
+    protocol: zcash_client_backend::proto::service::ShieldedProtocol,
+) -> Result<Vec<CommitmentTreeRoot<H>>, CoreError>
+where
+    H: zcash_primitives::merkle_tree::HashSer,
+{
+    use zcash_client_backend::proto::service::GetSubtreeRootsArg;
+
+    let request = GetSubtreeRootsArg {
+        start_index: 0,
+        shielded_protocol: protocol as i32,
+        max_entries: 0,
+    };
+
+    let mut stream = client
+        .get_subtree_roots(request)
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_subtree_roots: {e}")))?
+        .into_inner();
+
+    let mut roots = Vec::new();
+    while let Some(root) = stream
+        .message()
+        .await
+        .map_err(|e| CoreError::Connection(format!("subtree root stream: {e}")))?
+    {
+        let root_hash = H::read(&root.root_hash[..])
+            .map_err(|e| CoreError::Crypto(format!("subtree root hash: {e}")))?;
+        roots.push(CommitmentTreeRoot::from_parts(
+            BlockHeight::from_u32(root.completing_block_height as u32),
+            root_hash,
+        ));
+    }
+    Ok(roots)
+}
+
+/// Fetch the current chain tip and record it, so `suggest_scan_ranges` accounts
+/// for newly mined blocks. Ported from the upstream `update_chain_tip`.
+async fn update_chain_tip_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    db: &mut GroupDb,
+) -> Result<(), CoreError> {
+    let tip_height: BlockHeight = client
+        .get_latest_block(ChainSpec::default())
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .get_ref()
+        .height
+        .try_into()
+        .map_err(|_| CoreError::Crypto("lightwalletd returned an invalid tip height".into()))?;
+    db.update_chain_tip(tip_height)
+        .map_err(|e| CoreError::Crypto(format!("update chain tip: {e}")))?;
+    Ok(())
+}
+
+/// Download the compact blocks in `scan_range` into memory. Ported from the
+/// upstream `download_blocks`, but returns the blocks instead of writing them to
+/// a disk cache, so the producer can hand them straight to the scanner.
+async fn download_blocks_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    scan_range: &ScanRange,
+) -> Result<Vec<CompactBlock>, CoreError> {
+    use zcash_client_backend::proto::service::BlockRange;
+
+    let start = BlockId {
+        height: scan_range.block_range().start.into(),
+        hash: vec![],
+    };
+    let end = BlockId {
+        height: (scan_range.block_range().end - 1).into(),
+        hash: vec![],
+    };
+    let range = BlockRange {
+        start: Some(start),
+        end: Some(end),
+        pool_types: vec![],
+    };
+    let mut stream = client
+        .get_block_range(range)
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_block_range: {e}")))?
+        .into_inner();
+
+    let mut blocks = Vec::new();
+    while let Some(cb) = stream
+        .message()
+        .await
+        .map_err(|e| CoreError::Connection(format!("block stream: {e}")))?
+    {
+        blocks.push(cb);
+    }
+    Ok(blocks)
+}
+
+/// Fetch the chain-state anchor at `block_height` (the tree state just before a
+/// range's first block). Ported from the upstream `download_chain_state`.
+async fn download_chain_state_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    block_height: BlockHeight,
+) -> Result<ChainState, CoreError> {
+    client
+        .get_tree_state(BlockId {
+            height: block_height.into(),
+            hash: vec![],
+        })
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
+        .into_inner()
+        .to_chain_state()
+        .map_err(|e| CoreError::Crypto(format!("chain state: {e}")))
 }
 
 /// Which shielded pool an action belongs to. Post-NU6.3 a single transaction can
@@ -1991,6 +2412,45 @@ mod tests {
         assert_eq!(WalletNetwork::Main.params(), Network::MainNetwork);
         assert!(WalletNetwork::Test.default_lightwalletd().starts_with("https://"));
         assert!(WalletNetwork::Main.default_lightwalletd().starts_with("https://"));
+    }
+
+    /// The pipelined driver must scan in the exact same batch units as the stock
+    /// driver, or its result could diverge. This locks the splitter's behaviour to
+    /// the upstream `sync::running` step-7 semantics: contiguous, priority-
+    /// preserving, `batch_size`-block sub-ranges that exactly cover the input and
+    /// never produce an empty range.
+    #[test]
+    fn split_scan_range_matches_upstream_batching() {
+        let h = BlockHeight::from_u32;
+        let range = ScanRange::from_parts(h(100)..h(1050), ScanPriority::Historic);
+
+        // An evenly-plus-remainder range → full batches then a short tail.
+        let batches = split_scan_range(range.clone(), 400);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(*batches[0].block_range(), h(100)..h(500));
+        assert_eq!(*batches[1].block_range(), h(500)..h(900));
+        assert_eq!(*batches[2].block_range(), h(900)..h(1050));
+        // Priority is preserved on every sub-range.
+        assert!(batches.iter().all(|b| b.priority() == ScanPriority::Historic));
+        // Contiguous cover: no gaps, no overlaps, no empty ranges.
+        assert!(batches.iter().all(|b| !b.is_empty()));
+        for w in batches.windows(2) {
+            assert_eq!(w[0].block_range().end, w[1].block_range().start);
+        }
+        assert_eq!(batches.first().unwrap().block_range().start, h(100));
+        assert_eq!(batches.last().unwrap().block_range().end, h(1050));
+
+        // A range smaller than one batch → a single batch equal to the input.
+        let small = ScanRange::from_parts(h(10)..h(30), ScanPriority::ChainTip);
+        let one = split_scan_range(small.clone(), 5000);
+        assert_eq!(one.len(), 1);
+        assert_eq!(*one[0].block_range(), h(10)..h(30));
+
+        // A range that is an exact multiple of the batch size → no empty tail.
+        let exact = ScanRange::from_parts(h(0)..h(1000), ScanPriority::Historic);
+        let even = split_scan_range(exact, 500);
+        assert_eq!(even.len(), 2);
+        assert_eq!(*even[1].block_range(), h(500)..h(1000));
     }
 
     /// The receive address the wallet's key crate (`zcash_keys`) derives from
