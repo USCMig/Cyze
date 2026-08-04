@@ -88,22 +88,64 @@ current build depends on them.
         still authenticates end-to-end, so the transport only provides
         reachability).
 
-## Voting (coinholder polling)
+## Voting (protocol / coinholder governance)
 
-- [ ] **Automated poll source / discovery** — voting currently uses **manual
-      ballot entry**: the user pastes the poll's published ballot-definition JSON
-      and its reception address, answers, and casts (a shielded memo via the FROST
-      send path; weight is set by the poll's off-chain balance snapshot). Replace
-      the manual paste with a programmatic source once one is available:
-      - Fetch active polls from a configurable **poll-source URL** (Zodl exposes a
-        "custom poll sources" config; confirm the feed format), render the ballot
-        automatically, and show live/closed status + results.
-      - The definitive protocol design is ValarDragon/Valar's; get the poll-feed +
-        registration/snapshot spec from there (or the Zodl integration docs) to
-        match eligibility exactly. Keep manual entry as the fallback/offline path.
-      - The casting core (`voting.rs`: memo v1 encode/validate/poll-hash,
-        `prepare_vote`) is source-agnostic and already done — this is only about
-        *where the ballot comes from* and surfacing results.
+- [ ] **Migrate to ValarGroup Shielded Vote (full rebuild; supersedes memo v1)** —
+      the real coinholder-vote protocol we should target is **ValarGroup Shielded
+      Vote**: https://valargroup.gitbook.io/shielded-vote-docs . It is a live,
+      cryptographically-private, on-chain voting system on a **dedicated vote
+      chain**, used infrequently to gauge protocol-upgrade sentiment *before*
+      committing engineering resources — exactly Cyze's governance use case.
+
+      **This is not a change to the current memo format — it is a different
+      system.** Our shipped `core/src/voting.rs` implements the informal
+      **zec-coin-polling "Vote Cast Memo v1"** (a JSON memo cast as a shielded send
+      to a reception address, tallied off-chain from a *transparent*-balance
+      snapshot). Shielded Vote has no vote memo: a vote is a ZK-proven **Vote
+      Commitment** (VAN consumed → new VAN + `H(DOMAIN_VC, round_id, shares_hash,
+      proposal_id, vote_decision)`) plus 16 ElGamal share ciphertexts, submitted to
+      REST endpoints on the vote chain. **Expect to scrap `voting.rs` and its UI**
+      (`VoteTab`/`parseBallot` in `src/screens/Groups.tsx`, `wallet_prepare_vote`,
+      `VoteEntry`/`BallotDefinition`) and rebuild around the SDK below. Keep memo v1
+      only if a lightweight, no-infra sentiment poll is still wanted; otherwise
+      remove it so the two are never confused.
+
+      **Confirmed (2026-08-04, from the user):**
+      1. **Infrastructure is live** — vote chain + election authority + PIR fleet
+         are running; there is a real network to build/test against.
+      2. **FROST-compatible** — the delegation step (ZKP1) takes an externally
+         produced re-randomized spend-auth signature via a governance PCZT
+         (`(rk, sighash, spend_auth_sig)`), which maps onto Cyze's existing FROST
+         re-randomized Orchard signing ceremony. Confirm the exact PCZT hand-off
+         when building.
+      3. **Ironwood supported going forward** — vote weight snapshots the group's
+         shielded note holdings, and Ironwood is covered, so a post-NU6.3 shielded
+         treasury can vote (this also fixes memo v1's flaw that only *transparent*
+         balances counted — a shielded FROST treasury effectively couldn't vote).
+      4. **Crate versions: pin to whatever is in production at build time.** Both
+         SDK crates are published and moving fast — snapshot the then-current
+         production versions rather than an early rc:
+         - `zcash_voting` — client lib (ZKP1/2/3 via Halo2, ElGamal, governance
+           PCZT, Merkle witnesses, SQLite round state). Repo:
+           https://github.com/valargroup/zcash_voting
+         - `pir-client` — nullifier non-membership PIR queries.
+         (Swift SDK exists too, but Cyze is Rust — use the crates directly.)
+
+      **Rough shape of the wallet-side flow** (see the Integration Guide): discover
+      + validate vote config → `GET /shielded-vote/v1/rounds/active` → PIR
+      nullifier proofs → build+prove **ZKP1 delegation** (governance PCZT, FROST
+      spend-auth) → `POST /delegate-vote` → sync the vote-commitment tree → per
+      proposal, build **ZKP2** and `POST /cast-vote` → split into 16 ElGamal shares
+      and `POST /shares` with staggered anti-censorship `submit_at` timing → read
+      `GET /tally-results/{round_id}` once the round is `FINALIZED`. Note
+      `vote_round_id` encoding is context-sensitive (hex in config/URLs/shares,
+      base64 in delegate/cast bodies).
+
+      **Suggested first step — a scoping spike** before any UI: add the production
+      `zcash_voting` + `pir-client` crates, hit a live round's `/rounds/active`, and
+      prove the FROST-produced re-randomized spend-auth sig feeds ZKP1 end-to-end.
+      That de-risks the one genuinely novel part (threshold signing into their
+      prover) cheaply. Own branch, own PR; larger effort than any current item.
 
 ## Wallet (Zcash)
 
