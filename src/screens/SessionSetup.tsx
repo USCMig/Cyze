@@ -10,6 +10,10 @@ import {
   tunnelStatus,
   startTunnel,
   stopTunnel,
+  tailscaleStatus,
+  startTailscaleServe,
+  stopTailscaleServe,
+  TailscaleStatus,
   setServerUrl,
   setSessionConfig,
   testServerConnection,
@@ -18,7 +22,7 @@ import {
 } from "../ipc/commands";
 
 type Role = "coordinator" | "participant";
-type Exposure = "direct" | "tunnel" | "nginx";
+type Exposure = "direct" | "tunnel" | "tailscale" | "nginx";
 
 /** A server whose address is not stable across restarts, so it must never be
  *  remembered as a reusable "last-used server". Today that means a TryCloudflare
@@ -177,6 +181,14 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
 
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
   const tunnel = useQuery({ queryKey: ["tunnel"], queryFn: tunnelStatus });
+  // Poll Tailscale status only while its tab is selected — it shells out to the
+  // `tailscale` CLI, so there's no reason to probe it when the user isn't looking.
+  const tailscale = useQuery({
+    queryKey: ["tailscale"],
+    queryFn: tailscaleStatus,
+    enabled: exposure === "tailscale",
+    refetchInterval: exposure === "tailscale" ? 5000 : false,
+  });
 
   const start = useMutation({
     // Always loopback: remote signers come in over the tunnel/proxy, not the LAN.
@@ -192,6 +204,7 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sidecar"] });
       queryClient.invalidateQueries({ queryKey: ["tunnel"] });
+      queryClient.invalidateQueries({ queryKey: ["tailscale"] });
     },
   });
   const openTunnel = useMutation({
@@ -202,6 +215,15 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
   const closeTunnel = useMutation({
     mutationFn: stopTunnel,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tunnel"] }),
+  });
+  const openTailscale = useMutation({
+    mutationFn: startTailscaleServe,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tailscale"] }),
+    onError: (e) => setError((e as unknown as AppError).message),
+  });
+  const closeTailscale = useMutation({
+    mutationFn: stopTailscaleServe,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tailscale"] }),
   });
 
   const running = sidecar.data?.running;
@@ -245,6 +267,7 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
       <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
         <ExposureTab active={exposure === "direct"} onClick={() => setExposure("direct")} label="Direct URL / IP" />
         <ExposureTab active={exposure === "tunnel"} onClick={() => setExposure("tunnel")} label="Cloudflare Tunnel" />
+        <ExposureTab active={exposure === "tailscale"} onClick={() => setExposure("tailscale")} label="Tailscale" />
         <ExposureTab active={exposure === "nginx"} onClick={() => setExposure("nginx")} label="NGINX reverse proxy" />
       </div>
 
@@ -277,6 +300,21 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
         ) : (
           <p className="dim">
             Start the server (Step 1), then open the public tunnel here.
+          </p>
+        ))}
+
+      {exposure === "tailscale" &&
+        (running ? (
+          <TailscaleExposure
+            status={tailscale.data ?? null}
+            loading={tailscale.isLoading}
+            onServe={() => openTailscale.mutate()}
+            onStop={() => closeTailscale.mutate()}
+            pending={openTailscale.isPending}
+          />
+        ) : (
+          <p className="dim">
+            Start the server (Step 1), then publish it to your tailnet here.
           </p>
         ))}
 
@@ -457,6 +495,85 @@ function TunnelExposure({
   );
 }
 
+function TailscaleExposure({
+  status,
+  loading,
+  onServe,
+  onStop,
+  pending,
+}: {
+  status: TailscaleStatus | null;
+  loading: boolean;
+  onServe: () => void;
+  onStop: () => void;
+  pending: boolean;
+}) {
+  const serving = status?.serving ?? false;
+  const url = status?.public_url ?? null;
+
+  return (
+    <div>
+      <p className="dim" style={{ marginTop: 0 }}>
+        Publishes this server to your <strong>tailnet</strong> at a{" "}
+        <strong>stable</strong> <span className="mono">*.ts.net</span> address with
+        an automatic, publicly-trusted TLS certificate — so the URL can be saved
+        and reused across launches, with no cert-trust step. Access is limited to
+        your tailnet (not the public internet). Requires{" "}
+        <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">
+          Tailscale
+        </a>{" "}
+        installed and signed in on this machine, and every participant on the same
+        tailnet.
+      </p>
+
+      {loading && !status ? (
+        <p className="dim">Checking Tailscale…</p>
+      ) : serving && url ? (
+        <>
+          <div>
+            <span className="badge green">serving on tailnet</span>
+          </div>
+          <label style={{ marginTop: 8 }}>
+            Tailnet URL — share with participants
+          </label>
+          <div className="mono">{url}</div>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <CopyButton text={url} label="Copy URL" />
+            <button className="secondary" onClick={onStop}>
+              Stop serving
+            </button>
+          </div>
+          <div className="callout" style={{ marginTop: 10 }}>
+            <span>
+              This address is stable — save it as the group's server and reuse it
+              next time. Participants must be on your tailnet to reach it.
+            </span>
+          </div>
+        </>
+      ) : status?.available ? (
+        <>
+          {status.dns_name && (
+            <p className="dim" style={{ fontSize: 12, marginTop: 0 }}>
+              This machine:{" "}
+              <span className="mono">https://{status.dns_name}</span>
+            </p>
+          )}
+          <button onClick={onServe} disabled={pending}>
+            {pending ? "Publishing…" : "Publish to tailnet"}
+          </button>
+        </>
+      ) : (
+        <div className="callout warn">
+          <span>
+            {status?.detail ??
+              "Tailscale is not available. Install it and sign in, then reopen this tab."}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NginxExposure({ port }: { port: number }) {
   const conf = useMemo(
     () =>
@@ -591,8 +708,13 @@ function ParticipantPath() {
         • <span className="mono">https://long-random-words.trycloudflare.com</span>{" "}
         &nbsp;— a Cloudflare tunnel
         <br />
+        • <span className="mono">https://their-machine.tailnet.ts.net</span>{" "}
+        &nbsp;— a Tailscale address (you must be on the same tailnet)
+        <br />
         A Cloudflare tunnel URL is <strong>disposable</strong>: the coordinator
-        gets a new one each time they restart it, so always use the latest.
+        gets a new one each time they restart it, so always use the latest. A
+        Tailscale <span className="mono">.ts.net</span> address is{" "}
+        <strong>stable</strong> — save it once and reuse it.
       </div>
 
       <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
@@ -609,8 +731,9 @@ function ParticipantPath() {
           Self-signed server? Trust its certificate
         </summary>
         <p className="dim" style={{ fontSize: 13 }}>
-          Only needed for a Direct-URL coordinator (not for a Cloudflare tunnel or
-          an NGINX/domain server, which use publicly trusted TLS). Paste the
+          Only needed for a Direct-URL coordinator (not for a Cloudflare tunnel, a
+          Tailscale address, or an NGINX/domain server, which use publicly trusted
+          TLS). Paste the
           certificate PEM the coordinator shared and confirm the fingerprint with
           them out-of-band before trusting it.
         </p>

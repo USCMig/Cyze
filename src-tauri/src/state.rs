@@ -120,6 +120,9 @@ pub struct AppState {
     pub sidecar: Mutex<Option<crate::sidecar::SidecarHandle>>,
     /// Optional Cloudflare quick tunnel exposing the embedded server publicly.
     pub tunnel: Mutex<Option<crate::tunnel::TunnelHandle>>,
+    /// Optional Tailscale `serve` mapping exposing the embedded server over the
+    /// coordinator's tailnet with a stable MagicDNS URL.
+    pub tailscale: Mutex<Option<crate::tailscale::TailscaleHandle>>,
     /// Cancellation token for the in-flight wallet sync of each group, so a
     /// "Sync Now" can abandon a stalled sync and restart it cleanly.
     pub sync_cancels: Mutex<HashMap<String, CancellationToken>>,
@@ -146,6 +149,7 @@ impl AppState {
             ceremonies: Mutex::new(HashMap::new()),
             sidecar: Mutex::new(None),
             tunnel: Mutex::new(None),
+            tailscale: Mutex::new(None),
             sync_cancels: Mutex::new(HashMap::new()),
             last_activity: AtomicI64::new(now_millis()),
         }

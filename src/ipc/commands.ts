@@ -34,7 +34,7 @@ export interface Settings {
   trusted_certs: Record<string, string>;
   /** Active session profile: "coordinator" | "participant". */
   session_role: string | null;
-  /** Coordinator server exposure: "direct" | "tunnel" | "nginx". */
+  /** Coordinator server exposure: "direct" | "tunnel" | "tailscale" | "nginx". */
   coordinator_exposure: string | null;
   /** True once first-run Session Configuration has been saved. */
   session_configured: boolean | null;
@@ -63,6 +63,21 @@ export interface TunnelStatus {
   running: boolean;
   public_url: string | null;
   port: number | null;
+}
+
+export interface TailscaleStatus {
+  /** Tailscale is installed, signed in, online — serve can be started. */
+  available: boolean;
+  /** Cyze currently has `serve` active in front of the embedded server. */
+  serving: boolean;
+  /** Stable tailnet URL participants connect to (present while serving). */
+  public_url: string | null;
+  /** Local frostd port being served (present while serving). */
+  port: number | null;
+  /** This machine's MagicDNS name, when known (shown even before serving). */
+  dns_name: string | null;
+  /** Human-readable status, especially why Tailscale is unavailable. */
+  detail: string | null;
 }
 
 // Keystore
@@ -342,6 +357,10 @@ export const exportSidecarCert = () => invoke<string>("export_sidecar_cert");
 export const startTunnel = () => invoke<TunnelStatus>("start_tunnel");
 export const stopTunnel = () => invoke<void>("stop_tunnel");
 export const tunnelStatus = () => invoke<TunnelStatus>("tunnel_status");
+export const startTailscaleServe = () =>
+  invoke<TailscaleStatus>("start_tailscale_serve");
+export const stopTailscaleServe = () => invoke<void>("stop_tailscale_serve");
+export const tailscaleStatus = () => invoke<TailscaleStatus>("tailscale_status");
 
 // Ceremonies
 export type Ciphersuite = "ed25519" | "redpallas";

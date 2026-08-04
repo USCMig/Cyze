@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::error::AppResult;
 use crate::sidecar::{self, SidecarStatus};
 use crate::state::{AppState, Settings};
+use crate::tailscale::{self, TailscaleStatus};
 use crate::tunnel::{self, TunnelStatus};
 
 #[tauri::command]
@@ -169,9 +170,10 @@ pub async fn start_sidecar(
 
 #[tauri::command]
 pub async fn stop_sidecar(state: State<'_, AppState>) -> AppResult<()> {
-    // The tunnel points at the embedded server; stopping the server makes it
-    // dead weight, so tear it down too.
+    // The tunnel and the Tailscale serve mapping both point at the embedded
+    // server; stopping the server makes them dead weight, so tear them down too.
     let _ = tunnel::stop(&state).await;
+    let _ = tailscale::stop(&state).await;
     sidecar::stop(&state).await
 }
 
@@ -203,6 +205,36 @@ pub async fn stop_tunnel(state: State<'_, AppState>) -> AppResult<()> {
 #[tauri::command]
 pub async fn tunnel_status(state: State<'_, AppState>) -> AppResult<TunnelStatus> {
     Ok(tunnel::status(&state).await)
+}
+
+/// Start `tailscale serve` in front of the running embedded server, returning the
+/// stable `https://<magic-dns>` URL participants on the tailnet can use. Requires
+/// a system Tailscale that is installed, signed in, and online.
+#[tauri::command]
+pub async fn start_tailscale_serve(state: State<'_, AppState>) -> AppResult<TailscaleStatus> {
+    let port = {
+        let guard = state.sidecar.lock().await;
+        match guard.as_ref() {
+            Some(handle) => handle.port,
+            None => {
+                return Err(crate::error::AppError::new(
+                    "tailscale",
+                    "start the embedded server before starting Tailscale serve",
+                ))
+            }
+        }
+    };
+    tailscale::start(&state, port).await
+}
+
+#[tauri::command]
+pub async fn stop_tailscale_serve(state: State<'_, AppState>) -> AppResult<()> {
+    tailscale::stop(&state).await
+}
+
+#[tauri::command]
+pub async fn tailscale_status(state: State<'_, AppState>) -> AppResult<TailscaleStatus> {
+    Ok(tailscale::status(&state).await)
 }
 
 #[tauri::command]

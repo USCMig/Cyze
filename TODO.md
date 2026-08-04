@@ -53,40 +53,36 @@ current build depends on them.
         identity. An identicon derived *from* the pubkey is the one variant that
         strengthens rather than weakens this, which argues for it.
 
-- [ ] **Tailscale `serve` as a fourth hosting option** — alongside Direct URL,
-      Cloudflare Tunnel, and NGINX in Session Configuration.
+- [x] **Tailscale `serve` as a fourth hosting option** — DONE
+      (`feat/tailscale-serve`). A fourth `coordinator_exposure` variant
+      (`"tailscale"`) in Session Configuration, alongside Direct URL, Cloudflare
+      Tunnel, and NGINX.
 
-      **Feasibility/impact (2026-08-01):** effort Med, impact Med–High, not gated
-      by the testnet-send validation. Slots in as a fourth `coordinator_exposure`
-      variant reusing the existing exposure plumbing + a status probe; no crypto
-      change (frostd's Noise layer still authenticates end-to-end). Structural
-      difference from cloudflared: **detect-and-drive a system `tailscale` CLI,
-      do NOT bundle** — it needs the `tailscaled` daemon (privileged) and a
-      logged-in tailnet, so the sidecar-spawn pattern doesn't apply. Read the
-      stable MagicDNS hostname back via `tailscale status --json` as the saved
-      server URL. Verdict: **do** — best fix for the disposable-quick-tunnel URL
-      pain (stable, savable, auto-TLS, tailnet-scoped).
+      Implementation: `src-tauri/src/tailscale.rs` **detects and drives a system
+      `tailscale` CLI** (not bundled — needs the privileged `tailscaled` daemon +
+      a logged-in tailnet). `tailscale serve --bg --https=443
+      https+insecure://127.0.0.1:<port>` puts the loopback frostd behind the
+      machine's stable MagicDNS name on the tailnet, with auto-provisioned public
+      TLS (so participants connect with system roots — no cert-trust step). We use
+      `serve` (tailnet-only), never `funnel` (public). The MagicDNS name is read
+      from `tailscale status --json` (`Self.DNSName`), and `available`/`detail`
+      surface *why* it's not ready (not installed / signed out / offline).
+      Commands `start_tailscale_serve` / `stop_tailscale_serve` /
+      `tailscale_status`; `AppState.tailscale` handle; serve is torn down when the
+      sidecar stops and on app exit (`stop_serve_blocking`, since the mapping
+      lives in the daemon). UI: a Tailscale tab + `TailscaleExposure` in
+      `SessionSetup.tsx`; the stable `.ts.net` URL is (correctly) *not* treated as
+      ephemeral, so it saves + reuses like a normal server. `https+insecure` is the
+      tailnet equivalent of cloudflared's `--no-tls-verify`; frostd's Noise layer
+      still authenticates end-to-end. Compile-verified + unit tests; **needs a
+      live run** on a machine with Tailscale installed/signed-in to confirm the
+      `serve` invocation against the current CLI.
 
-      Why it is attractive: `tailscale serve https / http://127.0.0.1:<port>`
-      exposes the loopback frostd over the tailnet with a **stable** MagicDNS
-      hostname and an automatically-provisioned, publicly-valid TLS certificate.
-      That fixes the two things that hurt most about quick tunnels: the URL is
-      **not disposable** (so it can be saved as a group's server and reused), and
-      there is no cert-trust step. Access is also restricted to the tailnet rather
-      than the whole internet, which is a strictly better default for a signing
-      server. (`tailscale funnel` would expose it publicly if a participant is
-      outside the tailnet.)
-
-      Open questions:
-      - Detect an existing `tailscale` binary/daemon, or bundle it? Bundling is
-        heavier than `cloudflared` and the daemon needs privileges — detection
-        plus a clear "install Tailscale" path is likely the right first cut.
-      - Every participant must be on the tailnet (or the coordinator uses Funnel).
-        That is a real constraint to surface in the UI, not bury.
-      - Reuse the existing exposure plumbing: this is a new `Exposure` variant
-        plus a status probe; the trust model is unchanged (frostd's Noise layer
-        still authenticates end-to-end, so the transport only provides
-        reachability).
+      Possible follow-ups: bundle/guide an install path if detection proves too
+      bare; surface the "all participants must be on the tailnet" constraint even
+      more prominently; optional `funnel` toggle for a participant outside the
+      tailnet (explicitly public — would need the same loud warning as the
+      Cloudflare tunnel).
 
 ## Voting (coinholder polling)
 

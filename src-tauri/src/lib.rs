@@ -2,6 +2,7 @@ pub mod commands;
 pub mod error;
 pub mod sidecar;
 pub mod state;
+pub mod tailscale;
 pub mod tunnel;
 
 use state::AppState;
@@ -104,6 +105,9 @@ pub fn run() {
             commands::server::start_tunnel,
             commands::server::stop_tunnel,
             commands::server::tunnel_status,
+            commands::server::start_tailscale_serve,
+            commands::server::stop_tailscale_serve,
+            commands::server::tailscale_status,
             commands::dkg::start_dkg,
             commands::dkg::cancel_ceremony,
             commands::signing::create_signing_session,
@@ -125,6 +129,15 @@ pub fn run() {
                     if let Ok(mut guard) = state.tunnel.try_lock() {
                         if let Some(handle) = guard.take() {
                             let _ = handle.child.kill();
+                        }
+                    }
+                    // Tailscale `serve` lives in the tailscaled daemon, not a
+                    // child process, so turn off the mapping synchronously if we
+                    // set one — otherwise it outlives the app pointing at a dead
+                    // port.
+                    if let Ok(mut guard) = state.tailscale.try_lock() {
+                        if guard.take().is_some() {
+                            crate::tailscale::stop_serve_blocking();
                         }
                     }
                 }
