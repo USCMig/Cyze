@@ -225,6 +225,13 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
         }
     }
 
+    // Hold the app-wide sync gate for the whole run so only one wallet ever syncs
+    // at a time (trial decryption is CPU-bound; concurrent group syncs only
+    // thrash). We register+cancel the prior same-group token above first, so a
+    // restart of this group releases the gate before we wait on it; an
+    // active-wallet switch cancels the other group's sync, so this rarely blocks.
+    let _gate = state.sync_gate.lock().await;
+
     let batch_size = state.load_settings().sync_batch_size;
     let result = wallet::sync_group(
         &state.data_dir, &group_id, network, &url, db_key.as_ref(), batch_size, &cancel,

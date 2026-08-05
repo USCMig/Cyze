@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect } from "react";
 import {
   createBrowserRouter,
   RouterProvider,
@@ -6,7 +6,6 @@ import {
   NavLink,
   Navigate,
   useLocation,
-  useNavigate,
 } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
@@ -17,6 +16,7 @@ import {
   listGroups,
   recordActivity,
   getSettings,
+  getActiveWallet,
   listPendingSessions,
 } from "./ipc/commands";
 import CeremonyListener from "./CeremonyListener";
@@ -31,56 +31,24 @@ import DkgWizard from "./screens/DkgWizard";
 import NewSigningSession from "./screens/NewSigningSession";
 import Inbox from "./screens/Inbox";
 import Wallet from "./screens/Wallet";
+import Wallets from "./screens/Wallets";
 
-/** Groups nav entry: a single-select dropdown so exactly one group ("active
- *  wallet") is shown at a time, with only that group's links below it. Keeps
- *  the sidebar quiet no matter how many groups exist. Follows the current
- *  route, and switching the picker navigates into the chosen group. */
-function GroupsNavItem() {
+/** Zcash "Wallets" nav entry: links to the wallet switcher, and — when a wallet
+ *  is active — shows its name as a one-click sub-link to that wallet. Exactly one
+ *  wallet is active at a time; the switcher page changes it. */
+function WalletsNavItem() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
-  const location = useLocation();
-  const navigate = useNavigate();
-
-  const activeGroupId = useMemo(() => {
-    const m = location.pathname.match(/^\/groups\/([^/]+)/);
-    return m ? m[1] : null;
-  }, [location.pathname]);
-  const [selectedId, setSelectedId] = useState<string | null>(activeGroupId);
-  useEffect(() => {
-    if (activeGroupId) setSelectedId(activeGroupId);
-  }, [activeGroupId]);
-
-  const list = groups.data ?? [];
-  if (!list.length) return null;
-
-  // Always resolve to one real group so the panel shows a single active wallet.
-  const current =
-    list.find((g) => g.id === selectedId) ?? list[0];
+  const active = useQuery({ queryKey: ["active-wallet"], queryFn: getActiveWallet });
+  const activeGroup = (groups.data ?? []).find((g) => g.id === active.data);
 
   return (
     <div className="nav-group">
-      <select
-        className="nav-group-select group-pick"
-        value={current.id}
-        title={current.description || current.id}
-        aria-label="Active group"
-        onChange={(e) => {
-          setSelectedId(e.target.value);
-          navigate(`/groups/${e.target.value}`);
-        }}
-      >
-        {list.map((g) => (
-          <option key={g.id} value={g.id}>
-            {g.description || `${g.id.slice(0, 10)}…`}
-          </option>
-        ))}
-      </select>
-      <NavLink to={`/groups/${current.id}`} end className="nav-subsubitem">
-        Details
+      <NavLink to="/wallets" end>
+        Wallets
       </NavLink>
-      {current.ciphersuite.includes("Pallas") && (
-        <NavLink to={`/groups/${current.id}/wallet`} className="nav-subsubitem">
-          Wallet
+      {activeGroup && activeGroup.ciphersuite.includes("Pallas") && (
+        <NavLink to={`/groups/${activeGroup.id}/wallet`} className="nav-subsubitem">
+          {activeGroup.description || `${activeGroup.id.slice(0, 10)}…`}
         </NavLink>
       )}
     </div>
@@ -114,6 +82,7 @@ const NAV_SECTIONS: { title: string; links: { to: string; label: string }[] }[] 
   {
     title: "4 · Zcash",
     links: [
+      { to: "/wallets", label: "Wallets" },
       { to: "/setup", label: "Session Configuration" },
       { to: "/wallet", label: "Wallet Settings" },
     ],
@@ -206,8 +175,8 @@ function Layout() {
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>
             {section.links.map((link) =>
-              link.to === "/groups" ? (
-                <GroupsNavItem key={link.to} />
+              link.to === "/wallets" ? (
+                <WalletsNavItem key={link.to} />
               ) : (
                 <NavLink key={link.to} to={link.to} end={link.to === "/"}>
                   {link.label}
@@ -259,6 +228,7 @@ const router = createBrowserRouter([
       { path: "dkg", element: <DkgWizard /> },
       { path: "sign", element: <NewSigningSession /> },
       { path: "inbox", element: <Inbox /> },
+      { path: "wallets", element: <Wallets /> },
       { path: "wallet", element: <Wallet /> },
       { path: "server", element: <ServerSettings /> },
       { path: "setup", element: <SessionSetup /> },
