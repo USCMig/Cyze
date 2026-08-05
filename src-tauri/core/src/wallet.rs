@@ -999,7 +999,7 @@ pub async fn sync_group(
     // safe to race against a cancellation token: "Sync Now" trips the token to
     // abandon a stalled run, and a fresh sync resumes from where this one left
     // off. Without this, a stuck stream would keep the sync pending forever.
-    if opts.pipelined {
+    let result = if opts.pipelined {
         // The custom pipelined driver overlaps block download with scanning; it
         // produces the same wallet state as the stock driver but hides network
         // latency behind CPU trial-decryption. Off by default, opted in via
@@ -1018,7 +1018,42 @@ pub async fn sync_group(
                 &mut client, &params, &cache, &mut db, batch_size,
             ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
         }
+    };
+    // Turn known, actionable failures into a message that says what to do, while
+    // keeping the raw server error appended for diagnosis.
+    result.map_err(annotate_sync_error)
+}
+
+/// Rewrite a raw sync failure into an actionable message when it matches a known
+/// cause, preserving the original text after an em-dash for debugging. Applies to
+/// both sync drivers (both surface a `CoreError::Connection` carrying the raw
+/// lightwalletd/tonic error string).
+fn annotate_sync_error(e: CoreError) -> CoreError {
+    let raw = match &e {
+        CoreError::Connection(m) => m.clone(),
+        // Cancellation and non-connection errors are already clear.
+        _ => return e,
+    };
+    let lower = raw.to_lowercase();
+
+    // A lightwalletd that predates Ironwood (NU6.3) doesn't know the Ironwood
+    // shielded protocol, so the very first sync step — fetching subtree roots for
+    // all pools, including Ironwood — is rejected with "invalid shielded protocol
+    // value". The whole sync then aborts. This is a server-capability problem, not
+    // a wallet bug, and the fix is to point at an Ironwood-capable server.
+    if lower.contains("invalid shielded protocol")
+        || (lower.contains("shielded protocol") && lower.contains("invalid"))
+    {
+        return CoreError::Connection(format!(
+            "This lightwalletd server doesn't support Ironwood (NU6.3). Syncing has \
+             to fetch the Ironwood note-commitment tree, and the server rejected \
+             that request (\"invalid shielded protocol value\"). Switch to an \
+             Ironwood-capable lightwalletd in the wallet's network settings, then \
+             sync again. — {raw}"
+        ));
     }
+
+    e
 }
 
 /// An in-memory [`BlockSource`] over one batch of already-downloaded compact
@@ -2412,6 +2447,45 @@ mod tests {
         assert_eq!(WalletNetwork::Main.params(), Network::MainNetwork);
         assert!(WalletNetwork::Test.default_lightwalletd().starts_with("https://"));
         assert!(WalletNetwork::Main.default_lightwalletd().starts_with("https://"));
+    }
+
+    #[test]
+    fn annotate_sync_error_flags_non_ironwood_server() {
+        // The exact string a pre-Ironwood lightwalletd returns, as wrapped by the
+        // stock driver.
+        let raw = "sync: Error while communicating with lightwalletd server: \
+                   status: InvalidArgument, message: \"Error: Invalid shielded \
+                   protocol value.\"";
+        let out = annotate_sync_error(CoreError::Connection(raw.to_string()));
+        match out {
+            CoreError::Connection(m) => {
+                assert!(m.contains("doesn't support Ironwood"), "friendly headline: {m}");
+                assert!(m.contains("network settings"), "actionable guidance: {m}");
+                // Raw detail is preserved after the em-dash separator.
+                assert!(m.contains(" — "), "keeps raw detail: {m}");
+                assert!(m.contains("Invalid shielded protocol value"), "raw text: {m}");
+            }
+            other => panic!("expected Connection error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn annotate_sync_error_passes_through_unrelated() {
+        // An unrelated connection error is returned unchanged (no false headline).
+        let raw = "sync: Error while communicating with lightwalletd server: \
+                   transport error";
+        match annotate_sync_error(CoreError::Connection(raw.to_string())) {
+            CoreError::Connection(m) => {
+                assert_eq!(m, raw);
+                assert!(!m.contains("Ironwood"));
+            }
+            other => panic!("expected Connection error, got {other:?}"),
+        }
+        // Cancellation is untouched.
+        assert!(matches!(
+            annotate_sync_error(CoreError::Cancelled),
+            CoreError::Cancelled
+        ));
     }
 
     /// The pipelined driver must scan in the exact same batch units as the stock

@@ -1678,7 +1678,28 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           )}
         </>
       )}
-      {err && <div className="error">{err}</div>}
+      {err && <SyncErrorView text={err} />}
+    </div>
+  );
+}
+
+/** Render an error. When the backend has attached a raw server detail after
+ *  " — " (as `annotate_sync_error` does for known, actionable failures), show the
+ *  actionable headline prominently and keep the raw text below it, dimmed, so the
+ *  user sees what to do first without losing the log detail for debugging. */
+function SyncErrorView({ text }: { text: string }) {
+  const sep = text.indexOf(" — ");
+  if (sep === -1) {
+    return <div className="error">{text}</div>;
+  }
+  const headline = text.slice(0, sep);
+  const detail = text.slice(sep + 3);
+  return (
+    <div className="error">
+      <strong>{headline}</strong>
+      <div className="dim" style={{ fontSize: 12, marginTop: 6, whiteSpace: "pre-wrap" }}>
+        {detail}
+      </div>
     </div>
   );
 }
