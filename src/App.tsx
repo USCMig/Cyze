@@ -33,23 +33,31 @@ import Inbox from "./screens/Inbox";
 import Wallet from "./screens/Wallet";
 import Wallets from "./screens/Wallets";
 
-/** Zcash "Wallets" nav entry: links to the wallet switcher, and — when a wallet
- *  is active — shows its name as a one-click sub-link to that wallet. Exactly one
- *  wallet is active at a time; the switcher page changes it. */
-function WalletsNavItem() {
+/** Groups nav entry: the Groups list plus, for the active group, quick sub-links
+ *  to its Details (key info, participants) and its Wallet. The single active
+ *  wallet is chosen on the Wallets switcher (4 · Zcash); this just surfaces its
+ *  Details/Wallet where group management lives. */
+function GroupsNavItem() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
   const active = useQuery({ queryKey: ["active-wallet"], queryFn: getActiveWallet });
   const activeGroup = (groups.data ?? []).find((g) => g.id === active.data);
 
   return (
     <div className="nav-group">
-      <NavLink to="/wallets" end>
-        Wallets
+      <NavLink to="/groups" end>
+        Groups
       </NavLink>
-      {activeGroup && activeGroup.ciphersuite.includes("Pallas") && (
-        <NavLink to={`/groups/${activeGroup.id}/wallet`} className="nav-subsubitem">
-          {activeGroup.description || `${activeGroup.id.slice(0, 10)}…`}
-        </NavLink>
+      {activeGroup && (
+        <>
+          <NavLink to={`/groups/${activeGroup.id}`} end className="nav-subsubitem">
+            Details
+          </NavLink>
+          {activeGroup.ciphersuite.includes("Pallas") && (
+            <NavLink to={`/groups/${activeGroup.id}/wallet`} className="nav-subsubitem">
+              Wallet
+            </NavLink>
+          )}
+        </>
       )}
     </div>
   );
@@ -175,8 +183,8 @@ function Layout() {
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>
             {section.links.map((link) =>
-              link.to === "/wallets" ? (
-                <WalletsNavItem key={link.to} />
+              link.to === "/groups" ? (
+                <GroupsNavItem key={link.to} />
               ) : (
                 <NavLink key={link.to} to={link.to} end={link.to === "/"}>
                   {link.label}
