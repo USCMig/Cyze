@@ -225,6 +225,21 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
         }
     }
 
+    // Cancellation is cooperative: the previous sync keeps its db connection (and,
+    // mid-batch, the SQLite write lock) until it returns at the next batch
+    // boundary. Acquire the per-group sync lock and hold it across `sync_group`, so
+    // this run *waits* for the cancelled one to fully release before opening its
+    // own connection. Without this the two overlap and one dies with "database is
+    // locked" (seen at `put_*_subtree_roots` at the very start of the new sync).
+    let sync_lock = {
+        let mut locks = state.sync_locks.lock().await;
+        locks
+            .entry(group_id.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _sync_guard = sync_lock.lock().await;
+
     let settings = state.load_settings();
     let opts = wallet::SyncOptions {
         batch_size: settings.sync_batch_size,
