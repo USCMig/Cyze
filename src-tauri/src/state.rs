@@ -82,6 +82,12 @@ pub struct Settings {
     /// they aren't prompted again unless they revisit it.
     #[serde(default)]
     pub session_configured: Option<bool>,
+    /// The single **active wallet**: the group whose wallet the app currently
+    /// works on. Wallet actions (sync, balance, send) are scoped to this one, and
+    /// only this group syncs — switching cancels the previous group's sync. `None`
+    /// until the user first selects one. Persisted so the choice survives restart.
+    #[serde(default)]
+    pub active_group_id: Option<String>,
 }
 
 /// Per-group rotating receive-address bookkeeping (#3). Non-secret; the actual
@@ -123,6 +129,12 @@ pub struct AppState {
     /// Cancellation token for the in-flight wallet sync of each group, so a
     /// "Sync Now" can abandon a stalled sync and restart it cleanly.
     pub sync_cancels: Mutex<HashMap<String, CancellationToken>>,
+    /// App-wide "one wallet syncs at a time" gate. Trial decryption is CPU-bound
+    /// and saturates every core, so two groups syncing at once only thrash. Every
+    /// `wallet_sync` holds this for its whole run; combined with cancelling the
+    /// previous group's sync on an active-wallet switch, it guarantees the app's
+    /// processing stays focused on a single wallet.
+    pub sync_gate: Mutex<()>,
     /// Epoch-millis of the last user activity, used to drive the idle auto-lock.
     pub last_activity: AtomicI64,
 }
@@ -147,6 +159,7 @@ impl AppState {
             sidecar: Mutex::new(None),
             tunnel: Mutex::new(None),
             sync_cancels: Mutex::new(HashMap::new()),
+            sync_gate: Mutex::new(()),
             last_activity: AtomicI64::new(now_millis()),
         }
     }
