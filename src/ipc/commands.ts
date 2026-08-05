@@ -342,6 +342,10 @@ export const exportSidecarCert = () => invoke<string>("export_sidecar_cert");
 export const startTunnel = () => invoke<TunnelStatus>("start_tunnel");
 export const stopTunnel = () => invoke<void>("stop_tunnel");
 export const tunnelStatus = () => invoke<TunnelStatus>("tunnel_status");
+/** The in-app application log (oldest line first), captured from tracing since
+ *  app start. In-memory and bounded; cleared on restart. */
+export const getLogs = () => invoke<string[]>("get_logs");
+export const clearLogs = () => invoke<void>("clear_logs");
 
 // Ceremonies
 export type Ciphersuite = "ed25519" | "redpallas";
