@@ -1215,6 +1215,7 @@ async fn running_pipelined(
     let mut producer_client = client.clone();
     let producer = tokio::spawn(async move {
         for sr in batches {
+            let dl_start = std::time::Instant::now();
             let blocks = match download_blocks_pipelined(&mut producer_client, &sr).await {
                 Ok(b) => b,
                 Err(e) => {
@@ -1222,6 +1223,12 @@ async fn running_pipelined(
                     return;
                 }
             };
+            tracing::debug!(
+                "pipelined download: {} blocks for {} in {} ms",
+                blocks.len(),
+                sr,
+                dl_start.elapsed().as_millis()
+            );
             let chain_state = match download_chain_state_pipelined(
                 &mut producer_client,
                 sr.block_range().start - 1,
@@ -1248,6 +1255,8 @@ async fn running_pipelined(
     // whole point. Scanning is transactional per batch, so bailing out early (or
     // being dropped on cancellation) leaves the db consistent at a batch boundary.
     let mut result = Ok(false);
+    let scan_run_start = std::time::Instant::now();
+    let mut scanned_blocks: u64 = 0;
     while let Some(item) = rx.recv().await {
         let (sr, blocks, chain_state) = match item {
             Ok(v) => v,
@@ -1256,8 +1265,24 @@ async fn running_pipelined(
                 break;
             }
         };
+        let n = blocks.len() as u64;
         let src = MemBlockSource(blocks);
-        match scan_batch(params, &src, db, &chain_state, &sr) {
+        let scan_start = std::time::Instant::now();
+        let outcome = scan_batch(params, &src, db, &chain_state, &sr);
+        // Per-batch scan cost and cumulative throughput. This is the CPU-bound leg
+        // (trial decryption + note-commitment tree updates); logging it here makes
+        // the download-vs-scan split visible when diagnosing slow syncs.
+        scanned_blocks += n;
+        let secs = scan_run_start.elapsed().as_secs_f64();
+        tracing::info!(
+            "pipelined scan: {} blocks for {} in {} ms ({:.0} blocks/s cumulative over {} blocks)",
+            n,
+            sr,
+            scan_start.elapsed().as_millis(),
+            if secs > 0.0 { scanned_blocks as f64 / secs } else { 0.0 },
+            scanned_blocks
+        );
+        match outcome {
             Ok(true) => {
                 // Ranges changed (continuity error or a new higher-priority
                 // range); restart the whole pass from fresh suggestions.
