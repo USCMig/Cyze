@@ -15,6 +15,7 @@ import {
   AppError,
 } from "../ipc/commands";
 import { useTauriEvent } from "../ipc/events";
+import TailscalePanel from "../components/TailscalePanel";
 
 function Collapsible({
   title,
@@ -285,6 +286,11 @@ export default function ServerSettings() {
             </button>
           </>
         )}
+
+        <h3 style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+          Tailnet access (Tailscale)
+        </h3>
+        <TailscalePanel serverRunning={!!sidecar.data?.running} />
       </Collapsible>
 
       <Collapsible

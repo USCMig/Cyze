@@ -10,18 +10,13 @@ import {
   tunnelStatus,
   startTunnel,
   stopTunnel,
-  tailscaleStatus,
-  startTailscaleServe,
-  stopTailscaleServe,
-  tailscaleSignIn,
-  openUrl,
-  TailscaleStatus,
   setServerUrl,
   setSessionConfig,
   testServerConnection,
   trustServerCert,
   AppError,
 } from "../ipc/commands";
+import TailscalePanel from "../components/TailscalePanel";
 
 type Role = "coordinator" | "participant";
 type Exposure = "direct" | "tunnel" | "tailscale" | "nginx";
@@ -183,14 +178,6 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
 
   const sidecar = useQuery({ queryKey: ["sidecar"], queryFn: sidecarStatus });
   const tunnel = useQuery({ queryKey: ["tunnel"], queryFn: tunnelStatus });
-  // Poll Tailscale status only while its tab is selected — it shells out to the
-  // `tailscale` CLI, so there's no reason to probe it when the user isn't looking.
-  const tailscale = useQuery({
-    queryKey: ["tailscale"],
-    queryFn: tailscaleStatus,
-    enabled: exposure === "tailscale",
-    refetchInterval: exposure === "tailscale" ? 5000 : false,
-  });
 
   const start = useMutation({
     // Always loopback: remote signers come in over the tunnel/proxy, not the LAN.
@@ -218,16 +205,6 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
     mutationFn: stopTunnel,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tunnel"] }),
   });
-  const openTailscale = useMutation({
-    mutationFn: startTailscaleServe,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tailscale"] }),
-    onError: (e) => setError((e as unknown as AppError).message),
-  });
-  const closeTailscale = useMutation({
-    mutationFn: stopTailscaleServe,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tailscale"] }),
-  });
-
   const running = sidecar.data?.running;
   const port = sidecar.data?.port ?? 2744;
 
@@ -305,20 +282,9 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
           </p>
         ))}
 
-      {exposure === "tailscale" &&
-        (running ? (
-          <TailscaleExposure
-            status={tailscale.data ?? null}
-            loading={tailscale.isLoading}
-            onServe={() => openTailscale.mutate()}
-            onStop={() => closeTailscale.mutate()}
-            pending={openTailscale.isPending}
-          />
-        ) : (
-          <p className="dim">
-            Start the server (Step 1), then publish it to your tailnet here.
-          </p>
-        ))}
+      {exposure === "tailscale" && (
+        <TailscalePanel serverRunning={running ?? false} active={exposure === "tailscale"} />
+      )}
 
       {exposure === "nginx" && <NginxExposure port={port} />}
 
@@ -497,137 +463,6 @@ function TunnelExposure({
   );
 }
 
-function TailscaleExposure({
-  status,
-  loading,
-  onServe,
-  onStop,
-  pending,
-}: {
-  status: TailscaleStatus | null;
-  loading: boolean;
-  onServe: () => void;
-  onStop: () => void;
-  pending: boolean;
-}) {
-  const serving = status?.serving ?? false;
-  const url = status?.public_url ?? null;
-  const [loginUrl, setLoginUrl] = useState<string | null>(null);
-  const [signInNote, setSignInNote] = useState<string | null>(null);
-
-  const signIn = useMutation({
-    mutationFn: tailscaleSignIn,
-    onSuccess: (r) => {
-      if (r.login_url) {
-        setLoginUrl(r.login_url);
-        setSignInNote(null);
-        openUrl(r.login_url).catch(() => {});
-      } else {
-        // No URL needed: already signed in, or a desktop app opened the browser.
-        setLoginUrl(null);
-        setSignInNote(
-          "Signing in… if a browser didn't open, finish it in the Tailscale app. This updates automatically."
-        );
-      }
-    },
-  });
-
-  return (
-    <div>
-      <p className="dim" style={{ marginTop: 0 }}>
-        Publishes this server to your <strong>tailnet</strong> at a{" "}
-        <strong>stable</strong> <span className="mono">*.ts.net</span> address with
-        an automatic, publicly-trusted TLS certificate — so the URL can be saved
-        and reused across launches, with no cert-trust step. Access is limited to
-        your tailnet (not the public internet). Requires{" "}
-        <strong>Tailscale</strong> installed and signed in on this machine, and
-        every participant on the same tailnet.
-      </p>
-
-      {loading && !status ? (
-        <p className="dim">Checking Tailscale…</p>
-      ) : serving && url ? (
-        <>
-          <div>
-            <span className="badge green">serving on tailnet</span>
-          </div>
-          <label style={{ marginTop: 8 }}>
-            Tailnet URL — share with participants
-          </label>
-          <div className="mono">{url}</div>
-          <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <CopyButton text={url} label="Copy URL" />
-            <button className="secondary" onClick={onStop}>
-              Stop serving
-            </button>
-          </div>
-          <div className="callout" style={{ marginTop: 10 }}>
-            <span>
-              This address is stable — save it as the group's server and reuse it
-              next time. Participants must be on your tailnet to reach it.
-            </span>
-          </div>
-        </>
-      ) : status?.available ? (
-        <>
-          {status.dns_name && (
-            <p className="dim" style={{ fontSize: 12, marginTop: 0 }}>
-              This machine:{" "}
-              <span className="mono">https://{status.dns_name}</span>
-            </p>
-          )}
-          <button onClick={onServe} disabled={pending}>
-            {pending ? "Publishing…" : "Publish to tailnet"}
-          </button>
-        </>
-      ) : status?.installed ? (
-        // Installed but not signed in / not online: offer one-click sign-in.
-        <div>
-          <div className="callout warn" style={{ marginBottom: 8 }}>
-            <span>{status?.detail ?? "Tailscale isn't connected yet."}</span>
-          </div>
-          <button onClick={() => signIn.mutate()} disabled={signIn.isPending}>
-            {signIn.isPending ? "Signing in…" : "Sign in to Tailscale"}
-          </button>
-          {loginUrl && (
-            <p className="dim" style={{ fontSize: 12, marginTop: 8 }}>
-              Finish signing in in your browser:{" "}
-              <a
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  openUrl(loginUrl).catch(() => {});
-                }}
-              >
-                open the sign-in page
-              </a>
-              . This tab updates automatically once you're connected.
-            </p>
-          )}
-          {signInNote && (
-            <p className="dim" style={{ fontSize: 12, marginTop: 8 }}>
-              {signInNote}
-            </p>
-          )}
-        </div>
-      ) : (
-        // Not installed: link to the download.
-        <div>
-          <div className="callout warn" style={{ marginBottom: 8 }}>
-            <span>
-              {status?.detail ??
-                "Tailscale isn't installed on this machine."}
-            </span>
-          </div>
-          <button onClick={() => openUrl("https://tailscale.com/download").catch(() => {})}>
-            Get Tailscale
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function NginxExposure({ port }: { port: number }) {
   const conf = useMemo(
     () =>
@@ -749,26 +584,35 @@ function ParticipantPath() {
         placeholder="https://…"
         style={{ width: "100%" }}
       />
-      <div className="dim" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.7 }}>
-        Paste the address the coordinator is sharing right now. It looks like one
-        of:
-        <br />
-        • <span className="mono">https://frost.example.com</span>{" "}
-        &nbsp;— a domain / NGINX server
-        <br />
-        • <span className="mono">https://203.0.113.7:2744</span>{" "}
-        &nbsp;— a direct IP and port
-        <br />
-        • <span className="mono">https://long-random-words.trycloudflare.com</span>{" "}
-        &nbsp;— a Cloudflare tunnel
-        <br />
-        • <span className="mono">https://their-machine.tailnet.ts.net</span>{" "}
-        &nbsp;— a Tailscale address (you must be on the same tailnet)
-        <br />
-        A Cloudflare tunnel URL is <strong>disposable</strong>: the coordinator
-        gets a new one each time they restart it, so always use the latest. A
-        Tailscale <span className="mono">.ts.net</span> address is{" "}
-        <strong>stable</strong> — save it once and reuse it.
+      <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>
+        <p style={{ margin: "0 0 8px" }}>
+          Paste the address the coordinator is sharing right now. It looks like
+          one of:
+        </p>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr",
+            columnGap: 12,
+            rowGap: 6,
+            alignItems: "baseline",
+          }}
+        >
+          <span className="mono">https://frost.example.com</span>
+          <span>a domain / NGINX server</span>
+          <span className="mono">https://203.0.113.7:2744</span>
+          <span>a direct IP and port</span>
+          <span className="mono">https://long-random-words.trycloudflare.com</span>
+          <span>a Cloudflare tunnel</span>
+          <span className="mono">https://their-machine.tailnet.ts.net</span>
+          <span>a Tailscale address (you must be on the same tailnet)</span>
+        </div>
+        <p style={{ margin: "10px 0 0", lineHeight: 1.6 }}>
+          A Cloudflare tunnel URL is <strong>disposable</strong>: the coordinator
+          gets a new one each time they restart it, so always use the latest. A
+          Tailscale <span className="mono">.ts.net</span> address is{" "}
+          <strong>stable</strong> — save it once and reuse it.
+        </p>
       </div>
 
       <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
