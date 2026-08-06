@@ -110,6 +110,8 @@ pub fn run() {
             commands::server::start_tailscale_serve,
             commands::server::stop_tailscale_serve,
             commands::server::tailscale_status,
+            commands::server::tailscale_sign_in,
+            commands::server::open_url,
             commands::dkg::start_dkg,
             commands::dkg::cancel_ceremony,
             commands::signing::create_signing_session,

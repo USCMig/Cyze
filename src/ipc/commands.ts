@@ -68,6 +68,9 @@ export interface TunnelStatus {
 }
 
 export interface TailscaleStatus {
+  /** The tailscale CLI is present (may still be signed out). Drives whether the
+   *  UI offers "Get Tailscale" vs "Sign in". */
+  installed: boolean;
   /** Tailscale is installed, signed in, online — serve can be started. */
   available: boolean;
   /** Cyze currently has `serve` active in front of the embedded server. */
@@ -368,6 +371,15 @@ export const startTailscaleServe = () =>
   invoke<TailscaleStatus>("start_tailscale_serve");
 export const stopTailscaleServe = () => invoke<void>("stop_tailscale_serve");
 export const tailscaleStatus = () => invoke<TailscaleStatus>("tailscale_status");
+/** Result of triggering Tailscale sign-in. */
+export interface SignInResult {
+  /** URL to open to finish authenticating, or null if none was needed. */
+  login_url: string | null;
+}
+/** Run `tailscale up`; returns a login URL to open when auth is needed. */
+export const tailscaleSignIn = () => invoke<SignInResult>("tailscale_sign_in");
+/** Open a URL in the default browser (http/https only). */
+export const openUrl = (url: string) => invoke<void>("open_url", { url });
 
 // Ceremonies
 export type Ciphersuite = "ed25519" | "redpallas";

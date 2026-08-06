@@ -48,6 +48,10 @@ pub struct TailscaleHandle {
 
 #[derive(Serialize, Clone)]
 pub struct TailscaleStatus {
+    /// The `tailscale` CLI was found on this machine (regardless of whether it is
+    /// signed in). Drives whether the UI offers "Get Tailscale" (install) vs
+    /// "Sign in to Tailscale".
+    pub installed: bool,
     /// The `tailscale` CLI was found, the daemon is running, the machine is
     /// signed in and online, and a MagicDNS name is available — i.e. `serve`
     /// can be started.
@@ -69,6 +73,7 @@ pub struct TailscaleStatus {
 impl TailscaleStatus {
     fn unavailable(detail: impl Into<String>) -> Self {
         TailscaleStatus {
+            installed: false,
             available: false,
             serving: false,
             public_url: None,
@@ -77,6 +82,15 @@ impl TailscaleStatus {
             detail: Some(detail.into()),
         }
     }
+}
+
+/// Result of triggering Tailscale sign-in.
+#[derive(Serialize, Clone)]
+pub struct SignInResult {
+    /// A URL the user must open to finish authenticating. `None` means sign-in
+    /// completed without needing one (already signed in, or a desktop Tailscale
+    /// app opened the browser itself) — the status will flip to available shortly.
+    pub login_url: Option<String>,
 }
 
 /// Candidate `tailscale` binary locations: PATH first (bare name; the OS
@@ -238,6 +252,7 @@ pub async fn start(state: &AppState, port: u16) -> AppResult<TailscaleStatus> {
     });
 
     Ok(TailscaleStatus {
+        installed: true,
         available: true,
         serving: true,
         public_url: Some(public_url),
@@ -255,6 +270,69 @@ pub async fn stop(state: &AppState) -> AppResult<()> {
         serve_off(&bin).await;
     }
     Ok(())
+}
+
+/// Trigger Tailscale sign-in by running `tailscale up`. When the machine isn't
+/// signed in yet, `tailscale up` prints a login URL and waits for the user to
+/// authenticate in a browser; we capture that URL (with a short timeout) and hand
+/// it back so the UI can open it, letting the `up` process finish in the
+/// background. When it's already signed in (or a desktop app handles the browser),
+/// no URL is produced and the status poll picks up the change.
+pub async fn sign_in() -> AppResult<SignInResult> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let bin = resolve_bin().await.ok_or_else(|| {
+        AppError::new(
+            "tailscale",
+            "Tailscale CLI not found. Install Tailscale first, then sign in.",
+        )
+    })?;
+
+    let mut child = Command::new(&bin)
+        .arg("up")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::new("tailscale", format!("running `tailscale up`: {e}")))?;
+
+    // `tailscale up` prints the login URL to stderr. Read lines until we see it or
+    // the process finishes its output, bounded so we never hang the command.
+    let stderr = child.stderr.take();
+    let login_url = if let Some(stderr) = stderr {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut found = None;
+        // Loop ends when the pattern fails to match: a timeout, EOF (process done
+        // printing), or a read error — any of which means "stop looking".
+        while let Ok(Ok(Some(line))) =
+            tokio::time::timeout(std::time::Duration::from_secs(15), lines.next_line()).await
+        {
+            if let Some(u) = extract_login_url(&line) {
+                found = Some(u);
+                break;
+            }
+        }
+        found
+    } else {
+        None
+    };
+
+    // Reap the child in the background so it can finish authenticating (or exit)
+    // without leaving a zombie, and without us blocking on it here.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+
+    Ok(SignInResult { login_url })
+}
+
+/// Extract a `https://login.tailscale.com/...` URL from a line, if present.
+fn extract_login_url(line: &str) -> Option<String> {
+    let start = line.find("https://login.tailscale.com")?;
+    let rest = &line[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(rest.len());
+    Some(rest[..end].to_string())
 }
 
 /// Report Tailscale availability and whether Cyze is currently serving. Safe to
@@ -282,8 +360,11 @@ pub async fn status(state: &AppState) -> TailscaleStatus {
         }
     };
 
+    // The binary was found, so Tailscale is installed even when it's not yet
+    // signed in / online.
     match probe_dns_name(&bin).await {
         Ok(Ok(dns_name)) => TailscaleStatus {
+            installed: true,
             available: true,
             serving,
             public_url,
@@ -293,6 +374,7 @@ pub async fn status(state: &AppState) -> TailscaleStatus {
         },
         Ok(Err(reason)) => {
             let mut s = TailscaleStatus::unavailable(reason);
+            s.installed = true;
             s.serving = serving;
             s.public_url = public_url;
             s.port = port;
@@ -300,6 +382,7 @@ pub async fn status(state: &AppState) -> TailscaleStatus {
         }
         Err(e) => {
             let mut s = TailscaleStatus::unavailable(e.message);
+            s.installed = true;
             s.serving = serving;
             s.public_url = public_url;
             s.port = port;
@@ -343,5 +426,20 @@ mod tests {
     fn first_line_trims_and_skips_blanks() {
         assert_eq!(first_line("\n  \n  hello \nworld"), Some("hello"));
         assert_eq!(first_line("   "), None);
+    }
+
+    #[test]
+    fn extract_login_url_pulls_the_auth_link() {
+        let line = "To authenticate, visit:\n\n\thttps://login.tailscale.com/a/abc123def ";
+        assert_eq!(
+            extract_login_url(line).as_deref(),
+            Some("https://login.tailscale.com/a/abc123def")
+        );
+        assert_eq!(extract_login_url("Success."), None);
+        // Stops at whitespace, so trailing prose doesn't get glued on.
+        assert_eq!(
+            extract_login_url("visit https://login.tailscale.com/a/x then return").as_deref(),
+            Some("https://login.tailscale.com/a/x")
+        );
     }
 }

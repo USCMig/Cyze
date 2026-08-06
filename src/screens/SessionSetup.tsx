@@ -13,6 +13,8 @@ import {
   tailscaleStatus,
   startTailscaleServe,
   stopTailscaleServe,
+  tailscaleSignIn,
+  openUrl,
   TailscaleStatus,
   setServerUrl,
   setSessionConfig,
@@ -510,6 +512,25 @@ function TailscaleExposure({
 }) {
   const serving = status?.serving ?? false;
   const url = status?.public_url ?? null;
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [signInNote, setSignInNote] = useState<string | null>(null);
+
+  const signIn = useMutation({
+    mutationFn: tailscaleSignIn,
+    onSuccess: (r) => {
+      if (r.login_url) {
+        setLoginUrl(r.login_url);
+        setSignInNote(null);
+        openUrl(r.login_url).catch(() => {});
+      } else {
+        // No URL needed: already signed in, or a desktop app opened the browser.
+        setLoginUrl(null);
+        setSignInNote(
+          "Signing in… if a browser didn't open, finish it in the Tailscale app. This updates automatically."
+        );
+      }
+    },
+  });
 
   return (
     <div>
@@ -519,11 +540,8 @@ function TailscaleExposure({
         an automatic, publicly-trusted TLS certificate — so the URL can be saved
         and reused across launches, with no cert-trust step. Access is limited to
         your tailnet (not the public internet). Requires{" "}
-        <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">
-          Tailscale
-        </a>{" "}
-        installed and signed in on this machine, and every participant on the same
-        tailnet.
+        <strong>Tailscale</strong> installed and signed in on this machine, and
+        every participant on the same tailnet.
       </p>
 
       {loading && !status ? (
@@ -562,12 +580,48 @@ function TailscaleExposure({
             {pending ? "Publishing…" : "Publish to tailnet"}
           </button>
         </>
+      ) : status?.installed ? (
+        // Installed but not signed in / not online: offer one-click sign-in.
+        <div>
+          <div className="callout warn" style={{ marginBottom: 8 }}>
+            <span>{status?.detail ?? "Tailscale isn't connected yet."}</span>
+          </div>
+          <button onClick={() => signIn.mutate()} disabled={signIn.isPending}>
+            {signIn.isPending ? "Signing in…" : "Sign in to Tailscale"}
+          </button>
+          {loginUrl && (
+            <p className="dim" style={{ fontSize: 12, marginTop: 8 }}>
+              Finish signing in in your browser:{" "}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openUrl(loginUrl).catch(() => {});
+                }}
+              >
+                open the sign-in page
+              </a>
+              . This tab updates automatically once you're connected.
+            </p>
+          )}
+          {signInNote && (
+            <p className="dim" style={{ fontSize: 12, marginTop: 8 }}>
+              {signInNote}
+            </p>
+          )}
+        </div>
       ) : (
-        <div className="callout warn">
-          <span>
-            {status?.detail ??
-              "Tailscale is not available. Install it and sign in, then reopen this tab."}
-          </span>
+        // Not installed: link to the download.
+        <div>
+          <div className="callout warn" style={{ marginBottom: 8 }}>
+            <span>
+              {status?.detail ??
+                "Tailscale isn't installed on this machine."}
+            </span>
+          </div>
+          <button onClick={() => openUrl("https://tailscale.com/download").catch(() => {})}>
+            Get Tailscale
+          </button>
         </div>
       )}
     </div>

@@ -91,11 +91,28 @@ Open Session Setup → Coordinator → **Tailscale** tab and verify the guidance
 matches reality:
 - [ ] **Signed in & online** → tab shows this machine's `https://<name>.ts.net`
       and a **"Publish to tailnet"** button.
-- [ ] **Signed out** (`tailscale logout`) → shows an actionable message
-      (sign in with `tailscale up`), no Publish button.
-- [ ] **Tailscale stopped** (`tailscale down`) → shows a "not connected" message.
+- [ ] **Signed out** (`tailscale logout`) → shows a "not connected" message and a
+      **"Sign in to Tailscale"** button (not the Publish button).
+- [ ] **Tailscale stopped** (`tailscale down`) → shows a "not connected" message
+      with the **Sign in** button.
 - [ ] **Not installed** (test machine without Tailscale, or rename the binary) →
-      shows "not installed, install from tailscale.com".
+      shows "not installed" and a **"Get Tailscale"** button.
+
+## B1a. Get Tailscale (not-installed friction)
+- [ ] On a machine without Tailscale, click **Get Tailscale** → the system default
+      browser opens `https://tailscale.com/download` (not an in-app webview).
+- [ ] Install Tailscale, then reopen the tab → it now shows the **Sign in** state
+      (installed, not yet connected).
+
+## B1b. Sign in to Tailscale (signed-out friction)
+- [ ] With Tailscale installed but signed out, click **Sign in to Tailscale**.
+- [ ] Either a browser opens to `login.tailscale.com` automatically, **or** an
+      "open the sign-in page" link appears — clicking it opens the login URL.
+- [ ] Complete auth in the browser; within a few seconds the tab **auto-updates**
+      to the signed-in state (shows the `.ts.net` name + Publish button) with no
+      manual refresh.
+- [ ] (Linux note) If `tailscale up` needs elevated rights on this host, the tab
+      surfaces that instead of hanging — the operator/sudo message is shown.
 
 ## B2. Happy path — publish
 - [ ] Start the embedded server (Step 1).
@@ -134,6 +151,8 @@ matches reality:
       **signing** (or DKG) ceremony to completion over the tailnet transport.
 
 ## B — Sign-off
+- [ ] B1a/B1b: **Get Tailscale** opens the download page and **Sign in** drives
+      `tailscale up` to a connected state, with the tab auto-updating.
 - [ ] B2–B5 pass; the URL is stable across relaunch and cleaned up on stop/quit.
 - [ ] B6 confirms tailnet-only scoping.
 - [ ] B7 completes a real ceremony over the transport.

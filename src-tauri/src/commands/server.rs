@@ -268,6 +268,49 @@ pub async fn tailscale_status(state: State<'_, AppState>) -> AppResult<Tailscale
     Ok(tailscale::status(&state).await)
 }
 
+/// Trigger `tailscale up`; returns a login URL to open when authentication is
+/// needed (the poll then flips to available once sign-in completes).
+#[tauri::command]
+pub async fn tailscale_sign_in() -> AppResult<crate::tailscale::SignInResult> {
+    tailscale::sign_in().await
+}
+
+/// Open a URL in the user's default browser (e.g. the Tailscale download or the
+/// sign-in link) via the OS default handler. Restricted to http(s) so it can
+/// only ever launch a browser, never an arbitrary program or file.
+#[tauri::command]
+pub async fn open_url(url: String) -> AppResult<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(crate::error::AppError::new(
+            "open",
+            "refusing to open a non-http(s) URL",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut c = tokio::process::Command::new("xdg-open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = tokio::process::Command::new("open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        // `start` is a cmd builtin; the empty "" is its window-title argument.
+        let mut c = tokio::process::Command::new("cmd");
+        c.args(["/C", "start", "", &url]);
+        c
+    };
+    command
+        .spawn()
+        .map_err(|e| crate::error::AppError::new("open", format!("opening browser: {e}")))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn sidecar_status(state: State<'_, AppState>) -> AppResult<SidecarStatus> {
     sidecar::status(&state).await
