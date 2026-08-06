@@ -380,6 +380,10 @@ export interface SignInResult {
 export const tailscaleSignIn = () => invoke<SignInResult>("tailscale_sign_in");
 /** Open a URL in the default browser (http/https only). */
 export const openUrl = (url: string) => invoke<void>("open_url", { url });
+/** The in-app application log (oldest line first), captured from tracing since
+ *  app start. In-memory and bounded; cleared on restart. */
+export const getLogs = () => invoke<string[]>("get_logs");
+export const clearLogs = () => invoke<void>("clear_logs");
 
 // Ceremonies
 export type Ciphersuite = "ed25519" | "redpallas";

@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod error;
+pub mod logbuf;
 pub mod sidecar;
 pub mod state;
 pub mod tailscale;
@@ -45,6 +46,10 @@ async fn run_auto_lock_monitor<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 }
 
 pub fn run() {
+    // Start capturing `tracing` output (to stdout + the in-app log buffer) before
+    // anything else runs, so early diagnostics are recorded too.
+    logbuf::init_logging();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
@@ -112,6 +117,8 @@ pub fn run() {
             commands::server::tailscale_status,
             commands::server::tailscale_sign_in,
             commands::server::open_url,
+            commands::server::get_logs,
+            commands::server::clear_logs,
             commands::dkg::start_dkg,
             commands::dkg::cancel_ceremony,
             commands::signing::create_signing_session,

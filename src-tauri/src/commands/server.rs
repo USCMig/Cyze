@@ -311,6 +311,20 @@ pub async fn open_url(url: String) -> AppResult<()> {
     Ok(())
 }
 
+/// The in-memory application log (oldest line first), for display + copy in the
+/// app. Captured from `tracing` since app start; bounded and not persisted.
+#[tauri::command]
+pub async fn get_logs() -> AppResult<Vec<String>> {
+    Ok(crate::logbuf::global().snapshot())
+}
+
+/// Discard the buffered log lines.
+#[tauri::command]
+pub async fn clear_logs() -> AppResult<()> {
+    crate::logbuf::global().clear();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn sidecar_status(state: State<'_, AppState>) -> AppResult<SidecarStatus> {
     sidecar::status(&state).await
