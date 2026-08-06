@@ -15,6 +15,7 @@ import {
   walletInitAccount,
   walletSync,
   walletCancelSync,
+  setActiveWallet,
   walletSyncProgress,
   walletPrepareSend,
   walletPrepareVote,
@@ -2452,6 +2453,21 @@ export function GroupWalletPage() {
   const group = groups.data?.find((g) => g.id === id);
   const walletConfig = useQuery({ queryKey: ["wallet-config"], queryFn: getWalletConfig });
   const isMainnet = walletConfig.data?.network === "main";
+  const queryClient = useQueryClient();
+
+  // Opening a wallet makes it the active wallet, so the app's processing follows
+  // the view: the backend cancels the previously active wallet's sync, and only
+  // this one syncs. A no-op when it's already active. The Wallets switcher is the
+  // guarded path (it confirms before abandoning unfinished work); this keeps the
+  // invariant for direct navigation / deep links.
+  const isPallasGroup = group?.ciphersuite.includes("Pallas") ?? false;
+  useEffect(() => {
+    if (id && isPallasGroup) {
+      setActiveWallet(id)
+        .then(() => queryClient.invalidateQueries({ queryKey: ["active-wallet"] }))
+        .catch(() => {});
+    }
+  }, [id, isPallasGroup, queryClient]);
 
   if (groups.isLoading) return <p className="dim">Loading…</p>;
   if (!group) {

@@ -95,6 +95,8 @@ pub fn run() {
             commands::server::set_server_url,
             commands::server::set_session_config,
             commands::server::set_session_role,
+            commands::server::get_active_wallet,
+            commands::server::set_active_wallet,
             commands::server::test_server_connection,
             commands::server::trust_server_cert,
             commands::server::cert_fingerprint_of,
