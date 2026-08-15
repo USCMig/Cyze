@@ -38,6 +38,8 @@ export interface Settings {
   coordinator_exposure: string | null;
   /** True once first-run Session Configuration has been saved. */
   session_configured: boolean | null;
+  /** The active wallet (group id) the app is focused on, or null if unset. */
+  active_group_id: string | null;
 }
 
 export interface SidecarStatus {
@@ -330,6 +332,11 @@ export const setSessionConfig = (role: string, exposure?: string | null) =>
 /** Switch the active session profile (coordinator/participant). */
 export const setSessionRole = (role: string) =>
   invoke<void>("set_session_role", { role });
+/** The active wallet (group id) the app is focused on, or null if unset. */
+export const getActiveWallet = () => invoke<string | null>("get_active_wallet");
+/** Make a group the active wallet; cancels the previously active group's sync. */
+export const setActiveWallet = (groupId: string) =>
+  invoke<void>("set_active_wallet", { groupId });
 export const testServerConnection = (url: string) =>
   invoke<ConnectionTestResult>("test_server_connection", { url });
 export const trustServerCert = (url: string, certPem: string) =>

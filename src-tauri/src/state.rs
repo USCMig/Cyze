@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 
 use frost_app_core::keystore::Keystore;
 use frost_client::cli::config::Config;
@@ -90,6 +89,12 @@ pub struct Settings {
     /// they aren't prompted again unless they revisit it.
     #[serde(default)]
     pub session_configured: Option<bool>,
+    /// The single **active wallet**: the group whose wallet the app currently
+    /// works on. Wallet actions (sync, balance, send) are scoped to this one, and
+    /// only this group syncs — switching cancels the previous group's sync. `None`
+    /// until the user first selects one. Persisted so the choice survives restart.
+    #[serde(default)]
+    pub active_group_id: Option<String>,
 }
 
 /// Per-group rotating receive-address bookkeeping (#3). Non-secret; the actual
@@ -131,14 +136,16 @@ pub struct AppState {
     /// Cancellation token for the in-flight wallet sync of each group, so a
     /// "Sync Now" can abandon a stalled sync and restart it cleanly.
     pub sync_cancels: Mutex<HashMap<String, CancellationToken>>,
-    /// Per-group serialization lock for wallet sync. Cancelling the previous
-    /// sync's token only *asks* it to stop at the next batch boundary; it keeps
-    /// its db connection (and, mid-batch, the SQLite write lock) until it
-    /// actually returns. A restarting sync must hold this lock across the whole
-    /// `sync_group` call so it waits for the cancelled one to exit before opening
-    /// its own connection — otherwise two writers race the db and one fails with
-    /// "database is locked". Keyed by group id; different groups sync in parallel.
-    pub sync_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// App-wide "one wallet syncs at a time" gate. Trial decryption is CPU-bound
+    /// and saturates every core, so two groups syncing at once only thrash. Every
+    /// `wallet_sync` holds this for its whole run; combined with cancelling the
+    /// previous group's sync on an active-wallet switch, it guarantees the app's
+    /// processing stays focused on a single wallet.
+    ///
+    /// This global gate also subsumes the earlier per-group sync lock: since only
+    /// one sync ever runs, a restarting sync can no longer race a cancelled one's
+    /// still-open db connection, so the "database is locked" fix comes for free.
+    pub sync_gate: Mutex<()>,
     /// Epoch-millis of the last user activity, used to drive the idle auto-lock.
     pub last_activity: AtomicI64,
 }
@@ -163,7 +170,7 @@ impl AppState {
             sidecar: Mutex::new(None),
             tunnel: Mutex::new(None),
             sync_cancels: Mutex::new(HashMap::new()),
-            sync_locks: Mutex::new(HashMap::new()),
+            sync_gate: Mutex::new(()),
             last_activity: AtomicI64::new(now_millis()),
         }
     }

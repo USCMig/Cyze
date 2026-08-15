@@ -45,6 +45,37 @@ pub async fn set_session_role(state: State<'_, AppState>, role: String) -> AppRe
     state.save_settings(&settings)
 }
 
+/// The currently active wallet (group id), or `None` if the user hasn't chosen
+/// one yet. Wallet actions are scoped to this group.
+#[tauri::command]
+pub async fn get_active_wallet(state: State<'_, AppState>) -> AppResult<Option<String>> {
+    Ok(state.load_settings().active_group_id)
+}
+
+/// Make `group_id` the active wallet. Cancels the previously active group's
+/// in-flight sync so the app's processing follows the switch: only one wallet
+/// syncs at a time, and stale work on the old wallet is abandoned promptly (a
+/// sync is safe to cancel — it resumes from where it left off next time).
+#[tauri::command]
+pub async fn set_active_wallet(state: State<'_, AppState>, group_id: String) -> AppResult<()> {
+    let mut settings = state.load_settings();
+    // Already active — nothing to change (the wallet page re-asserts this on every
+    // open, so skip the redundant disk write and sync-cancel).
+    if settings.active_group_id.as_deref() == Some(group_id.as_str()) {
+        return Ok(());
+    }
+    let previous = settings.active_group_id.replace(group_id);
+    state.save_settings(&settings)?;
+
+    // Changing wallets: stop the old one's sync so processing follows the switch.
+    if let Some(prev) = previous {
+        if let Some(token) = state.sync_cancels.lock().await.get(&prev) {
+            token.cancel();
+        }
+    }
+    Ok(())
+}
+
 /// Determine trust for a given server URL: pinned certs for the embedded
 /// sidecar and any TOFU-imported external certs, system roots otherwise.
 pub async fn trust_for(state: &AppState, url: &str) -> ServerTrust {
