@@ -87,8 +87,12 @@ and the mapping is cleaned up correctly. `serve` is tailnet-only (not public).
 - [ ] (For B6) a device **not** on the tailnet, to confirm scoping.
 
 ## B1. Detection states (before serving)
-Open Session Setup → Coordinator → **Tailscale** tab and verify the guidance
-matches reality:
+The Tailscale panel now appears in **two** places (same component, same
+behavior): **Zcash → Session Configuration → Coordinator → Tailscale** tab, and
+**1 · Setup → Server → Host a server here → Tailnet access (Tailscale)**. Run B1
+on the Session Configuration tab; B1c re-checks the Server-screen copy.
+
+Verify the guidance matches reality:
 - [ ] **Signed in & online** → tab shows this machine's `https://<name>.ts.net`
       and a **"Publish to tailnet"** button.
 - [ ] **Signed out** (`tailscale logout`) → shows a "not connected" message and a
@@ -101,6 +105,12 @@ matches reality:
 ## B1a. Get Tailscale (not-installed friction)
 - [ ] On a machine without Tailscale, click **Get Tailscale** → the system default
       browser opens `https://tailscale.com/download` (not an in-app webview).
+- [ ] The download URL is **also shown as copyable text** beside the button
+      (`Copy link` works), so it's reachable even if the browser didn't open.
+- [ ] **Fallback path:** if the browser does **not** open automatically, the line
+      reads "Couldn't open your browser automatically…" — not silent (the earlier
+      bug was that clicking did nothing). Copy the link and it opens Tailscale's
+      download page.
 - [ ] Install Tailscale, then reopen the tab → it now shows the **Sign in** state
       (installed, not yet connected).
 
@@ -111,8 +121,22 @@ matches reality:
 - [ ] Complete auth in the browser; within a few seconds the tab **auto-updates**
       to the signed-in state (shows the `.ts.net` name + Publish button) with no
       manual refresh.
+- [ ] If the browser can't be opened automatically, a **"Couldn't open your
+      browser automatically. Copy this link:"** line with the login URL + a
+      `Copy link` button appears (no silent no-op).
 - [ ] (Linux note) If `tailscale up` needs elevated rights on this host, the tab
       surfaces that instead of hanging — the operator/sudo message is shown.
+
+## B1c. Second entry point — Server screen
+- [ ] Go to **1 · Setup → Server**, expand **Host a server here**. Under the
+      Cloudflare tunnel section there is a **"Tailnet access (Tailscale)"**
+      sub-section.
+- [ ] It shows the **same** state as the Session Configuration tab did in B1
+      (not-installed / signed-out / ready-to-publish), driven by the same status.
+- [ ] With the embedded server **not** started, it prompts to start the server
+      first; with it started, the Publish/Sign-in/Get-Tailscale action matches B1.
+- [ ] Publishing from **either** screen and stopping from the other stays
+      consistent (one shared serve mapping, not two).
 
 ## B2. Happy path — publish
 - [ ] Start the embedded server (Step 1).
@@ -150,11 +174,61 @@ matches reality:
 - [ ] With serve up and a participant joined via the `.ts.net` URL, run a real
       **signing** (or DKG) ceremony to completion over the tailnet transport.
 
+## B8. Participant "I'm joining" URL list (formatting)
+- [ ] As a **participant**: Zcash → Session Configuration → **I'm joining** →
+      "Connect to the coordinator's server".
+- [ ] The four example addresses (domain, direct IP, Cloudflare, Tailscale) render
+      as a **clean two-column list** — example URLs in the left column, their
+      descriptions aligned in the right — not a run-on line with `•`/stray spacing
+      (the earlier messy layout).
+- [ ] The block reads correctly at a narrow window width (no horizontal overflow,
+      descriptions stay aligned).
+
 ## B — Sign-off
 - [ ] B1a/B1b: **Get Tailscale** opens the download page and **Sign in** drives
-      `tailscale up` to a connected state, with the tab auto-updating.
+      `tailscale up` to a connected state, with the tab auto-updating; the
+      copyable-link fallback shows when the browser can't be opened.
+- [ ] B1c: the Server-screen Tailscale sub-section mirrors the Session
+      Configuration tab and shares one serve mapping.
 - [ ] B2–B5 pass; the URL is stable across relaunch and cleaned up on stop/quit.
 - [ ] B6 confirms tailnet-only scoping.
 - [ ] B7 completes a real ceremony over the transport.
+- [ ] B8: the participant join-URL list is cleanly aligned.
 - [ ] Note the Tailscale CLI version tested here: ____________  (so we know which
       `serve` grammar was validated).
+
+---
+
+# Part C — In-app log viewer  (on `main`; present on both branches)
+
+Goal: the app captures its own `tracing` output to an in-memory buffer and shows
+it in the UI, so a tester can copy logs and share them back without hunting for a
+terminal. Bounded (~3000 lines), in-memory only, cleared on restart. Lives at
+**Zcash → Wallet Settings**, the **"Diagnostics log"** card near the bottom.
+
+## C1. Card shows live output
+- [ ] Open **Zcash → Wallet Settings** and find the **Diagnostics log** card.
+- [ ] It already contains startup lines (the buffer captures from app start, so
+      it is not empty on first open). The header shows an **"N lines · this
+      session"** count.
+- [ ] The **Live** toggle is on by default: do something that logs — e.g. **Sync
+      Now** on the active wallet — and within a couple of seconds new lines appear
+      **without** clicking anything. **Refresh** forces an immediate update.
+- [ ] Lines are oldest-first; the view stays pinned to the newest line while Live,
+      unless you scroll up to read older output.
+- [ ] Un-checking **Live** stops the auto-updates (count holds until Refresh).
+
+## C2. Copy & clear
+- [ ] **Copy all** → button flips to "Copied!"; paste into a scratch file and
+      confirm it matches the text shown (Copy all is disabled when empty).
+- [ ] **Clear** empties the buffer (button disabled when already empty);
+      subsequent activity repopulates it.
+
+## C3. Persistence boundary
+- [ ] Fully quit and relaunch Cyze → the card starts fresh (in-memory only, not
+      persisted across runs). Only new-session lines are present.
+
+## C — Sign-off
+- [ ] Card is populated from app start, auto-updates on activity while Live, and
+      Copy all / Refresh / Clear work. Buffer resets on relaunch. Spot-check the
+      captured lines expose nothing sensitive (no passphrases / key material).
