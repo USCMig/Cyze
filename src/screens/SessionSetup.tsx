@@ -16,9 +16,10 @@ import {
   trustServerCert,
   AppError,
 } from "../ipc/commands";
+import TailscalePanel from "../components/TailscalePanel";
 
 type Role = "coordinator" | "participant";
-type Exposure = "direct" | "tunnel" | "nginx";
+type Exposure = "direct" | "tunnel" | "tailscale" | "nginx";
 
 /** A server whose address is not stable across restarts, so it must never be
  *  remembered as a reusable "last-used server". Today that means a TryCloudflare
@@ -192,6 +193,7 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sidecar"] });
       queryClient.invalidateQueries({ queryKey: ["tunnel"] });
+      queryClient.invalidateQueries({ queryKey: ["tailscale"] });
     },
   });
   const openTunnel = useMutation({
@@ -203,7 +205,6 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
     mutationFn: stopTunnel,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tunnel"] }),
   });
-
   const running = sidecar.data?.running;
   const port = sidecar.data?.port ?? 2744;
 
@@ -245,6 +246,7 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
       <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
         <ExposureTab active={exposure === "direct"} onClick={() => setExposure("direct")} label="Direct URL / IP" />
         <ExposureTab active={exposure === "tunnel"} onClick={() => setExposure("tunnel")} label="Cloudflare Tunnel" />
+        <ExposureTab active={exposure === "tailscale"} onClick={() => setExposure("tailscale")} label="Tailscale" />
         <ExposureTab active={exposure === "nginx"} onClick={() => setExposure("nginx")} label="NGINX reverse proxy" />
       </div>
 
@@ -279,6 +281,10 @@ function CoordinatorPath({ savedExposure }: { savedExposure: string | null }) {
             Start the server (Step 1), then open the public tunnel here.
           </p>
         ))}
+
+      {exposure === "tailscale" && (
+        <TailscalePanel serverRunning={running ?? false} active={exposure === "tailscale"} />
+      )}
 
       {exposure === "nginx" && <NginxExposure port={port} />}
 
@@ -578,21 +584,35 @@ function ParticipantPath() {
         placeholder="https://…"
         style={{ width: "100%" }}
       />
-      <div className="dim" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.7 }}>
-        Paste the address the coordinator is sharing right now. It looks like one
-        of:
-        <br />
-        • <span className="mono">https://frost.example.com</span>{" "}
-        &nbsp;— a domain / NGINX server
-        <br />
-        • <span className="mono">https://203.0.113.7:2744</span>{" "}
-        &nbsp;— a direct IP and port
-        <br />
-        • <span className="mono">https://long-random-words.trycloudflare.com</span>{" "}
-        &nbsp;— a Cloudflare tunnel
-        <br />
-        A Cloudflare tunnel URL is <strong>disposable</strong>: the coordinator
-        gets a new one each time they restart it, so always use the latest.
+      <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>
+        <p style={{ margin: "0 0 8px" }}>
+          Paste the address the coordinator is sharing right now. It looks like
+          one of:
+        </p>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr",
+            columnGap: 12,
+            rowGap: 6,
+            alignItems: "baseline",
+          }}
+        >
+          <span className="mono">https://frost.example.com</span>
+          <span>a domain / NGINX server</span>
+          <span className="mono">https://203.0.113.7:2744</span>
+          <span>a direct IP and port</span>
+          <span className="mono">https://long-random-words.trycloudflare.com</span>
+          <span>a Cloudflare tunnel</span>
+          <span className="mono">https://their-machine.tailnet.ts.net</span>
+          <span>a Tailscale address (you must be on the same tailnet)</span>
+        </div>
+        <p style={{ margin: "10px 0 0", lineHeight: 1.6 }}>
+          A Cloudflare tunnel URL is <strong>disposable</strong>: the coordinator
+          gets a new one each time they restart it, so always use the latest. A
+          Tailscale <span className="mono">.ts.net</span> address is{" "}
+          <strong>stable</strong> — save it once and reuse it.
+        </p>
       </div>
 
       <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
@@ -609,8 +629,9 @@ function ParticipantPath() {
           Self-signed server? Trust its certificate
         </summary>
         <p className="dim" style={{ fontSize: 13 }}>
-          Only needed for a Direct-URL coordinator (not for a Cloudflare tunnel or
-          an NGINX/domain server, which use publicly trusted TLS). Paste the
+          Only needed for a Direct-URL coordinator (not for a Cloudflare tunnel, a
+          Tailscale address, or an NGINX/domain server, which use publicly trusted
+          TLS). Paste the
           certificate PEM the coordinator shared and confirm the fingerprint with
           them out-of-band before trusting it.
         </p>

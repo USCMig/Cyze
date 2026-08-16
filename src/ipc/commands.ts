@@ -34,7 +34,7 @@ export interface Settings {
   trusted_certs: Record<string, string>;
   /** Active session profile: "coordinator" | "participant". */
   session_role: string | null;
-  /** Coordinator server exposure: "direct" | "tunnel" | "nginx". */
+  /** Coordinator server exposure: "direct" | "tunnel" | "tailscale" | "nginx". */
   coordinator_exposure: string | null;
   /** True once first-run Session Configuration has been saved. */
   session_configured: boolean | null;
@@ -65,6 +65,24 @@ export interface TunnelStatus {
   running: boolean;
   public_url: string | null;
   port: number | null;
+}
+
+export interface TailscaleStatus {
+  /** The tailscale CLI is present (may still be signed out). Drives whether the
+   *  UI offers "Get Tailscale" vs "Sign in". */
+  installed: boolean;
+  /** Tailscale is installed, signed in, online — serve can be started. */
+  available: boolean;
+  /** Cyze currently has `serve` active in front of the embedded server. */
+  serving: boolean;
+  /** Stable tailnet URL participants connect to (present while serving). */
+  public_url: string | null;
+  /** Local frostd port being served (present while serving). */
+  port: number | null;
+  /** This machine's MagicDNS name, when known (shown even before serving). */
+  dns_name: string | null;
+  /** Human-readable status, especially why Tailscale is unavailable. */
+  detail: string | null;
 }
 
 // Keystore
@@ -349,6 +367,19 @@ export const exportSidecarCert = () => invoke<string>("export_sidecar_cert");
 export const startTunnel = () => invoke<TunnelStatus>("start_tunnel");
 export const stopTunnel = () => invoke<void>("stop_tunnel");
 export const tunnelStatus = () => invoke<TunnelStatus>("tunnel_status");
+export const startTailscaleServe = () =>
+  invoke<TailscaleStatus>("start_tailscale_serve");
+export const stopTailscaleServe = () => invoke<void>("stop_tailscale_serve");
+export const tailscaleStatus = () => invoke<TailscaleStatus>("tailscale_status");
+/** Result of triggering Tailscale sign-in. */
+export interface SignInResult {
+  /** URL to open to finish authenticating, or null if none was needed. */
+  login_url: string | null;
+}
+/** Run `tailscale up`; returns a login URL to open when auth is needed. */
+export const tailscaleSignIn = () => invoke<SignInResult>("tailscale_sign_in");
+/** Open a URL in the default browser (http/https only). */
+export const openUrl = (url: string) => invoke<void>("open_url", { url });
 /** The in-app application log (oldest line first), captured from tracing since
  *  app start. In-memory and bounded; cleared on restart. */
 export const getLogs = () => invoke<string[]>("get_logs");
