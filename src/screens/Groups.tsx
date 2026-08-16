@@ -1061,6 +1061,15 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   if (!group.ciphersuite.includes("Pallas")) return null;
   const s = status.data;
+  // Surface a failed status read instead of masking it as a permanent "Setting
+  // up…". `init` only runs *after* status returns, so if the status read errors
+  // (keystore locked, key derivation, a db problem), the wallet otherwise sits on
+  // the spinner forever with nothing in the logs — exactly the "stuck setting up"
+  // symptom. This read is local (no network), so an error here is not the server.
+  const statusErr =
+    status.isError && !s
+      ? ((status.error as unknown as AppError)?.message ?? String(status.error))
+      : null;
   // Prefer the live probe while a sync is running; the cached status is stale
   // until the whole catch-up returns.
   const live = sync.isPending ? progress.data : undefined;
@@ -1076,13 +1085,25 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
       <h3 style={{ marginTop: 0 }}>Wallet (Zcash · Orchard + Ironwood)</h3>
-      {!s || (!s.initialized && (init.isPending || !err)) ? (
+      {statusErr ? (
+        <>
+          <p className="dim">
+            Couldn't read this wallet: {statusErr}. This is a local read (no
+            network), so it usually means the keystore is locked or the wallet
+            database can't be opened — not the lightwalletd server.
+          </p>
+          <button onClick={() => status.refetch()}>Retry</button>
+        </>
+      ) : !s ? (
+        <p className="dim">Loading wallet…</p>
+      ) : !s.initialized && (init.isPending || !err) ? (
         <p className="dim">Setting up the group's view-only wallet…</p>
       ) : !s.initialized ? (
         <>
           <p className="dim">
-            Couldn't set up the wallet — check the lightwalletd endpoint on the{" "}
-            <Link to="/wallet">Wallet</Link> page, then retry.
+            Couldn't set up the wallet{err ? `: ${err}` : ""}. Check the
+            lightwalletd endpoint on the <Link to="/wallet">Wallet</Link> page,
+            then retry.
           </p>
           <button onClick={() => init.mutate()} disabled={init.isPending}>
             {init.isPending ? "Setting up…" : "Retry"}
