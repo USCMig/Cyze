@@ -137,6 +137,10 @@ pub struct AppState {
     /// `wallet_sync` holds this for its whole run; combined with cancelling the
     /// previous group's sync on an active-wallet switch, it guarantees the app's
     /// processing stays focused on a single wallet.
+    ///
+    /// This global gate also subsumes the earlier per-group sync lock: since only
+    /// one sync ever runs, a restarting sync can no longer race a cancelled one's
+    /// still-open db connection, so the "database is locked" fix comes for free.
     pub sync_gate: Mutex<()>,
     /// Epoch-millis of the last user activity, used to drive the idle auto-lock.
     pub last_activity: AtomicI64,

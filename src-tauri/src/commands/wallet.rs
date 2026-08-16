@@ -230,11 +230,15 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
     // thrash). We register+cancel the prior same-group token above first, so a
     // restart of this group releases the gate before we wait on it; an
     // active-wallet switch cancels the other group's sync, so this rarely blocks.
+    // Holding it for the whole run also means a restarting sync can't race a
+    // cancelled one's still-open db connection — the "database is locked" case.
     let _gate = state.sync_gate.lock().await;
 
-    let batch_size = state.load_settings().sync_batch_size;
+    let opts = wallet::SyncOptions {
+        batch_size: state.load_settings().sync_batch_size,
+    };
     let result = wallet::sync_group(
-        &state.data_dir, &group_id, network, &url, db_key.as_ref(), batch_size, &cancel,
+        &state.data_dir, &group_id, network, &url, db_key.as_ref(), opts, &cancel,
     )
     .await;
 

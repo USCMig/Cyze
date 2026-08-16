@@ -246,26 +246,25 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
 use std::path::{Path, PathBuf};
 
 use rand::rngs::OsRng;
-use async_trait::async_trait;
-use prost::Message;
 use zcash_client_backend::data_api::chain::error::Error as ChainError;
-use zcash_client_backend::data_api::chain::{BlockCache, BlockSource};
-use zcash_client_backend::data_api::scanning::ScanRange;
+use zcash_client_backend::data_api::chain::{
+    BlockSource, ChainState, CommitmentTreeRoot,
+};
+use zcash_client_backend::data_api::scanning::{ScanPriority, ScanRange};
 use zcash_client_backend::data_api::wallet::{
     create_pczt_from_proposal, propose_standard_transfer_to_address, ConfirmationsPolicy,
 };
-use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
+use zcash_client_backend::data_api::{
+    AccountBirthday, AccountPurpose, WalletCommitmentTrees, WalletRead, WalletWrite,
+};
 use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_client_backend::proto::service::{BlockId, ChainSpec};
-use zcash_client_sqlite::chain::init::init_blockmeta_db;
-use zcash_client_sqlite::chain::BlockMeta;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
-use zcash_client_sqlite::{FsBlockDb, WalletDb};
+use zcash_client_sqlite::WalletDb;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::memo::{Memo, MemoBytes};
 
@@ -773,6 +772,7 @@ pub async fn init_group_account(
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?
         .is_empty()
     {
+        tracing::debug!(group = %group_id, "wallet setup: account already imported; nothing to do");
         return Ok(0); // already imported
     }
 
@@ -780,13 +780,25 @@ pub async fn init_group_account(
     let ufvk = UnifiedFullViewingKey::decode(&params, ufvk_str)
         .map_err(|e| CoreError::Crypto(format!("invalid UFVK: {e}")))?;
 
+    // These are single unary RPCs, not the long block stream, so bound them. A
+    // server that accepts the TCP connection but never answers (a misconfigured
+    // proxy, a stalled `get_tree_state` for a deep birthday) would otherwise leave
+    // wallet setup spinning forever with no error and no log line.
+    let rpc_timeout = std::time::Duration::from_secs(30);
+
+    tracing::info!(group = %group_id, url = %lightwalletd_url, "wallet setup: connecting to lightwalletd");
     let mut client = connect(lightwalletd_url).await?;
-    let tip = client
-        .get_latest_block(ChainSpec {})
+    let tip = tokio::time::timeout(rpc_timeout, client.get_latest_block(ChainSpec {}))
         .await
+        .map_err(|_| {
+            CoreError::Connection(
+                "get_latest_block timed out — lightwalletd accepted the connection but did not respond".into(),
+            )
+        })?
         .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
         .into_inner()
         .height;
+    tracing::info!(group = %group_id, tip, "wallet setup: connected; got chain tip");
 
     let nu5 = params
         .activation_height(NetworkUpgrade::Nu5)
@@ -803,127 +815,29 @@ pub async fn init_group_account(
     // request the frontier as of the block *before* the first one to scan.
     // Fetching the treestate at `scan_from` itself would skip that block — and
     // with it the transaction that funded the group.
-    let treestate = client
-        .get_tree_state(BlockId {
+    tracing::info!(group = %group_id, scan_from, "wallet setup: fetching tree state for the account birthday");
+    let treestate = tokio::time::timeout(
+        rpc_timeout,
+        client.get_tree_state(BlockId {
             height: scan_from.saturating_sub(1),
             hash: vec![],
-        })
-        .await
-        .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
-        .into_inner();
+        }),
+    )
+    .await
+    .map_err(|_| {
+        CoreError::Connection(
+            "get_tree_state timed out — lightwalletd did not return the birthday tree state".into(),
+        )
+    })?
+    .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
+    .into_inner();
     let birthday = AccountBirthday::from_treestate(treestate, None)
         .map_err(|_| CoreError::Crypto("could not derive account birthday from treestate".into()))?;
 
     db.import_account_ufvk(group_id, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
         .map_err(|e| CoreError::Crypto(format!("import account: {e}")))?;
+    tracing::info!(group = %group_id, scan_from, "wallet setup: view-only account imported; will scan from this height");
     Ok(scan_from)
-}
-
-/// A `BlockCache` over `FsBlockDb`. `FsBlockDb` ships only `BlockSource`, so we
-/// wrap it and add the cache-management methods `sync::run` requires (cache
-/// downloaded compact blocks as files on disk, read them back, prune them).
-///
-/// `FsBlockDb` holds a rusqlite `Connection` (not `Sync`), but `BlockCache`
-/// requires `Sync`, so the inner db is behind a `Mutex`. The cache error type is
-/// `io::Error` because `FsBlockDbError` does not implement `std::error::Error`,
-/// which `sync::run` requires.
-struct FsCache {
-    inner: std::sync::Mutex<FsBlockDb>,
-    blocks_dir: PathBuf,
-}
-
-fn io_err(e: impl std::fmt::Display) -> std::io::Error {
-    std::io::Error::other(e.to_string())
-}
-
-impl FsCache {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, FsBlockDb>, std::io::Error> {
-        self.inner.lock().map_err(|_| io_err("block cache lock poisoned"))
-    }
-}
-
-impl BlockSource for FsCache {
-    type Error = std::io::Error;
-
-    fn with_blocks<F, WalletErrT>(
-        &self,
-        from_height: Option<BlockHeight>,
-        limit: Option<usize>,
-        mut with_block: F,
-    ) -> Result<(), ChainError<WalletErrT, Self::Error>>
-    where
-        F: FnMut(CompactBlock) -> Result<(), ChainError<WalletErrT, Self::Error>>,
-    {
-        let db = self.lock().map_err(ChainError::BlockSource)?;
-        let mut height = from_height.unwrap_or_else(|| BlockHeight::from_u32(0));
-        let mut remaining = limit.unwrap_or(usize::MAX);
-        while remaining > 0 {
-            let meta = match db.find_block(height).map_err(|e| ChainError::BlockSource(io_err(e)))? {
-                Some(m) => m,
-                None => break, // contiguous run ended
-            };
-            let bytes = std::fs::read(meta.block_file_path(&self.blocks_dir))
-                .map_err(ChainError::BlockSource)?;
-            let block =
-                CompactBlock::decode(&bytes[..]).map_err(|e| ChainError::BlockSource(io_err(e)))?;
-            with_block(block)?;
-            height = height + 1;
-            remaining -= 1;
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl BlockCache for FsCache {
-    fn get_tip_height(
-        &self,
-        _range: Option<&ScanRange>,
-    ) -> Result<Option<BlockHeight>, Self::Error> {
-        self.lock()?.get_max_cached_height().map_err(io_err)
-    }
-
-    async fn read(&self, range: &ScanRange) -> Result<Vec<CompactBlock>, Self::Error> {
-        let range = range.block_range().clone();
-        let db = self.lock()?;
-        let mut blocks = Vec::new();
-        let mut height = range.start;
-        while height < range.end {
-            match db.find_block(height).map_err(io_err)? {
-                Some(meta) => {
-                    let bytes = std::fs::read(meta.block_file_path(&self.blocks_dir))?;
-                    blocks.push(CompactBlock::decode(&bytes[..]).map_err(io_err)?);
-                }
-                None => break,
-            }
-            height = height + 1;
-        }
-        Ok(blocks)
-    }
-
-    async fn insert(&self, compact_blocks: Vec<CompactBlock>) -> Result<(), Self::Error> {
-        let mut metas = Vec::with_capacity(compact_blocks.len());
-        for cb in &compact_blocks {
-            let meta = BlockMeta {
-                height: BlockHeight::from_u32(cb.height as u32),
-                block_hash: BlockHash::from_slice(&cb.hash),
-                block_time: cb.time,
-                sapling_outputs_count: cb.vtx.iter().map(|tx| tx.outputs.len() as u32).sum(),
-                orchard_actions_count: cb.vtx.iter().map(|tx| tx.actions.len() as u32).sum(),
-            };
-            std::fs::write(meta.block_file_path(&self.blocks_dir), cb.encode_to_vec())?;
-            metas.push(meta);
-        }
-        self.lock()?.write_block_metadata(&metas).map_err(io_err)
-    }
-
-    async fn delete(&self, range: ScanRange) -> Result<(), Self::Error> {
-        // Remove cached blocks at/above the range start (keep everything below).
-        let start = u32::from(range.block_range().start);
-        self.lock()?
-            .truncate_to_height(BlockHeight::from_u32(start.saturating_sub(1)))
-            .map_err(io_err)
-    }
 }
 
 /// How many blocks each sync batch downloads and scans at once when the caller
@@ -940,53 +854,552 @@ pub const DEFAULT_SYNC_BATCH_SIZE: u32 = 5_000;
 pub const MIN_SYNC_BATCH_SIZE: u32 = 500;
 pub const MAX_SYNC_BATCH_SIZE: u32 = 25_000;
 
+/// Options controlling how a sync runs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SyncOptions {
+    /// Blocks to download and scan per batch; `None` uses
+    /// [`DEFAULT_SYNC_BATCH_SIZE`], clamped into `[MIN, MAX]_SYNC_BATCH_SIZE`.
+    pub batch_size: Option<u32>,
+}
+
 /// Sync the group's wallet: download and trial-decrypt compact blocks from
 /// lightwalletd into the local db. Long-running; touches the network.
 ///
-/// `batch_size` is how many blocks to download and scan per batch; `None` uses
-/// [`DEFAULT_SYNC_BATCH_SIZE`]. Any value is clamped into
-/// `[MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE]`.
+/// Driven by the pipelined [`run_pipelined`] driver, which overlaps block
+/// download with CPU trial-decryption and streams blocks straight from the
+/// network to the scanner (no on-disk block cache).
 pub async fn sync_group(
     data_dir: &Path,
     group_id: &str,
     network: WalletNetwork,
     lightwalletd_url: &str,
     db_key: &[u8],
-    batch_size: Option<u32>,
+    opts: SyncOptions,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), CoreError> {
-    let batch_size = batch_size
+    let batch_size = opts
+        .batch_size
         .unwrap_or(DEFAULT_SYNC_BATCH_SIZE)
         .clamp(MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE);
-    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
-    std::fs::create_dir_all(&blocks_dir)?;
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let mut db = open_db(&db_path, network, db_key)?;
-
-    let mut inner = FsBlockDb::for_path(&blocks_dir)
-        .map_err(|e| CoreError::Crypto(format!("block cache: {e}")))?;
-    init_blockmeta_db(&mut inner)
-        .map_err(|e| CoreError::Crypto(format!("init block cache: {e}")))?;
-    let cache = FsCache {
-        inner: std::sync::Mutex::new(inner),
-        // FsBlockDb stores its compact-block files in `<root>/blocks`, so the
-        // cache must read/write there (not the root we passed to `for_path`).
-        blocks_dir: blocks_dir.join("blocks"),
-    };
 
     let mut client = connect(lightwalletd_url).await?;
     let params = network.params();
-    // `sync::run` scans in transactional batches, so dropping its future between
+    // The driver scans in transactional batches, so dropping the future between
     // batches leaves the db consistent (just short of the tip). That makes it
     // safe to race against a cancellation token: "Sync Now" trips the token to
     // abandon a stalled run, and a fresh sync resumes from where this one left
     // off. Without this, a stuck stream would keep the sync pending forever.
-    tokio::select! {
+    let result = tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(CoreError::Cancelled),
-        res = zcash_client_backend::sync::run(
-            &mut client, &params, &cache, &mut db, batch_size,
-        ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
+        res = run_pipelined(&mut client, &params, &mut db, batch_size) => res,
+    };
+    // Turn known, actionable failures into a message that says what to do, while
+    // keeping the raw server error appended for diagnosis.
+    result.map_err(annotate_sync_error)
+}
+
+/// Rewrite a raw sync failure into an actionable message when it matches a known
+/// cause, preserving the original text after an em-dash for debugging. Applies to
+/// both sync drivers (both surface a `CoreError::Connection` carrying the raw
+/// lightwalletd/tonic error string).
+/// True when a connection error is a lightwalletd rejecting a shielded pool it
+/// doesn't recognize — Ironwood (NU6.3) on a server that predates it, which
+/// answers `get_subtree_roots` for that pool with gRPC InvalidArgument
+/// "invalid shielded protocol value".
+fn is_invalid_shielded_protocol(e: &CoreError) -> bool {
+    let lower = match e {
+        CoreError::Connection(m) => m.to_lowercase(),
+        _ => return false,
+    };
+    lower.contains("invalid shielded protocol")
+        || (lower.contains("shielded protocol") && lower.contains("invalid"))
+}
+
+fn annotate_sync_error(e: CoreError) -> CoreError {
+    // A lightwalletd that predates Ironwood (NU6.3) doesn't know the Ironwood
+    // shielded protocol, so the very first sync step — fetching subtree roots for
+    // all pools, including Ironwood — is rejected with "invalid shielded protocol
+    // value". The whole sync then aborts. This is a server-capability problem, not
+    // a wallet bug, and the fix is to point at an Ironwood-capable server. (The
+    // pipelined driver skips Ironwood roots on this error instead; this friendly
+    // message is for the stock driver, which can't.)
+    if is_invalid_shielded_protocol(&e) {
+        let raw = match &e {
+            CoreError::Connection(m) => m.clone(),
+            _ => return e,
+        };
+        return CoreError::Connection(format!(
+            "This lightwalletd server doesn't support Ironwood (NU6.3). Syncing has \
+             to fetch the Ironwood note-commitment tree, and the server rejected \
+             that request (\"invalid shielded protocol value\"). Switch to an \
+             Ironwood-capable lightwalletd in the wallet's network settings, then \
+             sync again. — {raw}"
+        ));
     }
+
+    e
+}
+
+/// An in-memory [`BlockSource`] over one batch of already-downloaded compact
+/// blocks. The pipelined driver hands each batch straight from the network to
+/// the scanner through this, so a sync never touches an on-disk block cache (no
+/// file writes, no cache mutex contention between the download-ahead producer and
+/// the scanning consumer). Scanning is fully transactional via `put_blocks`, so an
+/// interrupted batch leaves the db consistent.
+struct MemBlockSource(Vec<CompactBlock>);
+
+impl BlockSource for MemBlockSource {
+    // Reading from an owned `Vec` can't fail.
+    type Error = std::convert::Infallible;
+
+    fn with_blocks<F, WalletErrT>(
+        &self,
+        from_height: Option<BlockHeight>,
+        limit: Option<usize>,
+        mut with_block: F,
+    ) -> Result<(), ChainError<WalletErrT, Self::Error>>
+    where
+        F: FnMut(CompactBlock) -> Result<(), ChainError<WalletErrT, Self::Error>>,
+    {
+        let start = from_height.map(u32::from);
+        let mut remaining = limit.unwrap_or(usize::MAX);
+        for cb in &self.0 {
+            if remaining == 0 {
+                break;
+            }
+            // The producer downloads exactly the requested range, but honour
+            // `from_height`/`limit` defensively so this matches the disk cache's
+            // contract (ascending, contiguous from `from_height`).
+            if let Some(s) = start {
+                if (cb.height as u32) < s {
+                    continue;
+                }
+            }
+            with_block(cb.clone())?;
+            remaining -= 1;
+        }
+        Ok(())
+    }
+}
+
+/// One prefetched batch handed from the download producer to the scan consumer:
+/// the range it covers, its compact blocks, and the chain-state anchor immediately
+/// before the range (needed by `scan_cached_blocks`).
+type PrefetchedBatch = (ScanRange, Vec<CompactBlock>, ChainState);
+
+/// Split a suggested scan range into `batch_size`-block sub-ranges, preserving
+/// priority. Ported verbatim from the upstream `sync::running` step-7 splitter so
+/// the pipelined driver scans in the exact same units as the stock driver.
+fn split_scan_range(range: ScanRange, batch_size: u32) -> Vec<ScanRange> {
+    let mut acc = range;
+    let mut out = Vec::new();
+    loop {
+        if acc.is_empty() {
+            break;
+        }
+        match acc.split_at(acc.block_range().start + batch_size) {
+            Some((cur, next)) => {
+                out.push(cur);
+                acc = next;
+            }
+            None => {
+                out.push(acc);
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Custom pipelined sync driver: same control flow as
+/// `zcash_client_backend::sync::run`, but the historic-range scan overlaps block
+/// download with trial-decryption. Correctness-critical logic (subtree roots,
+/// chain-tip update, verify pass, reorg/continuity rewind, priority re-ordering)
+/// is ported faithfully from the upstream `sync.rs`; only the download/scan
+/// overlap in step 7 is new. Produces the same wallet state as the stock driver.
+///
+/// Note: the transparent-UTXO refresh in upstream `running` is gated on the
+/// `transparent-inputs` feature, which our `zcash_client_backend` build does not
+/// enable (group accounts are Orchard-only view keys), so the stock driver we run
+/// today does not perform it either. Omitting it here keeps the two byte-identical.
+async fn run_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    params: &Network,
+    db: &mut GroupDb,
+    batch_size: u32,
+) -> Result<(), CoreError> {
+    // 1) & 2) Download note-commitment subtree roots and hand them to the db, so
+    //    the trees are initialized without replaying all history. One-time; no
+    //    pipelining benefit, so it stays serial.
+    update_subtree_roots_pipelined(client, db).await?;
+
+    // Re-run the per-session loop until the wallet's view of the chain tip is
+    // valid (mirrors `while running(..).await? {}` upstream).
+    while running_pipelined(client, params, db, batch_size).await? {}
+
+    Ok(())
+}
+
+/// One pass of the pipelined sync loop. Returns `true` when the suggested scan
+/// ranges changed underneath us (continuity error, or a newly higher-priority
+/// range) and the caller should restart from a fresh `suggest_scan_ranges`.
+async fn running_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    params: &Network,
+    db: &mut GroupDb,
+    batch_size: u32,
+) -> Result<bool, CoreError> {
+    // 3) & 4) Refresh the chain tip so `suggest_scan_ranges` reflects new blocks.
+    update_chain_tip_pipelined(client, db).await?;
+
+    // 6) Verify pass. Any `Verify`-priority range is always first; it is small
+    //    (a short reorg-check window), so we scan it serially — pipelining it buys
+    //    nothing and the loop may re-request ranges after each one.
+    loop {
+        let scan_ranges = db
+            .suggest_scan_ranges()
+            .map_err(|e| CoreError::Crypto(format!("suggest_scan_ranges: {e}")))?;
+        match scan_ranges.first() {
+            Some(sr) if sr.priority() == ScanPriority::Verify => {
+                let sr = sr.clone();
+                let blocks = download_blocks_pipelined(client, &sr).await?;
+                let chain_state =
+                    download_chain_state_pipelined(client, sr.block_range().start - 1).await?;
+                let src = MemBlockSource(blocks);
+                if scan_batch(params, &src, db, &chain_state, &sr)? {
+                    // Ranges changed; re-request and re-check for a Verify range.
+                    continue;
+                }
+                // Cache and scanned data are locally consistent; done verifying.
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    // 7) Historic ranges, pipelined. Snapshot the suggested ranges, split them
+    //    into batches, and download-ahead while scanning.
+    let scan_ranges = db
+        .suggest_scan_ranges()
+        .map_err(|e| CoreError::Crypto(format!("suggest_scan_ranges: {e}")))?;
+    let batches: Vec<ScanRange> = scan_ranges
+        .into_iter()
+        .flat_map(|r| split_scan_range(r, batch_size))
+        .collect();
+    if batches.is_empty() {
+        return Ok(false);
+    }
+
+    // Producer: download each batch's blocks + chain-state anchor and hand them
+    // over a bounded channel (capacity 2) so download runs up to two batches
+    // ahead of scanning. A cloned tonic client shares the underlying HTTP/2
+    // connection, so this adds no new socket.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<PrefetchedBatch, CoreError>>(2);
+    let mut producer_client = client.clone();
+    let producer = tokio::spawn(async move {
+        for sr in batches {
+            let dl_start = std::time::Instant::now();
+            let blocks = match download_blocks_pipelined(&mut producer_client, &sr).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            tracing::debug!(
+                "pipelined download: {} blocks for {} in {} ms",
+                blocks.len(),
+                sr,
+                dl_start.elapsed().as_millis()
+            );
+            let chain_state = match download_chain_state_pipelined(
+                &mut producer_client,
+                sr.block_range().start - 1,
+            )
+            .await
+            {
+                Ok(cs) => cs,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            // If the consumer has hung up (ranges changed, or an error broke the
+            // loop) stop downloading.
+            if tx.send(Ok((sr, blocks, chain_state))).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    // Consumer: scan each prefetched batch in order. `scan_batch` is CPU-bound
+    // and synchronous; on a multi-threaded runtime the producer keeps downloading
+    // the next batches on other worker threads while this one scans, which is the
+    // whole point. Scanning is transactional per batch, so bailing out early (or
+    // being dropped on cancellation) leaves the db consistent at a batch boundary.
+    let mut result = Ok(false);
+    let scan_run_start = std::time::Instant::now();
+    let mut scanned_blocks: u64 = 0;
+    while let Some(item) = rx.recv().await {
+        let (sr, blocks, chain_state) = match item {
+            Ok(v) => v,
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        };
+        let n = blocks.len() as u64;
+        let src = MemBlockSource(blocks);
+        let scan_start = std::time::Instant::now();
+        let outcome = scan_batch(params, &src, db, &chain_state, &sr);
+        // Per-batch scan cost and cumulative throughput. This is the CPU-bound leg
+        // (trial decryption + note-commitment tree updates); logging it here makes
+        // the download-vs-scan split visible when diagnosing slow syncs.
+        scanned_blocks += n;
+        let secs = scan_run_start.elapsed().as_secs_f64();
+        tracing::info!(
+            "pipelined scan: {} blocks for {} in {} ms ({:.0} blocks/s cumulative over {} blocks)",
+            n,
+            sr,
+            scan_start.elapsed().as_millis(),
+            if secs > 0.0 { scanned_blocks as f64 / secs } else { 0.0 },
+            scanned_blocks
+        );
+        match outcome {
+            Ok(true) => {
+                // Ranges changed (continuity error or a new higher-priority
+                // range); restart the whole pass from fresh suggestions.
+                result = Ok(true);
+                break;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        }
+    }
+
+    // Stop the producer: either it already finished, or we broke early and it
+    // should abandon any in-flight download.
+    producer.abort();
+    result
+}
+
+/// Scan one batch and interpret the outcome, mirroring the upstream `scan_blocks`
+/// helper: on a continuity error, rewind the db and signal a restart; otherwise
+/// signal a restart if scanning surfaced a higher-priority range. The in-memory
+/// source needs no cache truncation on rewind (each batch is downloaded fresh).
+fn scan_batch(
+    params: &Network,
+    src: &MemBlockSource,
+    db: &mut GroupDb,
+    chain_state: &ChainState,
+    scan_range: &ScanRange,
+) -> Result<bool, CoreError> {
+    use zcash_client_backend::data_api::chain::scan_cached_blocks;
+
+    let scan_result = scan_cached_blocks(
+        params,
+        src,
+        db,
+        scan_range.block_range().start,
+        chain_state,
+        scan_range.len(),
+    );
+
+    match scan_result {
+        Err(ChainError::Scan(err)) if err.is_continuity_error() => {
+            // Rewind to at least one block before the error height, matching the
+            // upstream heuristic (10 blocks of slack).
+            let rewind_height = err.at_height().saturating_sub(10);
+            tracing::info!(
+                "chain reorg detected at {}, rewinding to {}",
+                err.at_height(),
+                rewind_height
+            );
+            db.truncate_to_height(rewind_height)
+                .map_err(|e| CoreError::Crypto(format!("truncate on reorg: {e}")))?;
+            Ok(true)
+        }
+        Ok(_) => {
+            // If scanning added a range of higher priority than the one we just
+            // scanned, invalidate the current ordering and restart.
+            let latest = db
+                .suggest_scan_ranges()
+                .map_err(|e| CoreError::Crypto(format!("suggest_scan_ranges: {e}")))?;
+            Ok(latest
+                .first()
+                .map(|r| r.priority() > scan_range.priority())
+                .unwrap_or(false))
+        }
+        Err(e) => Err(CoreError::Crypto(format!("scan: {e}"))),
+    }
+}
+
+/// Download the subtree roots for all three shielded pools and store them, so the
+/// note-commitment trees are initialized without replaying history. Ported from
+/// the upstream `update_subtree_roots` (Sapling + Orchard + Ironwood).
+async fn update_subtree_roots_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    db: &mut GroupDb,
+) -> Result<(), CoreError> {
+    use zcash_client_backend::proto::service::ShieldedProtocol;
+
+    // The concrete root-hash types (`sapling::Node`, `MerkleHashOrchard`) are
+    // inferred from the `put_*` calls below, so this compiles without naming the
+    // Sapling crate (not a direct dependency of this crate).
+    let sapling_roots = download_subtree_roots(client, ShieldedProtocol::Sapling).await?;
+    db.put_sapling_subtree_roots(0, &sapling_roots)
+        .map_err(|e| CoreError::Crypto(format!("put sapling subtree roots: {e}")))?;
+
+    let orchard_roots = download_subtree_roots(client, ShieldedProtocol::Orchard).await?;
+    db.put_orchard_subtree_roots(0, &orchard_roots)
+        .map_err(|e| CoreError::Crypto(format!("put orchard subtree roots: {e}")))?;
+
+    // Ironwood (NU6.3) is newer than some lightwalletd deployments — notably on
+    // testnet. Such a server rejects the Ironwood subtree-roots request with
+    // "invalid shielded protocol value". A server that doesn't know the pool has
+    // no Ironwood notes to report, so treat that one rejection as "no Ironwood
+    // roots yet" and keep syncing the other pools, rather than aborting the whole
+    // sync. (Ironwood value won't be tracked until an Ironwood-capable server is
+    // used, but on such a server there is none to miss.) Any other error still
+    // fails the sync.
+    match download_subtree_roots(client, ShieldedProtocol::Ironwood).await {
+        Ok(ironwood_roots) => {
+            db.put_ironwood_subtree_roots(0, &ironwood_roots)
+                .map_err(|e| CoreError::Crypto(format!("put ironwood subtree roots: {e}")))?;
+        }
+        Err(e) if is_invalid_shielded_protocol(&e) => {
+            tracing::warn!(
+                "lightwalletd rejected the Ironwood subtree-roots request ({e}); \
+                 continuing without Ironwood tree state — this server predates \
+                 Ironwood (NU6.3). Ironwood funds won't be tracked until you use an \
+                 Ironwood-capable server."
+            );
+        }
+        Err(e) => return Err(e),
+    }
+
+    Ok(())
+}
+
+/// Stream the subtree roots for one shielded pool from lightwalletd. Ported from
+/// the upstream `download_subtree_roots`.
+async fn download_subtree_roots<H>(
+    client: &mut CompactTxStreamerClient<Channel>,
+    protocol: zcash_client_backend::proto::service::ShieldedProtocol,
+) -> Result<Vec<CommitmentTreeRoot<H>>, CoreError>
+where
+    H: zcash_primitives::merkle_tree::HashSer,
+{
+    use zcash_client_backend::proto::service::GetSubtreeRootsArg;
+
+    let request = GetSubtreeRootsArg {
+        start_index: 0,
+        shielded_protocol: protocol as i32,
+        max_entries: 0,
+    };
+
+    let mut stream = client
+        .get_subtree_roots(request)
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_subtree_roots: {e}")))?
+        .into_inner();
+
+    let mut roots = Vec::new();
+    while let Some(root) = stream
+        .message()
+        .await
+        .map_err(|e| CoreError::Connection(format!("subtree root stream: {e}")))?
+    {
+        let root_hash = H::read(&root.root_hash[..])
+            .map_err(|e| CoreError::Crypto(format!("subtree root hash: {e}")))?;
+        roots.push(CommitmentTreeRoot::from_parts(
+            BlockHeight::from_u32(root.completing_block_height as u32),
+            root_hash,
+        ));
+    }
+    Ok(roots)
+}
+
+/// Fetch the current chain tip and record it, so `suggest_scan_ranges` accounts
+/// for newly mined blocks. Ported from the upstream `update_chain_tip`.
+async fn update_chain_tip_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    db: &mut GroupDb,
+) -> Result<(), CoreError> {
+    let tip_height: BlockHeight = client
+        .get_latest_block(ChainSpec::default())
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
+        .get_ref()
+        .height
+        .try_into()
+        .map_err(|_| CoreError::Crypto("lightwalletd returned an invalid tip height".into()))?;
+    db.update_chain_tip(tip_height)
+        .map_err(|e| CoreError::Crypto(format!("update chain tip: {e}")))?;
+    Ok(())
+}
+
+/// Download the compact blocks in `scan_range` into memory. Ported from the
+/// upstream `download_blocks`, but returns the blocks instead of writing them to
+/// a disk cache, so the producer can hand them straight to the scanner.
+async fn download_blocks_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    scan_range: &ScanRange,
+) -> Result<Vec<CompactBlock>, CoreError> {
+    use zcash_client_backend::proto::service::BlockRange;
+
+    let start = BlockId {
+        height: scan_range.block_range().start.into(),
+        hash: vec![],
+    };
+    let end = BlockId {
+        height: (scan_range.block_range().end - 1).into(),
+        hash: vec![],
+    };
+    let range = BlockRange {
+        start: Some(start),
+        end: Some(end),
+        pool_types: vec![],
+    };
+    let mut stream = client
+        .get_block_range(range)
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_block_range: {e}")))?
+        .into_inner();
+
+    let mut blocks = Vec::new();
+    while let Some(cb) = stream
+        .message()
+        .await
+        .map_err(|e| CoreError::Connection(format!("block stream: {e}")))?
+    {
+        blocks.push(cb);
+    }
+    Ok(blocks)
+}
+
+/// Fetch the chain-state anchor at `block_height` (the tree state just before a
+/// range's first block). Ported from the upstream `download_chain_state`.
+async fn download_chain_state_pipelined(
+    client: &mut CompactTxStreamerClient<Channel>,
+    block_height: BlockHeight,
+) -> Result<ChainState, CoreError> {
+    client
+        .get_tree_state(BlockId {
+            height: block_height.into(),
+            hash: vec![],
+        })
+        .await
+        .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
+        .into_inner()
+        .to_chain_state()
+        .map_err(|e| CoreError::Crypto(format!("chain state: {e}")))
 }
 
 /// Which shielded pool an action belongs to. Post-NU6.3 a single transaction can
@@ -1965,6 +2378,97 @@ mod tests {
         assert_eq!(WalletNetwork::Main.params(), Network::MainNetwork);
         assert!(WalletNetwork::Test.default_lightwalletd().starts_with("https://"));
         assert!(WalletNetwork::Main.default_lightwalletd().starts_with("https://"));
+    }
+
+    #[test]
+    fn annotate_sync_error_flags_non_ironwood_server() {
+        // The exact string a pre-Ironwood lightwalletd returns, as wrapped by the
+        // stock driver.
+        let raw = "sync: Error while communicating with lightwalletd server: \
+                   status: InvalidArgument, message: \"Error: Invalid shielded \
+                   protocol value.\"";
+        let out = annotate_sync_error(CoreError::Connection(raw.to_string()));
+        match out {
+            CoreError::Connection(m) => {
+                assert!(m.contains("doesn't support Ironwood"), "friendly headline: {m}");
+                assert!(m.contains("network settings"), "actionable guidance: {m}");
+                // Raw detail is preserved after the em-dash separator.
+                assert!(m.contains(" — "), "keeps raw detail: {m}");
+                assert!(m.contains("Invalid shielded protocol value"), "raw text: {m}");
+            }
+            other => panic!("expected Connection error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn annotate_sync_error_passes_through_unrelated() {
+        // An unrelated connection error is returned unchanged (no false headline).
+        let raw = "sync: Error while communicating with lightwalletd server: \
+                   transport error";
+        match annotate_sync_error(CoreError::Connection(raw.to_string())) {
+            CoreError::Connection(m) => {
+                assert_eq!(m, raw);
+                assert!(!m.contains("Ironwood"));
+            }
+            other => panic!("expected Connection error, got {other:?}"),
+        }
+        // Cancellation is untouched.
+        assert!(matches!(
+            annotate_sync_error(CoreError::Cancelled),
+            CoreError::Cancelled
+        ));
+    }
+
+    #[test]
+    fn detects_unsupported_ironwood_pool_for_graceful_skip() {
+        // The rejection the pipelined driver skips Ironwood roots on.
+        let raw = "get_subtree_roots: status: InvalidArgument, message: \
+                   \"Error: Invalid shielded protocol value.\"";
+        assert!(is_invalid_shielded_protocol(&CoreError::Connection(raw.into())));
+        // Unrelated errors and non-connection variants are not mistaken for it.
+        assert!(!is_invalid_shielded_protocol(&CoreError::Connection(
+            "get_subtree_roots: transport error".into()
+        )));
+        assert!(!is_invalid_shielded_protocol(&CoreError::Cancelled));
+    }
+
+    /// The pipelined driver must scan in the exact same batch units as the stock
+    /// driver, or its result could diverge. This locks the splitter's behaviour to
+    /// the upstream `sync::running` step-7 semantics: contiguous, priority-
+    /// preserving, `batch_size`-block sub-ranges that exactly cover the input and
+    /// never produce an empty range.
+    #[test]
+    fn split_scan_range_matches_upstream_batching() {
+        let h = BlockHeight::from_u32;
+        let range = ScanRange::from_parts(h(100)..h(1050), ScanPriority::Historic);
+
+        // An evenly-plus-remainder range → full batches then a short tail.
+        let batches = split_scan_range(range.clone(), 400);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(*batches[0].block_range(), h(100)..h(500));
+        assert_eq!(*batches[1].block_range(), h(500)..h(900));
+        assert_eq!(*batches[2].block_range(), h(900)..h(1050));
+        // Priority is preserved on every sub-range.
+        assert!(batches.iter().all(|b| b.priority() == ScanPriority::Historic));
+        // Contiguous cover: no gaps, no overlaps, no empty ranges.
+        assert!(batches.iter().all(|b| !b.is_empty()));
+        for w in batches.windows(2) {
+            assert_eq!(w[0].block_range().end, w[1].block_range().start);
+        }
+        assert_eq!(batches.first().unwrap().block_range().start, h(100));
+        assert_eq!(batches.last().unwrap().block_range().end, h(1050));
+
+        // A range smaller than one batch → a single batch equal to the input.
+        let small = ScanRange::from_parts(h(10)..h(30), ScanPriority::ChainTip);
+        let one = split_scan_range(small.clone(), 5000);
+        assert_eq!(one.len(), 1);
+        assert_eq!(*one[0].block_range(), h(10)..h(30));
+
+        // A range that is an exact multiple of the batch size → no empty tail.
+        let exact = ScanRange::from_parts(h(0)..h(1000), ScanPriority::Historic);
+        let even = split_scan_range(exact, 500);
+        assert_eq!(even.len(), 2);
+        assert_eq!(*even[1].block_range(), h(500)..h(1000));
     }
 
     /// The receive address the wallet's key crate (`zcash_keys`) derives from

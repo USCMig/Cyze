@@ -189,7 +189,7 @@ export default function DkgWizard() {
     <div>
       <h2>New DKG ceremony</h2>
 
-      <div className="card">
+      <div className="card dkg-form">
         <label>Role</label>
         <div className="row" style={{ marginBottom: 12 }}>
           <button
@@ -231,7 +231,7 @@ export default function DkgWizard() {
             <label>Ciphersuite</label>
             <select value={suite} onChange={(e) => setSuite(e.target.value as Ciphersuite)}>
               <option value="redpallas">
-                RedPallas — Zcash Orchard spend authority (Pallas, BLAKE2b-512)
+                RedPallas — Zcash shielded spend authority (Pallas, BLAKE2b-512)
               </option>
               <option value="ed25519">
                 Ed25519 — general-purpose Schnorr signatures (SHA-512)
@@ -321,7 +321,7 @@ export default function DkgWizard() {
             <label>Ciphersuite (must match the initiator)</label>
             <select value={suite} onChange={(e) => setSuite(e.target.value as Ciphersuite)}>
               <option value="redpallas">
-                RedPallas — Zcash Orchard spend authority (Pallas, BLAKE2b-512)
+                RedPallas — Zcash shielded spend authority (Pallas, BLAKE2b-512)
               </option>
               <option value="ed25519">
                 Ed25519 — general-purpose Schnorr signatures (SHA-512)
