@@ -42,12 +42,9 @@ function TransportSecurityNote() {
     <div className="callout warn" style={{ marginTop: 12 }}>
       <span>
         <strong>Transport is not authentication.</strong> However you expose the
-        server — direct, tunnel, or reverse proxy — FROSTd messages stay
-        end-to-end authenticated and encrypted by the app's own Noise layer
-        (participants are verified by their communication public keys). A tunnel
-        or TLS proxy only makes the server reachable; it never replaces that
-        application-layer security, so keep participant key verification in place
-        regardless of the transport you choose.
+        server, FROSTd messages stay end-to-end encrypted by the app's own Noise
+        layer, and participants are verified by their keys. Keep that key
+        verification in place whatever transport you use.
       </span>
     </div>
   );
@@ -84,10 +81,10 @@ export default function SessionSetup() {
       {!configured ? (
         <div className="callout" style={{ marginBottom: 12 }}>
           <span>
-            <strong>Welcome — let's configure your session.</strong> A FROST
-            ceremony coordinates through one <span className="mono">frostd</span>{" "}
-            server. Choose your role and how you'll connect below, then save it.
-            You can change this any time from <em>Zcash → Session Configuration</em>.
+            <strong>Welcome — configure your session.</strong> A ceremony runs
+            through one <span className="mono">frostd</span> server. Pick your role
+            below and save; change it anytime from{" "}
+            <em>Zcash → Session Configuration</em>.
           </span>
         </div>
       ) : (

@@ -12,81 +12,6 @@ import {
   LightwalletdInfo,
 } from "../ipc/commands";
 
-/** Themed confirmation dialog for switching to mainnet — replaces the plain
- *  browser confirm() so it matches the application's design language. */
-function SwitchNetworkModal({
-  onConfirm,
-  onCancel,
-}: {
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.72)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-      }}
-    >
-      <div
-        className="card"
-        style={{
-          maxWidth: 420,
-          width: "90%",
-          margin: 0,
-          border: "2px solid var(--danger)",
-        }}
-      >
-        <div
-          style={{
-            borderBottom: "1px solid var(--border)",
-            paddingBottom: 12,
-            marginBottom: 16,
-          }}
-        >
-          <div className="dim" style={{ fontSize: 11, marginBottom: 4, letterSpacing: "0.06em" }}>
-            CYZE · NETWORK SETTINGS
-          </div>
-          <strong style={{ fontSize: 16 }}>Switching to Mainnet</strong>
-        </div>
-
-        <div
-          className="callout warn"
-          style={{
-            border: "1px solid var(--danger)",
-            background: "rgba(239,68,68,0.08)",
-            marginBottom: 16,
-          }}
-        >
-          <span>
-            Mainnet transactions move <strong>real ZEC</strong> and are{" "}
-            <strong>irreversible</strong> once broadcast. Only switch if you are
-            ready to handle live funds.
-          </span>
-        </div>
-
-        <p className="dim" style={{ marginTop: 0, fontSize: 13 }}>
-          You can switch back to testnet at any time from this page.
-        </p>
-
-        <div className="row" style={{ marginTop: 4 }}>
-          <button className="danger" onClick={onConfirm}>
-            Switch to Mainnet
-          </button>
-          <button className="secondary" onClick={onCancel}>
-            Keep Testnet
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** Known public lightwalletd endpoints per network (user can also type their own). */
 const PRESETS: Record<string, { label: string; url: string }[]> = {
   test: [
@@ -106,7 +31,6 @@ export default function Wallet() {
   const [info, setInfo] = useState<LightwalletdInfo | null>(null);
   const [testErr, setTestErr] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
-  const [showMainnetModal, setShowMainnetModal] = useState(false);
 
   // Mainnet is the default (matches the backend), so the app opens on the network
   // it is actually used on rather than quietly pointing at testnet.
@@ -148,44 +72,21 @@ export default function Wallet() {
     }
   };
 
-  const savedNet = config.data?.network ?? "main";
   const isMainnet = net === "main";
 
   return (
     <div>
       <h2>Wallet</h2>
 
-      {/* Persistent mainnet danger banner — shown any time the active network
-          is main, both here and as a reminder before the user navigates away. */}
-      {savedNet === "main" && (
-        <div
-          className="callout warn"
-          style={{
-            border: "2px solid var(--danger)",
-            background: "rgba(239,68,68,0.08)",
-            marginBottom: 16,
-          }}
-        >
-          <span>
-            <strong>⚠ You are on Mainnet.</strong> Transactions here move{" "}
-            <strong>real ZEC</strong>. Double-check every recipient address and
-            amount before signing. Signed transactions are irreversible once
-            broadcast.
-          </span>
-        </div>
-      )}
-
       <p className="dim">
-        Cyze syncs Zcash shielded funds as a light client: it scans compact
-        blocks locally with your group's viewing key and talks to a configurable{" "}
-        <span className="code-inline">lightwalletd</span> server (no full node
-        required). Start on <strong>testnet</strong> to try it with faucet funds;
-        switch to mainnet once you're ready.
+        Cyze syncs Zcash as a light client against a configurable{" "}
+        <span className="code-inline">lightwalletd</span> server — no full node
+        needed. Start on testnet with faucet funds; switch to mainnet when ready.
       </p>
 
       <div className="card">
         <h3>Network</h3>
-        <div className="row" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ marginBottom: 14, alignItems: "center" }}>
           <button
             className={net === "test" ? "" : "secondary"}
             onClick={() => {
@@ -196,19 +97,18 @@ export default function Wallet() {
             Testnet
           </button>
           <button
-            className={isMainnet ? "danger" : "secondary"}
+            className={isMainnet ? "" : "secondary"}
             onClick={() => {
               if (net !== "main") {
-                setShowMainnetModal(true);
+                setNetwork("main");
+                setUrl("");
               }
             }}
           >
-            {isMainnet ? "⚠ Mainnet (active)" : "Mainnet"}
+            Mainnet
           </button>
-          <span className={isMainnet ? "error" : "dim"}>
-            {isMainnet
-              ? "Real ZEC — transactions are irreversible."
-              : "Safe for testing with faucet funds."}
+          <span className="dim">
+            {isMainnet ? "Live network — real ZEC." : "Test network — faucet funds."}
           </span>
         </div>
 
@@ -286,18 +186,6 @@ export default function Wallet() {
       <SyncCard />
 
       <LogsCard />
-
-      {showMainnetModal && (
-        <SwitchNetworkModal
-          onConfirm={() => {
-            setShowMainnetModal(false);
-            setNetwork("main");
-            setUrl("");
-          }}
-          onCancel={() => setShowMainnetModal(false)}
-        />
-      )}
-
     </div>
   );
 }

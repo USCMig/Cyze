@@ -105,12 +105,7 @@ function MainnetConfirmModal({
           </strong>
         </div>
 
-        <p style={{ marginTop: 0 }}>
-          You are about to sign and broadcast a transaction on the Zcash
-          mainnet. This will move real funds.
-        </p>
-
-        <table className="participants" style={{ marginBottom: 14 }}>
+        <table className="participants" style={{ marginBottom: 14, marginTop: 0 }}>
           <tbody>
             <tr>
               <td>Sending</td>
@@ -146,8 +141,7 @@ function MainnetConfirmModal({
             onChange={(e) => setAck(e.target.checked)}
           />
           <label htmlFor="mainnet-ack" style={{ cursor: "pointer", margin: 0 }}>
-            I confirm the recipient address is correct and understand this
-            transaction is <strong>irreversible</strong> once broadcast.
+            Recipient is correct — this send is <strong>irreversible</strong>.
           </label>
         </div>
 
@@ -250,13 +244,12 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
     <div className="card" style={{ marginTop: 14, background: "var(--bg-elevated)" }}>
       <h3 style={{ marginTop: 0 }}>Receive / Shield into group</h3>
       <p className="dim" style={{ marginTop: 0 }}>
-        Send Zcash to this unified address to fund the group. Funds arrive in the
-        group's shielded <strong>Ironwood</strong> pool and become spendable by
-        the threshold. To <strong>shield</strong> transparent funds, send them
-        here from a personal wallet — the receive itself is the shielding step.
+        Send Zcash to this address to fund the group. Funds become spendable by
+        the threshold; sending from a transparent wallet shields them in the same
+        step.
       </p>
       <label>
-        Group Orchard unified address
+        Group unified address
         {recv.data != null && (
           <span className="dim" style={{ fontWeight: 400 }}>
             {" "}
@@ -289,7 +282,7 @@ function ReceiveShieldCard({ groupId, fallback }: { groupId: string; fallback: s
               marginSize={4}
               bgColor="#ffffff"
               fgColor="#000000"
-              title="Group Orchard unified address"
+              title="Group unified address"
             />
           </div>
           <p
@@ -873,7 +866,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       if (!addr) throw new Error("wallet address not available — try syncing first");
       if (orchard <= CONSOLIDATE_FEE_BUFFER)
         throw new Error(
-          `Orchard balance too low to migrate (need > 0.001 ${unit(isMainnet)} above fees)`
+          `Legacy balance too low to move (need > 0.001 ${unit(isMainnet)} above fees)`
         );
       return walletPrepareSend(group.id, addr, orchard - CONSOLIDATE_FEE_BUFFER);
     },
@@ -1084,7 +1077,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
 
   return (
     <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-      <h3 style={{ marginTop: 0 }}>Wallet (Zcash · Orchard + Ironwood)</h3>
+      <h3 style={{ marginTop: 0 }}>Wallet</h3>
       {statusErr ? (
         <>
           <p className="dim">
@@ -1111,38 +1104,33 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
         </>
       ) : (
         <>
-          {/* Balance summary — always visible at top. Totals span every pool the
-              group holds; the per-pool line below shows the Orchard/Ironwood
-              split, since post-NU6.3 funds live in both. */}
+          {/* Balance summary — the group's Ironwood balance, the pool all new
+              shielded value lands in. Any legacy Orchard balance is surfaced
+              separately below, only when it exists. */}
           <div className="wallet-summary">
             <div className="row" style={{ gap: 28 }}>
               <div>
                 <label>Spendable</label>
                 <div style={{ fontSize: 18, color: "var(--accent)" }}>
-                  {zec(s.spendable_zatoshis)} {unit(isMainnet)}
+                  {zec(s.ironwood.spendable_zatoshis)} {unit(isMainnet)}
                 </div>
               </div>
               <div>
                 <label>Pending</label>
                 <div style={{ fontSize: 18 }}>
-                  {zec(s.orchard.pending_zatoshis + s.ironwood.pending_zatoshis)} {unit(isMainnet)}
+                  {zec(s.ironwood.pending_zatoshis)} {unit(isMainnet)}
                 </div>
               </div>
               <div>
                 <label>Total</label>
-                <div style={{ fontSize: 18 }}>{zec(s.total_zatoshis)} {unit(isMainnet)}</div>
+                <div style={{ fontSize: 18 }}>
+                  {zec(s.ironwood.total_zatoshis)} {unit(isMainnet)}
+                </div>
               </div>
             </div>
-            {/* Per-pool breakdown: Orchard is the sealed legacy pool, Ironwood is
-                where all new value lands post-NU6.3. */}
-            <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>
-              Orchard (sealed): {zec(s.orchard.total_zatoshis)} {unit(isMainnet)}
-              {"  ·  "}
-              Ironwood: {zec(s.ironwood.total_zatoshis)} {unit(isMainnet)}
-            </div>
-            {/* Prompt to sweep the sealed Orchard pool into Ironwood. Shown only
-                while a meaningful, spendable Orchard balance remains (above the
-                fee buffer) and no send is already in flight. */}
+            {/* Legacy Orchard funds: only surfaced when a spendable balance
+                actually remains, with a one-tap sweep into Ironwood. New groups
+                never hold Orchard, so this stays hidden for them. */}
             {s.orchard.spendable_zatoshis > CONSOLIDATE_FEE_BUFFER &&
               !(activeSend && !activeSend.done) && (
                 <div
@@ -1154,14 +1142,12 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                     fontSize: 13,
                   }}
                 >
-                  <strong>Migrate Orchard → Ironwood.</strong> This group holds{" "}
-                  {zec(s.orchard.spendable_zatoshis)} {unit(isMainnet)} in the legacy
-                  Orchard pool, which can no longer receive funds after the Ironwood
-                  (NU6.3) upgrade. Sweep it into Ironwood so all funds stay in the
-                  active pool.
+                  <strong>Move legacy funds to Ironwood.</strong> This group holds{" "}
+                  {zec(s.orchard.spendable_zatoshis)} {unit(isMainnet)} in the old
+                  pool. Sweep it across so all funds stay spendable.
                   <div style={{ marginTop: 8 }}>
                     <button onClick={() => migrate.mutate()} disabled={migrate.isPending}>
-                      {migrate.isPending ? "Preparing…" : "Migrate to Ironwood"}
+                      {migrate.isPending ? "Preparing…" : "Move to Ironwood"}
                     </button>
                   </div>
                 </div>
@@ -1318,24 +1304,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                 />
               ) : (
                 <>
-                  {isMainnet && (
-                    <div
-                      className="callout warn"
-                      style={{
-                        border: "1px solid var(--danger)",
-                        background: "rgba(239,68,68,0.08)",
-                        marginTop: 14,
-                        marginBottom: 4,
-                      }}
-                    >
-                      <span>
-                        <strong>⚠ Mainnet</strong> — transactions move real ZEC and
-                        are irreversible. Verify every address and amount carefully.
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Mode toggle: shielded Orchard send vs. unshield to transparent. */}
+                  {/* Mode toggle: shielded send vs. unshield to transparent. */}
                   <div className="row" style={{ marginTop: 14, marginBottom: 12, gap: 8 }}>
                     <button
                       className={sendMode === "shielded" ? "" : "secondary"}
@@ -1353,10 +1322,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                   {sendMode === "unshield" && (
                     <div className="callout warn" style={{ marginBottom: 10 }}>
                       <span>
-                        Unshielding moves funds from the group's shielded Orchard pool to a{" "}
-                        <strong>transparent</strong> address. The amount and recipient become{" "}
-                        <strong>publicly visible on-chain</strong>. The group's Orchard spend is
-                        still FROST-signed by the threshold.
+                        Unshielding sends to a <strong>transparent</strong> address, so the
+                        amount and recipient are <strong>public on-chain</strong>. Still
+                        FROST-signed by the threshold.
                       </span>
                     </div>
                   )}
@@ -1513,7 +1481,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                         {isVote
                           ? "Cast vote"
                           : isMigration
-                            ? "Migrate Orchard → Ironwood"
+                            ? "Move to Ironwood"
                             : isConsolidation
                               ? "Consolidation transaction"
                               : draft.is_unshield
@@ -1537,12 +1505,10 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                         <div className="callout" style={{ marginBottom: 12 }}>
                           {isMigration ? (
                             <span>
-                              Sweeps the group's sealed <strong>Orchard</strong> balance back to
-                              its own address; because every post-NU6.3 shielded output lands in
-                              the <strong>Ironwood</strong> pool, this moves the funds across the
-                              turnstile into Ironwood.{" "}
+                              Moves the group's legacy funds into the active{" "}
+                              <strong>Ironwood</strong> pool via a self-send.{" "}
                               <strong>{draft.spends.length} note{draft.spends.length !== 1 ? "s" : ""}</strong>{" "}
-                              will be signed (one round each). A small network fee applies.
+                              will be signed. A small network fee applies.
                             </span>
                           ) : (
                             <span>
@@ -1557,9 +1523,9 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
                       {!isConsolidation && draft.is_unshield && (
                         <div className="callout warn" style={{ marginBottom: 12 }}>
                           <span>
-                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</strong> from
-                            the group's shielded Orchard pool to a transparent address. The amount
-                            and recipient will be <strong>publicly visible on-chain</strong>.
+                            Unshield — moves <strong>{zec(draft.amount_zatoshis)} {unit(isMainnet)}</strong> to
+                            a transparent address, so the amount and recipient will be{" "}
+                            <strong>public on-chain</strong>.
                           </span>
                         </div>
                       )}
@@ -1871,7 +1837,7 @@ function SendSessionPanel({
           )}
           {meta.isUnshield && (
             <div className="callout warn" style={{ marginBottom: 10 }}>
-              <span>Unshield — moving funds from the group's shielded Orchard pool to a transparent address (publicly visible on-chain).</span>
+              <span>Unshield — moving funds to a transparent address (public on-chain).</span>
             </div>
           )}
           <table className="participants">
@@ -2069,7 +2035,7 @@ export function GroupKeys({ group, masked = false }: { group: GroupSummary; mask
       <KeyRow label="Public Key (ak) / Group ID" value={group.id} masked={masked} />
       {orchard && keys.data && (
         <>
-          <KeyRow label="Orchard unified address" value={keys.data.address} masked={masked} />
+          <KeyRow label="Unified address" value={keys.data.address} masked={masked} />
           <KeyRow
             label="Unified full viewing key (UFVK)"
             value={keys.data.ufvk}
@@ -2077,21 +2043,16 @@ export function GroupKeys({ group, masked = false }: { group: GroupSummary; mask
           />
           <div className="callout" style={{ marginTop: 10 }}>
             <span>
-              The viewing key (<span className="code-inline">nk</span>,{" "}
-              <span className="code-inline">rivk</span>) is derived
-              deterministically from the group's <span className="code-inline">ak</span>,
-              so every member computes this same address. Funds sent here are
-              spendable only by a threshold of the group. The UFVK grants{" "}
-              <em>viewing</em> access — share it only within the group. The
-              address is encoded for the network selected on the{" "}
-              <Link to="/wallet">Wallet</Link> page (mainnet by default).
+              Every member derives this same address from the group's key. Funds
+              sent here are spendable only by a threshold of the group. The UFVK
+              grants <em>viewing</em> access — share it only within the group.
             </span>
           </div>
         </>
       )}
       {orchard && keys.isError && (
         <div className="error">
-          Could not derive the Orchard address for this group.
+          Could not derive the address for this group.
         </div>
       )}
     </div>
@@ -2527,7 +2488,7 @@ export function GroupWalletPage() {
       <div>
         <h2>{group.description || "(unnamed group)"} — Wallet</h2>
         <p className="dim">
-          A Zcash wallet is only available for RedPallas (Orchard) groups.{" "}
+          A Zcash wallet is only available for RedPallas groups.{" "}
           <Link to={`/groups/${group.id}`}>Back to group details</Link>.
         </p>
       </div>
@@ -2537,21 +2498,22 @@ export function GroupWalletPage() {
   return (
     <div>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-        <h2 style={{ marginBottom: 0 }}>
+        <h2 style={{ marginBottom: 0, display: "flex", alignItems: "center", gap: 10 }}>
           {group.description || "(unnamed group)"} — Wallet
-          {isMainnet && (
-            <span
-              style={{
-                marginLeft: 10,
-                fontSize: 13,
-                color: "var(--danger)",
-                fontWeight: 600,
-                verticalAlign: "middle",
-              }}
-            >
-              ⚠ MAINNET
-            </span>
-          )}
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              padding: "2px 9px",
+              borderRadius: 999,
+              border: "1px solid var(--border)",
+              color: isMainnet ? "var(--danger)" : "var(--muted, #8a8a8a)",
+            }}
+          >
+            {isMainnet ? "Mainnet" : "Testnet"}
+          </span>
         </h2>
         <Link to={`/groups/${group.id}`} className="dim">
           ← Group details

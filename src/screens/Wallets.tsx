@@ -84,8 +84,8 @@ export default function Wallets() {
       ) : wallets.length === 0 ? (
         <div className="card">
           <p className="dim" style={{ margin: 0 }}>
-            No Zcash wallets yet. A wallet is created for each RedPallas (Orchard)
-            group — create or join one under <strong>2 · Groups</strong>.
+            No Zcash wallets yet. A wallet is created for each RedPallas group —
+            create or join one under <strong>2 · Groups</strong>.
           </p>
         </div>
       ) : (
