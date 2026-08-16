@@ -61,9 +61,9 @@ Cyze is a desktop wallet for Zcash where **no one person holds the private key**
 A group jointly controls the funds using [FROST](https://frost.zfnd.org/)
 threshold signatures: a configurable quorum (e.g. 2 of 3) must cooperate to
 authorize any spend. It handles the full lifecycle — distributed key generation,
-a shared Orchard wallet (sync, receive, balances, history), and threshold-signed
-sending where each participant explicitly reviews and approves the transaction
-before their signature share is produced.
+a shared Zcash (Ironwood) wallet (sync, receive, balances, history), and
+threshold-signed sending where each participant explicitly reviews and approves
+the transaction before their signature share is produced.
 
 ---
 
@@ -118,11 +118,18 @@ the others connect. Go to **Session Configuration**.
 
 1. **Start the embedded server.** It binds to loopback on your machine.
 2. Choose how remote participants reach it:
-   - **Cloudflare Tunnel** *(recommended for remote testing)* — click **Open
+   - **Cloudflare Tunnel** *(quickest for remote testing)* — click **Open
      public tunnel** to get a public `https://…trycloudflare.com` URL with valid
      TLS. Share that URL with participants. **Note:** the URL is disposable — a
      new one is generated every time you restart the tunnel, so always share the
      current one.
+   - **Tailscale** *(recommended for a stable link)* — if you and your
+     participants are on the same tailnet, click **Publish to tailnet** to serve
+     the embedded server at a stable `https://<name>.ts.net` address with
+     automatic, publicly-trusted TLS. The URL is **reusable across launches** (no
+     cert-trust step), and access stays **tailnet-only** — not public. If
+     Tailscale isn't installed or signed in, the tab offers **Get Tailscale** /
+     **Sign in** to get there.
    - **Direct URL / IP** — for participants on your LAN or reachable by IP. Share
      the URL, the certificate **fingerprint**, and the self-signed **certificate**
      (participants must trust it once).
@@ -131,8 +138,8 @@ the others connect. Go to **Session Configuration**.
 ### As a participant
 
 1. In **Connect to the coordinator's server**, paste the URL the coordinator gave
-   you. It looks like `https://frost.example.com`, `https://203.0.113.7:2744`, or
-   `https://…trycloudflare.com`.
+   you. It looks like `https://frost.example.com`, `https://203.0.113.7:2744`,
+   `https://…trycloudflare.com`, or a Tailscale `https://<name>.ts.net`.
 2. Click **Test connection** — a success message confirms the server, its TLS
    trust, and latency.
 3. For a Direct-URL (self-signed) server, expand **"Trust its certificate,"**
@@ -216,10 +223,11 @@ balance and history update (use **Sync Now** on the Wallet page if needed).
 
 Network and light-client endpoint are set on the **Wallet Settings** page.
 
-**Network.** Cyze defaults to **Mainnet**; a persistent banner and confirmation
-dialog make the active network unmissable. Switch to **Testnet** to test with
-faucet funds, and back to Mainnet when ready. Balances, addresses, and history
-are kept entirely separate per network.
+**Network.** Cyze defaults to **Mainnet**. The active network is shown as a small
+**Mainnet / Testnet** label on the wallet page, and a real mainnet send asks for
+one confirmation before it broadcasts. Switch to **Testnet** to test with faucet
+funds, and back to Mainnet when ready. Balances, addresses, and history are kept
+entirely separate per network.
 
 **lightwalletd endpoint.** Each network offers a **preset** public endpoint
 (`zec.rocks` on mainnet, `testnet.zec.rocks` on testnet). To use your own node,
@@ -230,4 +238,13 @@ confirms whether the server actually responded.
 **Sync.** The Wallet page auto-syncs and shows the current block height. If it
 looks stalled, press **Sync Now** — it restarts the sync from scratch and
 refreshes every panel (balances, pending/settled, notes, and history).
+
+**Active wallet.** With more than one group, Cyze works on **one wallet at a
+time**. Use **Zcash → Wallets** to switch between groups; selecting one makes it
+the active wallet, and the app stops syncing the previous one so all processing
+stays focused on your choice.
+
+**Diagnostics log.** Wallet Settings has a **Diagnostics log** card that captures
+what the app logs while running (sync steps, errors). Use **Copy all** to grab it
+for troubleshooting; it's in memory only and clears on restart.
 

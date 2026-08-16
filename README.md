@@ -29,15 +29,15 @@ authorize any spend.
 - **Threshold signing** — coordinate a signing session (the coordinator can also
   be a signer), or participate through an inbox with an explicit review/approve
   step before your signature share is produced.
-- **Zcash wallet (Ironwood-ready)** — for RedPallas (Orchard) groups: sync from a
-  lightwalletd server, view **per-pool shielded balances** — the sealed legacy
-  **Orchard** pool and the post-NU6.3 **Ironwood** pool — receive to a rotating
-  group address (with QR), and **send** — each spend is authorized by a live
-  FROST signing ceremony among the group. After the **Ironwood (NU6.3)** upgrade,
-  sends build **V6 transactions** with pool-aware Orchard/Ironwood spend
-  authorization, and a one-click **Orchard → Ironwood migration** sweeps the
-  sealed legacy pool across the turnstile. Includes on-chain and local
-  transaction/message history.
+- **Zcash wallet (Ironwood)** — for RedPallas groups: sync from a lightwalletd
+  server with a pipelined light-client scanner, view the group's **Ironwood
+  shielded balance**, receive to a rotating group address (with QR), and **send** —
+  each spend is authorized by a live FROST signing ceremony among the group. Sends
+  build **V6 transactions** post-NU6.3. Any legacy **Orchard** funds are surfaced
+  only when present, with a one-tap sweep into Ironwood. The app focuses on **one
+  active wallet at a time** — selecting a group makes it the sole wallet the app
+  syncs and acts on. Includes on-chain and local transaction/message history, and
+  an in-app diagnostics log for troubleshooting.
 - **Coinholder voting** — cast a Zcash coinholder-poll vote from a group: paste
   the poll's published ballot, answer, and the vote is delivered as a shielded
   memo (Vote Cast Memo v1) to the poll's reception address through the same FROST
@@ -47,14 +47,16 @@ authorize any spend.
   for you to confirm before signing (the resolver is external, never an
   authorization).
 - **Server hosting** — run the `frostd` coordination server embedded
-  (auto-generated, pinned self-signed TLS), expose it to off-LAN peers through a
-  built-in **Cloudflare tunnel** (public HTTPS URL, no port-forwarding), or point
-  at any external `frostd`.
+  (auto-generated, pinned self-signed TLS), and expose it to off-LAN peers either
+  through a built-in **Cloudflare tunnel** (public HTTPS URL, no port-forwarding)
+  or over **Tailscale** (a stable `*.ts.net` tailnet address with automatic,
+  publicly-trusted TLS — tailnet-only, not public), or point at any external
+  `frostd`.
 - **Contacts & groups** — a per-group view with public key material, named
   participants, receive addresses, and share-repair guidance.
 
 Supports both frost-tools ciphersuites: **Ed25519** (generic signing) and
-**RedPallas** (re-randomized FROST for Zcash Orchard spend authorization).
+**RedPallas** (re-randomized FROST for Zcash shielded spend authorization).
 
 ## Security model
 
@@ -148,9 +150,9 @@ drives the full Tauri command layer (`cargo test -p frost-app --test smoke`).
 ## Layout
 
 - `src-tauri/core` — `frost-app-core`: keystore, frostd transport (pinned-cert
-  TLS), DKG/signing ceremony engines, the Zcash wallet/PCZT send path (Orchard +
-  Ironwood), coinholder-poll voting (`voting.rs`), and ZcashNames resolution
-  (`zns.rs`). No Tauri dependency.
+  TLS), DKG/signing ceremony engines, the Zcash wallet/PCZT send path (Ironwood,
+  plus legacy Orchard) and pipelined sync driver, coinholder-poll voting
+  (`voting.rs`), and ZcashNames resolution (`zns.rs`). No Tauri dependency.
 - `src-tauri/src` — Tauri adapter: commands, event forwarding, sidecar lifecycle.
 - `src/` — React + TypeScript frontend.
 - `scripts/PINNED_REV` — the frost-tools revision used for both the
