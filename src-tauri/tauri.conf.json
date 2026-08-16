@@ -49,6 +49,9 @@
       "minimumSystemVersion": "10.15"
     },
     "windows": {
+      "wix": {
+        "version": "0.2.0.1"
+      },
       "nsis": {
         "installMode": "perMachine"
       }
