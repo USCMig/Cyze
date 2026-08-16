@@ -777,6 +777,7 @@ pub async fn init_group_account(
         .map_err(|e| CoreError::Crypto(format!("wallet accounts: {e}")))?
         .is_empty()
     {
+        tracing::debug!(group = %group_id, "wallet setup: account already imported; nothing to do");
         return Ok(0); // already imported
     }
 
@@ -784,13 +785,25 @@ pub async fn init_group_account(
     let ufvk = UnifiedFullViewingKey::decode(&params, ufvk_str)
         .map_err(|e| CoreError::Crypto(format!("invalid UFVK: {e}")))?;
 
+    // These are single unary RPCs, not the long block stream, so bound them. A
+    // server that accepts the TCP connection but never answers (a misconfigured
+    // proxy, a stalled `get_tree_state` for a deep birthday) would otherwise leave
+    // wallet setup spinning forever with no error and no log line.
+    let rpc_timeout = std::time::Duration::from_secs(30);
+
+    tracing::info!(group = %group_id, url = %lightwalletd_url, "wallet setup: connecting to lightwalletd");
     let mut client = connect(lightwalletd_url).await?;
-    let tip = client
-        .get_latest_block(ChainSpec {})
+    let tip = tokio::time::timeout(rpc_timeout, client.get_latest_block(ChainSpec {}))
         .await
+        .map_err(|_| {
+            CoreError::Connection(
+                "get_latest_block timed out — lightwalletd accepted the connection but did not respond".into(),
+            )
+        })?
         .map_err(|e| CoreError::Connection(format!("get_latest_block: {e}")))?
         .into_inner()
         .height;
+    tracing::info!(group = %group_id, tip, "wallet setup: connected; got chain tip");
 
     let nu5 = params
         .activation_height(NetworkUpgrade::Nu5)
@@ -807,19 +820,28 @@ pub async fn init_group_account(
     // request the frontier as of the block *before* the first one to scan.
     // Fetching the treestate at `scan_from` itself would skip that block — and
     // with it the transaction that funded the group.
-    let treestate = client
-        .get_tree_state(BlockId {
+    tracing::info!(group = %group_id, scan_from, "wallet setup: fetching tree state for the account birthday");
+    let treestate = tokio::time::timeout(
+        rpc_timeout,
+        client.get_tree_state(BlockId {
             height: scan_from.saturating_sub(1),
             hash: vec![],
-        })
-        .await
-        .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
-        .into_inner();
+        }),
+    )
+    .await
+    .map_err(|_| {
+        CoreError::Connection(
+            "get_tree_state timed out — lightwalletd did not return the birthday tree state".into(),
+        )
+    })?
+    .map_err(|e| CoreError::Connection(format!("get_tree_state: {e}")))?
+    .into_inner();
     let birthday = AccountBirthday::from_treestate(treestate, None)
         .map_err(|_| CoreError::Crypto("could not derive account birthday from treestate".into()))?;
 
     db.import_account_ufvk(group_id, &ufvk, &birthday, AccountPurpose::ViewOnly, None)
         .map_err(|e| CoreError::Crypto(format!("import account: {e}")))?;
+    tracing::info!(group = %group_id, scan_from, "wallet setup: view-only account imported; will scan from this height");
     Ok(scan_from)
 }
 
