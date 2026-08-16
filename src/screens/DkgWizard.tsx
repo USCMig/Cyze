@@ -189,7 +189,7 @@ export default function DkgWizard() {
     <div>
       <h2>New DKG ceremony</h2>
 
-      <div className="card">
+      <div className="card dkg-form">
         <label>Role</label>
         <div className="row" style={{ marginBottom: 12 }}>
           <button
