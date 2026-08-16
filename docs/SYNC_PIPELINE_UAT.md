@@ -1,10 +1,18 @@
-# UAT — experimental pipelined sync
+# UAT — pipelined sync (now the standard driver)
 
 Acceptance checklist for the pipelined sync driver (`feat/sync-optimizations`).
-Goal: prove the pipelined path produces the **same wallet state** as the stock
-driver, only faster. Run on **testnet** first. Off by default; opt in per below.
+Run on **testnet** first.
 
-See `docs/SYNC_OPTIMIZATION.md` for the design and the formal validation gate.
+> **Note:** the pipelined driver is now the **standard, only** sync path — there
+> is no `experimental_pipelined_sync` toggle anymore, and the stock
+> `sync::run` path was removed. Sections **A0a** and **A** (the on/off
+> checkbox test and the stock-driver baseline) are therefore **historical** — you
+> can no longer switch to the stock driver in-app to compare. If you still want an
+> equality baseline, capture it from an older build; otherwise start at **B** and
+> validate the single driver's correctness, speed, incremental behavior,
+> cancellation, and post-sync send.
+
+See `docs/SYNC_OPTIMIZATION.md` for the design.
 
 ## Setup
 
@@ -13,45 +21,27 @@ See `docs/SYNC_OPTIMIZATION.md` for the design and the formal validation gate.
       bundle.
 - [ ] Use a **testnet** group with a known, non-trivial history (funded a few
       times, at least one send), so scanning actually finds notes.
-- [ ] Know how to toggle the flag. Primary: **Zcash → Wallet Settings → Sync →
-      "Experimental pipelined sync"** checkbox (persists immediately; takes effect
-      on the next sync). It still maps to `settings.json`
-      (`<data_dir>/settings.json`) `"experimental_pipelined_sync": true|false`,
-      which you can edit directly if preferred. Default/absent = stock driver.
 
-## A0a. The toggle itself (checkbox wiring)
+## A0a. The toggle itself (checkbox wiring) — HISTORICAL
 
-- [ ] Wallet Settings shows a **Sync** card with the checkbox, **unchecked** by
-      default on a fresh profile.
-- [ ] Check it → reopen Wallet Settings (or another screen and back) → it stays
-      checked (persisted). Confirm `settings.json` now has
-      `"experimental_pipelined_sync": true`.
-- [ ] Uncheck it → the value flips back to `false`. No restart needed either way.
+- [ ] *(No longer applies — the toggle was removed and pipelined is the only path.)*
 
-## A. Baseline with the stock driver (control)
+## A. Baseline with the stock driver (control) — HISTORICAL
 
-- [ ] Ensure the checkbox is **unchecked** (`experimental_pipelined_sync` `false`/absent).
-- [ ] Delete the group's wallet db (force a full rescan from birthday) and sync to
-      the tip. Time it roughly (wall clock).
-- [ ] Record, from the group screen / notes:
-  - [ ] Total balance, and the Orchard vs Ironwood breakdown.
-  - [ ] Number of received notes.
-  - [ ] Transaction history (count + amounts).
-  - [ ] Scanned-to height (matches chain tip).
+- [ ] *(No longer runnable in-app — the stock driver was removed. Kept for
+      reference; use an older build if you need a stock baseline to compare.)*
 
-## B. Pipelined driver — clean-state equality (the core test)
+## B. Pipelined driver — clean-state correctness (the core test)
 
-- [ ] **Check** the pipelined-sync box (or set `experimental_pipelined_sync` to `true`).
-- [ ] Delete the wallet db again (same starting point as A) and sync to the tip.
-- [ ] Confirm the log shows **"using experimental pipelined sync driver"** (proves
-      the flag took effect, not a silent fallback).
-- [ ] **Balance is byte-identical to A** — total, Orchard, and Ironwood all match
-      exactly.
-- [ ] Received-note count matches A.
-- [ ] Transaction history matches A (same txids, amounts, memos).
+- [ ] Delete the wallet db (force a full rescan from birthday) and sync to the tip.
+- [ ] **Balance is correct** — total (Ironwood), plus any legacy Orchard, matches
+      the group's known funds and what block explorers show.
+- [ ] Received-note count is correct.
+- [ ] Transaction history is complete (txids, amounts, memos).
 - [ ] Scanned-to height reaches the chain tip.
-- [ ] Wall-clock sync time is **≤ A** (the point of the change; expect faster on a
-      high-latency link, roughly equal on a fast LAN).
+- [ ] Wall-clock sync time is reasonable (faster on a high-latency link is the
+      whole point). If you kept a stock baseline from an older build, it should be
+      **≤** that.
 
 ## C. Incremental sync
 
@@ -87,17 +77,17 @@ See `docs/SYNC_OPTIMIZATION.md` for the design and the formal validation gate.
 - [ ] After it confirms, a re-sync shows the spend and the reduced balance
       correctly.
 
-## G. Regression — flag off still works
+## G. Regression — HISTORICAL
 
-- [ ] **Uncheck** the box (`experimental_pipelined_sync` back to `false`), sync once,
-      and confirm the stock path still works normally (guards against the dispatch wiring breaking
-      the default path).
+- [ ] *(No longer applies — there is no flag to turn off; the pipelined driver is
+      the only path.)*
 
 ## Sign-off
 
-- [ ] A vs B balances/notes/history/height are identical.
+- [ ] B balances/notes/history/height are correct (against known funds / an
+      explorer).
 - [ ] C, D, F pass on testnet.
 - [ ] No panics, no stuck syncs, UI responsive throughout.
 
-Only after this passes on testnet: consider flipping the default and/or repeating
-A/B/F once on **mainnet** with a small balance before recommending it broadly.
+Only after this passes on testnet: repeat B/F once on **mainnet** with a small
+balance before relying on it broadly.

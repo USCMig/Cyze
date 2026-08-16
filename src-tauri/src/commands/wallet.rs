@@ -234,10 +234,8 @@ pub async fn wallet_sync(state: State<'_, AppState>, group_id: String) -> AppRes
     // cancelled one's still-open db connection — the "database is locked" case.
     let _gate = state.sync_gate.lock().await;
 
-    let settings = state.load_settings();
     let opts = wallet::SyncOptions {
-        batch_size: settings.sync_batch_size,
-        pipelined: settings.experimental_pipelined_sync.unwrap_or(false),
+        batch_size: state.load_settings().sync_batch_size,
     };
     let result = wallet::sync_group(
         &state.data_dir, &group_id, network, &url, db_key.as_ref(), opts, &cancel,

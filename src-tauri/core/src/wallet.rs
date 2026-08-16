@@ -246,11 +246,9 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
 use std::path::{Path, PathBuf};
 
 use rand::rngs::OsRng;
-use async_trait::async_trait;
-use prost::Message;
 use zcash_client_backend::data_api::chain::error::Error as ChainError;
 use zcash_client_backend::data_api::chain::{
-    BlockCache, BlockSource, ChainState, CommitmentTreeRoot,
+    BlockSource, ChainState, CommitmentTreeRoot,
 };
 use zcash_client_backend::data_api::scanning::{ScanPriority, ScanRange};
 use zcash_client_backend::data_api::wallet::{
@@ -263,13 +261,10 @@ use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_client_backend::proto::service::{BlockId, ChainSpec};
-use zcash_client_sqlite::chain::init::init_blockmeta_db;
-use zcash_client_sqlite::chain::BlockMeta;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
-use zcash_client_sqlite::{FsBlockDb, WalletDb};
+use zcash_client_sqlite::WalletDb;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::memo::{Memo, MemoBytes};
 
@@ -845,113 +840,6 @@ pub async fn init_group_account(
     Ok(scan_from)
 }
 
-/// A `BlockCache` over `FsBlockDb`. `FsBlockDb` ships only `BlockSource`, so we
-/// wrap it and add the cache-management methods `sync::run` requires (cache
-/// downloaded compact blocks as files on disk, read them back, prune them).
-///
-/// `FsBlockDb` holds a rusqlite `Connection` (not `Sync`), but `BlockCache`
-/// requires `Sync`, so the inner db is behind a `Mutex`. The cache error type is
-/// `io::Error` because `FsBlockDbError` does not implement `std::error::Error`,
-/// which `sync::run` requires.
-struct FsCache {
-    inner: std::sync::Mutex<FsBlockDb>,
-    blocks_dir: PathBuf,
-}
-
-fn io_err(e: impl std::fmt::Display) -> std::io::Error {
-    std::io::Error::other(e.to_string())
-}
-
-impl FsCache {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, FsBlockDb>, std::io::Error> {
-        self.inner.lock().map_err(|_| io_err("block cache lock poisoned"))
-    }
-}
-
-impl BlockSource for FsCache {
-    type Error = std::io::Error;
-
-    fn with_blocks<F, WalletErrT>(
-        &self,
-        from_height: Option<BlockHeight>,
-        limit: Option<usize>,
-        mut with_block: F,
-    ) -> Result<(), ChainError<WalletErrT, Self::Error>>
-    where
-        F: FnMut(CompactBlock) -> Result<(), ChainError<WalletErrT, Self::Error>>,
-    {
-        let db = self.lock().map_err(ChainError::BlockSource)?;
-        let mut height = from_height.unwrap_or_else(|| BlockHeight::from_u32(0));
-        let mut remaining = limit.unwrap_or(usize::MAX);
-        while remaining > 0 {
-            let meta = match db.find_block(height).map_err(|e| ChainError::BlockSource(io_err(e)))? {
-                Some(m) => m,
-                None => break, // contiguous run ended
-            };
-            let bytes = std::fs::read(meta.block_file_path(&self.blocks_dir))
-                .map_err(ChainError::BlockSource)?;
-            let block =
-                CompactBlock::decode(&bytes[..]).map_err(|e| ChainError::BlockSource(io_err(e)))?;
-            with_block(block)?;
-            height = height + 1;
-            remaining -= 1;
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl BlockCache for FsCache {
-    fn get_tip_height(
-        &self,
-        _range: Option<&ScanRange>,
-    ) -> Result<Option<BlockHeight>, Self::Error> {
-        self.lock()?.get_max_cached_height().map_err(io_err)
-    }
-
-    async fn read(&self, range: &ScanRange) -> Result<Vec<CompactBlock>, Self::Error> {
-        let range = range.block_range().clone();
-        let db = self.lock()?;
-        let mut blocks = Vec::new();
-        let mut height = range.start;
-        while height < range.end {
-            match db.find_block(height).map_err(io_err)? {
-                Some(meta) => {
-                    let bytes = std::fs::read(meta.block_file_path(&self.blocks_dir))?;
-                    blocks.push(CompactBlock::decode(&bytes[..]).map_err(io_err)?);
-                }
-                None => break,
-            }
-            height = height + 1;
-        }
-        Ok(blocks)
-    }
-
-    async fn insert(&self, compact_blocks: Vec<CompactBlock>) -> Result<(), Self::Error> {
-        let mut metas = Vec::with_capacity(compact_blocks.len());
-        for cb in &compact_blocks {
-            let meta = BlockMeta {
-                height: BlockHeight::from_u32(cb.height as u32),
-                block_hash: BlockHash::from_slice(&cb.hash),
-                block_time: cb.time,
-                sapling_outputs_count: cb.vtx.iter().map(|tx| tx.outputs.len() as u32).sum(),
-                orchard_actions_count: cb.vtx.iter().map(|tx| tx.actions.len() as u32).sum(),
-            };
-            std::fs::write(meta.block_file_path(&self.blocks_dir), cb.encode_to_vec())?;
-            metas.push(meta);
-        }
-        self.lock()?.write_block_metadata(&metas).map_err(io_err)
-    }
-
-    async fn delete(&self, range: ScanRange) -> Result<(), Self::Error> {
-        // Remove cached blocks at/above the range start (keep everything below).
-        let start = u32::from(range.block_range().start);
-        self.lock()?
-            .truncate_to_height(BlockHeight::from_u32(start.saturating_sub(1)))
-            .map_err(io_err)
-    }
-}
-
 /// How many blocks each sync batch downloads and scans at once when the caller
 /// gives no override. Larger batches amortize the per-batch gRPC round-trip and
 /// database-transaction overhead across more blocks, which is the dominant cost
@@ -972,20 +860,14 @@ pub struct SyncOptions {
     /// Blocks to download and scan per batch; `None` uses
     /// [`DEFAULT_SYNC_BATCH_SIZE`], clamped into `[MIN, MAX]_SYNC_BATCH_SIZE`.
     pub batch_size: Option<u32>,
-    /// Use the experimental pipelined driver (download-ahead + adaptive batch)
-    /// instead of the stock `zcash_client_backend::sync::run`. Off by default
-    /// until validated against the stock driver on testnet
-    /// (see `docs/SYNC_OPTIMIZATION.md`). Both produce the same wallet state; the
-    /// pipelined one only overlaps network download with CPU scanning.
-    pub pipelined: bool,
 }
 
 /// Sync the group's wallet: download and trial-decrypt compact blocks from
 /// lightwalletd into the local db. Long-running; touches the network.
 ///
-/// The default path drives the stock `zcash_client_backend::sync::run`. When
-/// `opts.pipelined` is set, the custom [`run_pipelined`] driver is used instead
-/// (same result, overlapped I/O and CPU).
+/// Driven by the pipelined [`run_pipelined`] driver, which overlaps block
+/// download with CPU trial-decryption and streams blocks straight from the
+/// network to the scanner (no on-disk block cache).
 pub async fn sync_group(
     data_dir: &Path,
     group_id: &str,
@@ -999,47 +881,20 @@ pub async fn sync_group(
         .batch_size
         .unwrap_or(DEFAULT_SYNC_BATCH_SIZE)
         .clamp(MIN_SYNC_BATCH_SIZE, MAX_SYNC_BATCH_SIZE);
-    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
-    std::fs::create_dir_all(&blocks_dir)?;
+    let (db_path, _) = wallet_paths(data_dir, group_id, network);
     let mut db = open_db(&db_path, network, db_key)?;
-
-    let mut inner = FsBlockDb::for_path(&blocks_dir)
-        .map_err(|e| CoreError::Crypto(format!("block cache: {e}")))?;
-    init_blockmeta_db(&mut inner)
-        .map_err(|e| CoreError::Crypto(format!("init block cache: {e}")))?;
-    let cache = FsCache {
-        inner: std::sync::Mutex::new(inner),
-        // FsBlockDb stores its compact-block files in `<root>/blocks`, so the
-        // cache must read/write there (not the root we passed to `for_path`).
-        blocks_dir: blocks_dir.join("blocks"),
-    };
 
     let mut client = connect(lightwalletd_url).await?;
     let params = network.params();
-    // Both drivers scan in transactional batches, so dropping the future between
+    // The driver scans in transactional batches, so dropping the future between
     // batches leaves the db consistent (just short of the tip). That makes it
     // safe to race against a cancellation token: "Sync Now" trips the token to
     // abandon a stalled run, and a fresh sync resumes from where this one left
     // off. Without this, a stuck stream would keep the sync pending forever.
-    let result = if opts.pipelined {
-        // The custom pipelined driver overlaps block download with scanning; it
-        // produces the same wallet state as the stock driver but hides network
-        // latency behind CPU trial-decryption. Off by default, opted in via
-        // `Settings.experimental_pipelined_sync` — see docs/SYNC_OPTIMIZATION.md.
-        tracing::info!("using experimental pipelined sync driver");
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => Err(CoreError::Cancelled),
-            res = run_pipelined(&mut client, &params, &mut db, batch_size) => res,
-        }
-    } else {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => Err(CoreError::Cancelled),
-            res = zcash_client_backend::sync::run(
-                &mut client, &params, &cache, &mut db, batch_size,
-            ) => res.map_err(|e| CoreError::Connection(format!("sync: {e}"))),
-        }
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(CoreError::Cancelled),
+        res = run_pipelined(&mut client, &params, &mut db, batch_size) => res,
     };
     // Turn known, actionable failures into a message that says what to do, while
     // keeping the raw server error appended for diagnosis.
@@ -1090,11 +945,10 @@ fn annotate_sync_error(e: CoreError) -> CoreError {
 
 /// An in-memory [`BlockSource`] over one batch of already-downloaded compact
 /// blocks. The pipelined driver hands each batch straight from the network to
-/// the scanner through this, so the pipelined path never touches the on-disk
-/// `FsCache` (no file writes, no cache mutex contention between the download-ahead
-/// producer and the scanning consumer). Scanning is fully transactional via
-/// `put_blocks`, so an interrupted batch leaves the db consistent, exactly as the
-/// stock disk-backed path does.
+/// the scanner through this, so a sync never touches an on-disk block cache (no
+/// file writes, no cache mutex contention between the download-ahead producer and
+/// the scanning consumer). Scanning is fully transactional via `put_blocks`, so an
+/// interrupted batch leaves the db consistent.
 struct MemBlockSource(Vec<CompactBlock>);
 
 impl BlockSource for MemBlockSource {

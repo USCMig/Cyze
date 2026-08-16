@@ -42,9 +42,10 @@ parallel with scanning." Two levers remain, and both require driving the sync
 loop ourselves instead of calling `sync::run`:
 
 1. **Pipelining** — overlap network download with CPU trial-decryption. This is
-   Warp's core advantage and the single biggest safe win left. **Implemented**
-   on this branch (`run_pipelined` in `wallet.rs`); off by default, opt-in via
-   `Settings.experimental_pipelined_sync` — see the status note below.
+   Warp's core advantage and the single biggest safe win left. **Implemented and
+   now the standard (only) sync driver** (`run_pipelined` in `wallet.rs`). The
+   stock `sync::run` path and its on-disk block cache were removed once the
+   pipelined driver was validated.
 2. **Adaptive batch size** — grow the batch over empty ranges (cheap to scan),
    shrink over dense ranges (expensive), instead of one fixed size for the run.
    **Deliberately deferred**: the pipelined driver keeps the *same* fixed batch
@@ -109,18 +110,14 @@ runtime the code is still correct (no overlap, identical result). Moving the sca
 onto `spawn_blocking` to guarantee overlap regardless of runtime is a possible
 future refinement; it is not needed for correctness.
 
-### Safety: gated and off by default
+### Status: standard driver
 
-A hand-driven sync loop touches fund detection, so it does **not** replace the
-default path until validated:
-
-- Guarded by `Settings.experimental_pipelined_sync` (default `false`).
-- When off, `sync_group` calls the stock `zcash_client_backend::sync::run`
-  exactly as today.
-- When on, `sync_group` calls the custom `run_pipelined` driver.
-
-This lets the new driver be **validated on testnet** (and by opt-in users) before
-it becomes the default, and reverted instantly by a setting.
+The pipelined driver was validated on testnet (byte-identical wallet state vs the
+stock driver, faster on high-latency links) and is now the **standard, only** sync
+path. `sync_group` always calls `run_pipelined`; the `experimental_pipelined_sync`
+setting, the stock `zcash_client_backend::sync::run` call, and the on-disk
+`FsBlockDb`/`FsCache` block cache it required have been removed. The pipelined
+driver streams blocks straight from the network to the scanner in memory.
 
 ### Validation gate before default
 
