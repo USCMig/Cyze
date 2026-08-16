@@ -1050,22 +1050,32 @@ pub async fn sync_group(
 /// cause, preserving the original text after an em-dash for debugging. Applies to
 /// both sync drivers (both surface a `CoreError::Connection` carrying the raw
 /// lightwalletd/tonic error string).
-fn annotate_sync_error(e: CoreError) -> CoreError {
-    let raw = match &e {
-        CoreError::Connection(m) => m.clone(),
-        // Cancellation and non-connection errors are already clear.
-        _ => return e,
+/// True when a connection error is a lightwalletd rejecting a shielded pool it
+/// doesn't recognize — Ironwood (NU6.3) on a server that predates it, which
+/// answers `get_subtree_roots` for that pool with gRPC InvalidArgument
+/// "invalid shielded protocol value".
+fn is_invalid_shielded_protocol(e: &CoreError) -> bool {
+    let lower = match e {
+        CoreError::Connection(m) => m.to_lowercase(),
+        _ => return false,
     };
-    let lower = raw.to_lowercase();
+    lower.contains("invalid shielded protocol")
+        || (lower.contains("shielded protocol") && lower.contains("invalid"))
+}
 
+fn annotate_sync_error(e: CoreError) -> CoreError {
     // A lightwalletd that predates Ironwood (NU6.3) doesn't know the Ironwood
     // shielded protocol, so the very first sync step — fetching subtree roots for
     // all pools, including Ironwood — is rejected with "invalid shielded protocol
     // value". The whole sync then aborts. This is a server-capability problem, not
-    // a wallet bug, and the fix is to point at an Ironwood-capable server.
-    if lower.contains("invalid shielded protocol")
-        || (lower.contains("shielded protocol") && lower.contains("invalid"))
-    {
+    // a wallet bug, and the fix is to point at an Ironwood-capable server. (The
+    // pipelined driver skips Ironwood roots on this error instead; this friendly
+    // message is for the stock driver, which can't.)
+    if is_invalid_shielded_protocol(&e) {
+        let raw = match &e {
+            CoreError::Connection(m) => m.clone(),
+            _ => return e,
+        };
         return CoreError::Connection(format!(
             "This lightwalletd server doesn't support Ironwood (NU6.3). Syncing has \
              to fetch the Ironwood note-commitment tree, and the server rejected \
@@ -1396,9 +1406,29 @@ async fn update_subtree_roots_pipelined(
     db.put_orchard_subtree_roots(0, &orchard_roots)
         .map_err(|e| CoreError::Crypto(format!("put orchard subtree roots: {e}")))?;
 
-    let ironwood_roots = download_subtree_roots(client, ShieldedProtocol::Ironwood).await?;
-    db.put_ironwood_subtree_roots(0, &ironwood_roots)
-        .map_err(|e| CoreError::Crypto(format!("put ironwood subtree roots: {e}")))?;
+    // Ironwood (NU6.3) is newer than some lightwalletd deployments — notably on
+    // testnet. Such a server rejects the Ironwood subtree-roots request with
+    // "invalid shielded protocol value". A server that doesn't know the pool has
+    // no Ironwood notes to report, so treat that one rejection as "no Ironwood
+    // roots yet" and keep syncing the other pools, rather than aborting the whole
+    // sync. (Ironwood value won't be tracked until an Ironwood-capable server is
+    // used, but on such a server there is none to miss.) Any other error still
+    // fails the sync.
+    match download_subtree_roots(client, ShieldedProtocol::Ironwood).await {
+        Ok(ironwood_roots) => {
+            db.put_ironwood_subtree_roots(0, &ironwood_roots)
+                .map_err(|e| CoreError::Crypto(format!("put ironwood subtree roots: {e}")))?;
+        }
+        Err(e) if is_invalid_shielded_protocol(&e) => {
+            tracing::warn!(
+                "lightwalletd rejected the Ironwood subtree-roots request ({e}); \
+                 continuing without Ironwood tree state — this server predates \
+                 Ironwood (NU6.3). Ironwood funds won't be tracked until you use an \
+                 Ironwood-capable server."
+            );
+        }
+        Err(e) => return Err(e),
+    }
 
     Ok(())
 }
@@ -2533,6 +2563,19 @@ mod tests {
             annotate_sync_error(CoreError::Cancelled),
             CoreError::Cancelled
         ));
+    }
+
+    #[test]
+    fn detects_unsupported_ironwood_pool_for_graceful_skip() {
+        // The rejection the pipelined driver skips Ironwood roots on.
+        let raw = "get_subtree_roots: status: InvalidArgument, message: \
+                   \"Error: Invalid shielded protocol value.\"";
+        assert!(is_invalid_shielded_protocol(&CoreError::Connection(raw.into())));
+        // Unrelated errors and non-connection variants are not mistaken for it.
+        assert!(!is_invalid_shielded_protocol(&CoreError::Connection(
+            "get_subtree_roots: transport error".into()
+        )));
+        assert!(!is_invalid_shielded_protocol(&CoreError::Cancelled));
     }
 
     /// The pipelined driver must scan in the exact same batch units as the stock
