@@ -13,14 +13,24 @@ See `docs/SYNC_OPTIMIZATION.md` for the design and the formal validation gate.
       bundle.
 - [ ] Use a **testnet** group with a known, non-trivial history (funded a few
       times, at least one send), so scanning actually finds notes.
-- [ ] Know how to toggle the flag. It lives in `settings.json`
-      (`<data_dir>/settings.json`) as `"experimental_pipelined_sync": true|false`.
-      Default/absent = stock driver. Toggling requires a fresh sync to take effect
-      (use "Sync Now" or relaunch).
+- [ ] Know how to toggle the flag. Primary: **Zcash → Wallet Settings → Sync →
+      "Experimental pipelined sync"** checkbox (persists immediately; takes effect
+      on the next sync). It still maps to `settings.json`
+      (`<data_dir>/settings.json`) `"experimental_pipelined_sync": true|false`,
+      which you can edit directly if preferred. Default/absent = stock driver.
+
+## A0a. The toggle itself (checkbox wiring)
+
+- [ ] Wallet Settings shows a **Sync** card with the checkbox, **unchecked** by
+      default on a fresh profile.
+- [ ] Check it → reopen Wallet Settings (or another screen and back) → it stays
+      checked (persisted). Confirm `settings.json` now has
+      `"experimental_pipelined_sync": true`.
+- [ ] Uncheck it → the value flips back to `false`. No restart needed either way.
 
 ## A. Baseline with the stock driver (control)
 
-- [ ] Ensure `experimental_pipelined_sync` is `false`/absent.
+- [ ] Ensure the checkbox is **unchecked** (`experimental_pipelined_sync` `false`/absent).
 - [ ] Delete the group's wallet db (force a full rescan from birthday) and sync to
       the tip. Time it roughly (wall clock).
 - [ ] Record, from the group screen / notes:
@@ -31,7 +41,7 @@ See `docs/SYNC_OPTIMIZATION.md` for the design and the formal validation gate.
 
 ## B. Pipelined driver — clean-state equality (the core test)
 
-- [ ] Set `experimental_pipelined_sync` to `true`.
+- [ ] **Check** the pipelined-sync box (or set `experimental_pipelined_sync` to `true`).
 - [ ] Delete the wallet db again (same starting point as A) and sync to the tip.
 - [ ] Confirm the log shows **"using experimental pipelined sync driver"** (proves
       the flag took effect, not a silent fallback).
@@ -79,8 +89,8 @@ See `docs/SYNC_OPTIMIZATION.md` for the design and the formal validation gate.
 
 ## G. Regression — flag off still works
 
-- [ ] Set `experimental_pipelined_sync` back to `false`, sync once, and confirm the
-      stock path still works normally (guards against the dispatch wiring breaking
+- [ ] **Uncheck** the box (`experimental_pipelined_sync` back to `false`), sync once,
+      and confirm the stock path still works normally (guards against the dispatch wiring breaking
       the default path).
 
 ## Sign-off

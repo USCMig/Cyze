@@ -4,6 +4,8 @@ import {
   getWalletConfig,
   lightwalletdInfo,
   setWalletConfig,
+  getSettings,
+  setExperimentalPipelinedSync,
   getLogs,
   clearLogs,
   AppError,
@@ -281,6 +283,8 @@ export default function Wallet() {
         {testErr && <div className="error" style={{ marginTop: 10 }}>{testErr}</div>}
       </div>
 
+      <SyncCard />
+
       <LogsCard />
 
       {showMainnetModal && (
@@ -294,6 +298,52 @@ export default function Wallet() {
         />
       )}
 
+    </div>
+  );
+}
+
+/** Sync settings: opt into the experimental pipelined sync driver. Persisted and
+ *  read at the start of each sync, so the toggle takes effect on the next sync. */
+function SyncCard() {
+  const queryClient = useQueryClient();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  const enabled = settings.data?.experimental_pipelined_sync ?? false;
+
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => setExperimentalPipelinedSync(next),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
+  });
+
+  return (
+    <div className="card" style={{ marginTop: 18 }}>
+      <h3 style={{ marginTop: 0 }}>Sync</h3>
+      <label
+        className="row"
+        style={{ gap: 10, alignItems: "flex-start", cursor: "pointer" }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={settings.isLoading || toggle.isPending}
+          onChange={(e) => toggle.mutate(e.target.checked)}
+          style={{ marginTop: 3 }}
+        />
+        <span>
+          <strong>Experimental pipelined sync</strong>
+          <span className="dim" style={{ display: "block", fontSize: 13, marginTop: 4 }}>
+            Downloads the next batch of blocks while the current one is still being
+            scanned, which can speed up a long initial sync — most on high-latency
+            connections. Off by default while it's being validated against the
+            standard sync. Takes effect on your <strong>next sync</strong>; if a
+            sync misbehaves, turn this off and sync again.
+          </span>
+        </span>
+      </label>
+      {toggle.isError && (
+        <div className="error" style={{ marginTop: 8 }}>
+          {(toggle.error as unknown as AppError).message}
+        </div>
+      )}
     </div>
   );
 }
