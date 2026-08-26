@@ -118,6 +118,11 @@ export default function TailscalePanel({
           <div>
             <span className="badge green">serving on tailnet</span>
           </div>
+          {s?.detail && (
+            <p className="ok" style={{ fontSize: 12, marginTop: 8 }}>
+              ✓ {s.detail}
+            </p>
+          )}
           <label style={{ marginTop: 8 }}>Tailnet URL — share with participants</label>
           <div className="mono">{url}</div>
           <div className="row" style={{ gap: 8, marginTop: 8 }}>

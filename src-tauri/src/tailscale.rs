@@ -198,6 +198,55 @@ fn first_line(s: &str) -> Option<&str> {
     s.lines().map(str::trim).find(|l| !l.is_empty())
 }
 
+/// Log a Tailscale action to stderr. The app had no logging at all, so a failed
+/// or ineffective `serve` left no trace to debug. Visible in a dev-run console
+/// and captured stderr; the user-facing outcome is also returned in the status.
+fn log_ts(msg: impl AsRef<str>) {
+    eprintln!("[tailscale] {}", msg.as_ref());
+}
+
+/// After `serve`, confirm the mapping is actually live by reading back
+/// `serve status --json` and checking it proxies to our loopback frostd port. A
+/// zero exit code from `serve` does not prove tailscaled is now listening on 443
+/// (certs pending, config rejected, a version quirk), which is exactly how a
+/// remote peer ends up with "connection refused" while the app shows "serving".
+/// Returns `(is_active, raw_status_json)`.
+async fn serve_active_for(bin: &PathBuf, backend_port: u16) -> (bool, String) {
+    match run(bin, &["serve", "status", "--json"]).await {
+        Ok(out) => {
+            let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // The status config names the backend target we asked for, so a plain
+            // substring match confirms *our* mapping regardless of the JSON shape.
+            let active = raw.contains(&format!("127.0.0.1:{backend_port}"));
+            (active, raw)
+        }
+        Err(e) => (false, format!("(serve status failed: {})", e.message)),
+    }
+}
+
+/// Map a `tailscale serve` failure to an actionable hint for the two causes that
+/// actually bite: the tailnet lacking HTTPS certificates, and this user not being
+/// the node's serve "operator".
+fn serve_error_hint(stderr: &str) -> String {
+    let s = stderr.to_ascii_lowercase();
+    let first = first_line(stderr).unwrap_or("unknown error");
+    if s.contains("denied") || s.contains("operator") || s.contains("permission") {
+        format!(
+            "{first}\n\nTailscale denied the request: serving requires this machine's user to be \
+             the tailnet 'operator'. Set it once with `tailscale set --operator=$USER` (Linux/macOS) \
+             or run Tailscale as your user (Windows), then publish again."
+        )
+    } else if s.contains("https") || s.contains("cert") || s.contains("magicdns") {
+        format!(
+            "{first}\n\nThis usually means HTTPS is not enabled for your tailnet. In the Tailscale \
+             admin console enable MagicDNS and HTTPS Certificates (Settings → Features), then publish \
+             again."
+        )
+    } else {
+        format!("{first} (is the Tailscale daemon running and signed in?)")
+    }
+}
+
 /// Turn off any HTTPS serve on 443 (best-effort). Used before starting (to clear
 /// a stale mapping) and on stop. Surgical — only touches the 443 mount Cyze uses,
 /// not the user's other serve config.
@@ -229,23 +278,41 @@ pub async fn start(state: &AppState, port: u16) -> AppResult<TailscaleStatus> {
     // self-signed backend cert (the tailnet edge presents a real cert outward).
     serve_off(&bin).await;
     let target = format!("https+insecure://127.0.0.1:{port}");
-    let out = run(
-        &bin,
-        &["serve", "--bg", SERVE_HTTPS_FLAG, &target],
-    )
-    .await?;
+    log_ts(format!("serve --bg {SERVE_HTTPS_FLAG} {target}"));
+    let out = run(&bin, &["serve", "--bg", SERVE_HTTPS_FLAG, &target]).await?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stdout.trim().is_empty() {
+        log_ts(format!("serve stdout: {}", stdout.trim()));
+    }
+    if !stderr.trim().is_empty() {
+        log_ts(format!("serve stderr: {}", stderr.trim()));
+    }
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(AppError::new(
             "tailscale",
-            format!(
-                "`tailscale serve` failed: {}",
-                first_line(&stderr).unwrap_or("unknown error (is the daemon running?)")
-            ),
+            format!("`tailscale serve` failed: {}", serve_error_hint(&stderr)),
+        ));
+    }
+
+    // Confirm the mapping is really live. A successful exit is not enough — verify
+    // tailscaled is now proxying 443 to our frostd, or we would report "serving"
+    // while participants get connection-refused.
+    let (active, raw) = serve_active_for(&bin, port).await;
+    log_ts(format!("serve status active={active}: {}", first_line(&raw).unwrap_or("{}")));
+    if !active {
+        return Err(AppError::new(
+            "tailscale",
+            "`tailscale serve` returned success but no active tailnet mapping to this server was \
+             found. The most common cause is that HTTPS Certificates are not enabled for your \
+             tailnet — enable MagicDNS and HTTPS Certificates in the Tailscale admin console \
+             (Settings → Features), then publish again. (You can also check with \
+             `tailscale serve status`.)",
         ));
     }
 
     let public_url = format!("https://{dns_name}");
+    log_ts(format!("published: {public_url} -> 127.0.0.1:{port} (verified)"));
     *state.tailscale.lock().await = Some(TailscaleHandle {
         public_url: public_url.clone(),
         port,
@@ -255,10 +322,13 @@ pub async fn start(state: &AppState, port: u16) -> AppResult<TailscaleStatus> {
         installed: true,
         available: true,
         serving: true,
-        public_url: Some(public_url),
+        public_url: Some(public_url.clone()),
         port: Some(port),
         dns_name: Some(dns_name),
-        detail: None,
+        detail: Some(format!(
+            "Verified: serving {public_url} → 127.0.0.1:{port} on your tailnet. \
+             Participants must be signed in to the same tailnet to connect."
+        )),
     })
 }
 
