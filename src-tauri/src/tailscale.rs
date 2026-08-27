@@ -31,6 +31,22 @@ use tokio::process::Command;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
+/// `CREATE_NO_WINDOW` — keep a spawned console app from popping a window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Suppress the console window that spawning the `tailscale` CLI flashes on a
+/// Windows GUI build. Without this, every call — including the status poll that
+/// runs every few seconds — briefly opens and closes a terminal window, which is
+/// exactly the "it just opens and closes terminal windows" symptom. No-op off
+/// Windows.
+fn quiet(cmd: &mut Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 /// The `serve` flag selecting the tailnet HTTPS port. Passed as a single
 /// combined `--https=443` token because `tailscale serve` does not reliably
 /// accept the space-separated form. 443 is Tailscale's HTTPS default, so the
@@ -119,14 +135,10 @@ fn tailscale_candidates() -> Vec<PathBuf> {
 /// Returns the first that runs, or `None` if Tailscale is not installed.
 async fn resolve_bin() -> Option<PathBuf> {
     for bin in tailscale_candidates() {
-        let ok = Command::new(&bin)
-            .arg("version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let mut cmd = Command::new(&bin);
+        cmd.arg("version").stdout(Stdio::null()).stderr(Stdio::null());
+        quiet(&mut cmd);
+        let ok = cmd.status().await.map(|s| s.success()).unwrap_or(false);
         if ok {
             return Some(bin);
         }
@@ -137,9 +149,10 @@ async fn resolve_bin() -> Option<PathBuf> {
 /// Run a `tailscale` subcommand and capture its output. Short-lived commands
 /// only (`status`, `serve`), so we wait for completion rather than streaming.
 async fn run(bin: &PathBuf, args: &[&str]) -> AppResult<std::process::Output> {
-    Command::new(bin)
-        .args(args)
-        .output()
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    quiet(&mut cmd);
+    cmd.output()
         .await
         .map_err(|e| AppError::new("tailscale", format!("running `tailscale {}`: {e}", args.join(" "))))
 }
@@ -358,10 +371,10 @@ pub async fn sign_in() -> AppResult<SignInResult> {
         )
     })?;
 
-    let mut child = Command::new(&bin)
-        .arg("up")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut cmd = Command::new(&bin);
+    cmd.arg("up").stdout(Stdio::piped()).stderr(Stdio::piped());
+    quiet(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| AppError::new("tailscale", format!("running `tailscale up`: {e}")))?;
 
@@ -467,14 +480,16 @@ pub async fn status(state: &AppState) -> TailscaleStatus {
 /// Best-effort: resolves the binary and runs the off command, ignoring failures.
 pub fn stop_serve_blocking() {
     use std::process::Command as StdCommand;
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
     for bin in tailscale_candidates() {
-        let ran = StdCommand::new(&bin)
-            .args(["serve", SERVE_HTTPS_FLAG, "off"])
+        let mut cmd = StdCommand::new(&bin);
+        cmd.args(["serve", SERVE_HTTPS_FLAG, "off"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let ran = cmd.status().map(|s| s.success()).unwrap_or(false);
         if ran {
             return;
         }
