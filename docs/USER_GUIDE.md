@@ -135,6 +135,32 @@ the others connect. Go to **Session Configuration**.
      (participants must trust it once).
    - **NGINX reverse proxy** — for a stable domain with your own TLS.
 
+#### Tailscale prerequisites
+
+Tailscale serving needs a few things enabled once — without them, **Publish to
+tailnet** fails (often silently on older builds). Set these up first:
+
+1. **Install Tailscale and sign in** on the coordinator's machine.
+2. In the [Tailscale admin console](https://login.tailscale.com/admin/dns) → **DNS**, enable:
+   - **MagicDNS** — gives the machine its stable `<name>.<tailnet>.ts.net` name.
+   - **HTTPS Certificates** — **required**; `tailscale serve` uses it to present
+     valid TLS on port 443. This is the most common cause of a failed publish.
+3. **Serve permission (operator).** On **Windows/macOS** the signed-in desktop
+   user is normally the operator, so nothing to do. On **Linux**, grant it once:
+   `tailscale set --operator=$USER`.
+4. **Every participant must be signed in to the same tailnet** — Tailscale serve
+   is tailnet-only (not public).
+
+Once these are set, **Publish to tailnet** shows a green *"Verified: serving …"*
+confirmation. If it fails, the app names the reason (HTTPS Certificates not
+enabled, or operator permission). To check from a terminal, using the port shown
+in the server status (`https://127.0.0.1:<PORT>`):
+
+```sh
+tailscale serve --bg --https=443 https+insecure://127.0.0.1:<PORT>
+tailscale serve status    # should list the mapping
+```
+
 ### As a participant
 
 1. In **Connect to the coordinator's server**, paste the URL the coordinator gave
@@ -144,7 +170,8 @@ the others connect. Go to **Session Configuration**.
    trust, and latency.
 3. For a Direct-URL (self-signed) server, expand **"Trust its certificate,"**
    paste the PEM the coordinator shared, verify the fingerprint out-of-band, and
-   trust it. (Not needed for a tunnel or NGINX server — those use public TLS.)
+   trust it. (Not needed for a Tunnel, Tailscale, or NGINX server — those already
+   present publicly-trusted TLS.)
 4. **Save & use this server.**
 
 **What to verify:** the participant's Test connection succeeds against the
