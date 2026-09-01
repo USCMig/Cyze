@@ -28,6 +28,11 @@ pub enum CoreError {
     Cancelled,
     #[error("crypto error: {0}")]
     Crypto(String),
+    /// A chain reorganization went deeper than the wallet can rewind. Distinct so
+    /// the UI can offer "reset the wallet to an earlier birthday" rather than
+    /// showing it as an opaque crypto failure.
+    #[error("chain reorg: {0}")]
+    Reorg(String),
     #[error("TLS error: {0}")]
     Tls(String),
     #[error("I/O error: {0}")]

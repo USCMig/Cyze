@@ -174,6 +174,15 @@ export const walletInitAccount = (groupId: string, birthdayHeight?: number) =>
     groupId,
     birthdayHeight: birthdayHeight ?? null,
   });
+/** Wipe the group's wallet db + block cache and re-import from an earlier
+ *  birthday, then re-sync. Recovers from a chain reorg deeper than the wallet
+ *  could rewind. Omit `birthdayHeight` to move the recorded birthday back by a
+ *  default margin. Returns the height the rebuilt wallet will scan from. */
+export const walletReset = (groupId: string, birthdayHeight?: number) =>
+  invoke<number>("wallet_reset", {
+    groupId,
+    birthdayHeight: birthdayHeight ?? null,
+  });
 export const walletSync = (groupId: string) =>
   invoke<WalletStatus>("wallet_sync", { groupId });
 /** Cancel a group's in-flight sync (if any). The running `walletSync` returns

@@ -281,6 +281,38 @@ fn wallet_paths(data_dir: &Path, group_id: &str, network: WalletNetwork) -> (Pat
     (base.join("wallet.sqlite"), base.join("blocks"))
 }
 
+/// Delete a group's on-disk wallet state for a network — the sqlite db (with its
+/// WAL/SHM sidecars) and the compact-block cache — so the next init rebuilds and
+/// rescans from a (possibly earlier) birthday. Pending signed transactions are
+/// deliberately left intact. Used to recover from a reorg deeper than the wallet
+/// can rewind, and to move a wallet's birthday earlier.
+pub fn delete_wallet_data(
+    data_dir: &Path,
+    group_id: &str,
+    network: WalletNetwork,
+) -> Result<(), CoreError> {
+    let (db_path, blocks_dir) = wallet_paths(data_dir, group_id, network);
+    // WAL/SHM sidecars sit next to the db file with the suffix appended to the
+    // full name (wallet.sqlite-wal), not as a replaced extension.
+    for p in [
+        db_path.clone(),
+        PathBuf::from(format!("{}-wal", db_path.display())),
+        PathBuf::from(format!("{}-shm", db_path.display())),
+    ] {
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(CoreError::Io(e)),
+        }
+    }
+    match std::fs::remove_dir_all(&blocks_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(CoreError::Io(e)),
+    }
+    Ok(())
+}
+
 /// Path of the on-disk record for a fully-signed transaction awaiting broadcast.
 /// Keeping the signed PCZT lets a failed broadcast be retried without repeating
 /// the whole FROST signing ceremony. Network-scoped like [`wallet_paths`].
@@ -1190,6 +1222,19 @@ async fn running_pipelined(
 }
 
 /// Scan one batch and interpret the outcome, mirroring the upstream `scan_blocks`
+/// The earliest height a rewind may target, parsed from the wallet backend's
+/// error ("A rewind for your wallet may only target height N or greater; …").
+/// Used to clamp a reorg rewind to the wallet's floor instead of failing.
+fn parse_min_rewind_height(msg: &str) -> Option<u32> {
+    let idx = msg.find("target height ")? + "target height ".len();
+    msg[idx..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
 /// helper: on a continuity error, rewind the db and signal a restart; otherwise
 /// signal a restart if scanning surfaced a higher-priority range. The in-memory
 /// source needs no cache truncation on rewind (each batch is downloaded fresh).
@@ -1221,9 +1266,34 @@ fn scan_batch(
                 err.at_height(),
                 rewind_height
             );
-            db.truncate_to_height(rewind_height)
-                .map_err(|e| CoreError::Crypto(format!("truncate on reorg: {e}")))?;
-            Ok(true)
+            match db.truncate_to_height(rewind_height) {
+                Ok(_) => Ok(true),
+                Err(e) => {
+                    // The reorg went deeper than the wallet can rewind: the target
+                    // is below the earliest checkpoint the wallet retains (near its
+                    // birthday). The error names that floor — clamp the rewind to it
+                    // and try again, which recovers the reorg for every height the
+                    // wallet actually tracks. Only a reorg *below* the birthday
+                    // itself can't be handled this way; that needs a reset to an
+                    // earlier birthday (surfaced as an actionable error below).
+                    let msg = e.to_string();
+                    match parse_min_rewind_height(&msg) {
+                        Some(min) if BlockHeight::from_u32(min) > rewind_height => {
+                            tracing::info!("clamping reorg rewind to wallet floor {min}");
+                            db.truncate_to_height(BlockHeight::from_u32(min)).map_err(|e2| {
+                                CoreError::Crypto(format!(
+                                    "reorg rewind failed even at the wallet floor {min}: {e2}"
+                                ))
+                            })?;
+                            Ok(true)
+                        }
+                        _ => Err(CoreError::Reorg(format!(
+                            "a chain reorganization went deeper than this wallet can rewind ({msg}). \
+                             Reset the wallet on the Wallet page to rescan from an earlier birthday."
+                        ))),
+                    }
+                }
+            }
         }
         Ok(_) => {
             // If scanning added a range of higher priority than the one we just
@@ -2521,6 +2591,15 @@ mod tests {
             resolve_scan_from(Some(DEFAULT_TESTNET_BIRTHDAY), MAIN_NU5, mainnet_tip),
             mainnet_tip
         );
+    }
+
+    #[test]
+    fn parse_min_rewind_height_reads_the_floor_from_the_error() {
+        // The exact shape zcash_client_sqlite produces on a too-deep reorg.
+        let msg = "A rewind for your wallet may only target height 4306071 or greater; \
+                   the requested height was 4306063";
+        assert_eq!(parse_min_rewind_height(msg), Some(4306071));
+        assert_eq!(parse_min_rewind_height("some unrelated error"), None);
     }
 
     #[test]

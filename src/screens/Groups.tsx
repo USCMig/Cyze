@@ -15,6 +15,7 @@ import {
   walletInitAccount,
   walletSync,
   walletCancelSync,
+  walletReset,
   setActiveWallet,
   walletSyncProgress,
   walletPrepareSend,
@@ -676,6 +677,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     refetchInterval: 5_000,
   });
   const [err, setErr] = useState<string | null>(null);
+  const [errCode, setErrCode] = useState<string | null>(null);
   const [walletTab, setWalletTab] = useState<WalletTab>("receive");
 
   const init = useMutation({
@@ -701,6 +703,7 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     mutationFn: () => walletSync(group.id),
     onSuccess: (s) => {
       setErr(null);
+      setErrCode(null);
       failures.current = 0;
       setLastSynced(new Date());
       queryClient.setQueryData(["wallet-status", group.id], s);
@@ -708,14 +711,20 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
       queryClient.invalidateQueries({ queryKey: ["wallet-notes", group.id] });
     },
     onError: (e) => {
-      const msg = (e as unknown as AppError).message ?? String(e);
+      const err = e as unknown as AppError;
+      const msg = err.message ?? String(e);
       // A sync we deliberately cancelled (via "Sync Now" restarting it) is not a
       // failure — a fresh sync is already taking over, so don't count it toward
       // the give-up threshold or surface it as an error.
       if (/cancel/i.test(msg)) return;
       setErr(msg);
+      setErrCode(err.code ?? null);
       failures.current += 1;
-      if (failures.current >= AUTO_SYNC_GIVE_UP_AFTER) setAutoSyncOff(true);
+      // A reorg deeper than the wallet can rewind won't fix itself by retrying —
+      // it needs a reset — so stop auto-sync immediately rather than looping.
+      if (err.code === "reorg" || failures.current >= AUTO_SYNC_GIVE_UP_AFTER) {
+        setAutoSyncOff(true);
+      }
     },
   });
 
@@ -1031,6 +1040,21 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
     syncRef.current.mutate();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [group.id, queryClient]);
+
+  // Recover from a reorg the wallet can't rewind past: wipe the local wallet db
+  // and re-import from an earlier birthday, then rescan. Funds live on-chain, so
+  // nothing is lost — only local scan state is rebuilt.
+  const reset = useMutation({
+    mutationFn: () => walletReset(group.id),
+    onSuccess: () => {
+      setErr(null);
+      setErrCode(null);
+      failures.current = 0;
+      syncedOnMount.current = false;
+      forceSync();
+    },
+    onError: (e) => setErr((e as unknown as AppError).message),
+  });
 
   // A ceremony just moved funds (a send we ran, or a session we signed). Sync now
   // rather than waiting out the poll interval, so the wallet reflects what the
@@ -1666,7 +1690,13 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
           )}
         </>
       )}
-      {err && <SyncErrorView text={err} />}
+      {err && (
+        <SyncErrorView
+          text={err}
+          onReset={errCode === "reorg" ? () => reset.mutate() : undefined}
+          resetting={reset.isPending}
+        />
+      )}
     </div>
   );
 }
@@ -1675,19 +1705,45 @@ function GroupWallet({ group, isMainnet }: { group: GroupSummary; isMainnet: boo
  *  " — " (as `annotate_sync_error` does for known, actionable failures), show the
  *  actionable headline prominently and keep the raw text below it, dimmed, so the
  *  user sees what to do first without losing the log detail for debugging. */
-function SyncErrorView({ text }: { text: string }) {
+function SyncErrorView({
+  text,
+  onReset,
+  resetting,
+}: {
+  text: string;
+  /** When set (a reorg the wallet can't rewind past), offer a recovery button. */
+  onReset?: () => void;
+  resetting?: boolean;
+}) {
   const sep = text.indexOf(" — ");
-  if (sep === -1) {
-    return <div className="error">{text}</div>;
-  }
-  const headline = text.slice(0, sep);
-  const detail = text.slice(sep + 3);
+  const headline = sep === -1 ? text : text.slice(0, sep);
+  const detail = sep === -1 ? null : text.slice(sep + 3);
   return (
     <div className="error">
       <strong>{headline}</strong>
-      <div className="dim" style={{ fontSize: 12, marginTop: 6, whiteSpace: "pre-wrap" }}>
-        {detail}
-      </div>
+      {detail && (
+        <div className="dim" style={{ fontSize: 12, marginTop: 6, whiteSpace: "pre-wrap" }}>
+          {detail}
+        </div>
+      )}
+      {onReset && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Reset this wallet and rescan from an earlier birthday?\n\nThis rebuilds local scan state only — your funds live on-chain and are not affected. The rescan may take a few minutes.",
+                )
+              ) {
+                onReset();
+              }
+            }}
+            disabled={resetting}
+          >
+            {resetting ? "Resetting…" : "Reset & rescan wallet"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

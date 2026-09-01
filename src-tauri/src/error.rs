@@ -36,6 +36,9 @@ impl From<CoreError> for AppError {
             CoreError::Ceremony(_) => "ceremony",
             CoreError::Cancelled => "cancelled",
             CoreError::Crypto(_) => "crypto",
+            // Surfaced with its own code so the UI can offer "reset the wallet to
+            // an earlier birthday" instead of a generic failure.
+            CoreError::Reorg(_) => "reorg",
             CoreError::Tls(_) => "tls",
             CoreError::Io(_) => "io",
         };

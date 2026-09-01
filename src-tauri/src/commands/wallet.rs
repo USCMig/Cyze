@@ -207,6 +207,56 @@ pub async fn wallet_sync_progress(
     )?)
 }
 
+/// How far back to move the birthday on a reset when the caller gives no height:
+/// enough checkpoints below a reorg point to let the wallet rewind past it, at a
+/// modest rescan cost. ~2000 testnet blocks ≈ a couple of days.
+const REORG_RESET_MARGIN: u64 = 2000;
+
+/// Wipe a group's wallet database and block cache and re-import from an earlier
+/// birthday, then let the caller re-sync. Recovers from a chain reorg that went
+/// deeper than the wallet could rewind (the sync fails with a `chain reorg`
+/// error), and is the general way to move a wallet's birthday earlier.
+///
+/// `birthday_height` sets the new first-scanned block. When omitted, it moves the
+/// recorded birthday back by [`REORG_RESET_MARGIN`] (clamped by the importer to
+/// the network's valid range). Returns the height the rebuilt wallet will scan
+/// from. Pending signed transactions are preserved.
+#[tauri::command]
+pub async fn wallet_reset(
+    state: State<'_, AppState>,
+    group_id: String,
+    birthday_height: Option<u64>,
+) -> AppResult<u64> {
+    let (network, url, ufvk) = group_wallet_ctx(&state, &group_id).await?;
+    let db_key = state.wallet_db_key(&group_id).await?;
+
+    // Stop any in-flight sync so it isn't writing the db as we delete it.
+    if let Some(token) = state.sync_cancels.lock().await.get(&group_id) {
+        token.cancel();
+    }
+
+    let recorded = state.load_settings().wallet_birthdays.get(&group_id).copied();
+    let new_birthday = birthday_height.or_else(|| recorded.map(|h| h.saturating_sub(REORG_RESET_MARGIN)));
+
+    wallet::delete_wallet_data(&state.data_dir, &group_id, network)?;
+
+    let scan_from = wallet::init_group_account(
+        &state.data_dir,
+        &group_id,
+        network,
+        &ufvk,
+        &url,
+        db_key.as_ref(),
+        new_birthday,
+    )
+    .await?;
+
+    let mut settings = state.load_settings();
+    settings.wallet_birthdays.insert(group_id, scan_from);
+    state.save_settings(&settings)?;
+    Ok(scan_from)
+}
+
 /// Sync the group's wallet from lightwalletd, then return the updated status.
 /// Long-running. Touches the network. Cancellable via [`wallet_cancel_sync`].
 #[tauri::command]
