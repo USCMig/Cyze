@@ -38,21 +38,41 @@ xeddsa = "=1.0.2"
 # Optional Zcash key/address derivation. Behind a feature so the heavy
 # orchard/halo2 dependency tree stays out of the default build.
 #
-# IRONWOOD/NU6.3: the zcash_* cohort tracks the PUBLISHED crates.io release wave
-# (no git fork, no [patch.crates-io]). These carry the real NU6.3 branch id
-# (0x37a5165b) and, crucially, Ironwood/V6 PCZT construction
-# (zcash_client_backend 0.24 builds a version-6 tx with an Ironwood bundle from
-# NU6.3 onward). orchard stays on the `unstable-frost` feature Cyze's threshold
-# signing needs. zcash_client_backend/sqlite are release candidates; the rest
-# are stable.
-orchard = { version = "0.15.4", optional = true, features = ["unstable-frost"] }
+# IRONWOOD/NU6.3 via the ZAKURA stack (github.com/zakura-core): orchard, keys,
+# primitives, pczt, and client-backend/sqlite are Zakura forks consumed from
+# crates.io under their `zakura-*` package names and renamed back to the upstream
+# dependency keys here, so every `use` path in our source stays unchanged. They
+# carry the NU6.3 branch id (0x37a5165b) and Ironwood/V6 PCZT construction, and —
+# critically — `zakura-orchard` keeps the `unstable-frost` feature Cyze's
+# threshold signing requires.
+#
+# The whole Orchard-typed closure (orchard + keys + primitives + pczt + wallet
+# crates) must move together, or two copies of an Orchard type would fail to
+# unify. zcash_protocol / zcash_address / pasta_curves / ff stay on their
+# upstream crates.io releases: Zakura does not fork them, zcash_protocol is a
+# shared single version across our code and the Zakura crates, and the
+# FROST<->Orchard and nk/rivk boundaries are bytes — so upstream pasta_curves/ff
+# coexist with Zakura's own copies without ever crossing types.
+# NOTE: `unstable-voting-circuits` is enabled only to work around a feature-gating
+# bug in zakura-orchard 1.0.0: its source invokes `visibility::make(pub)` under
+# `cfg(feature = "unstable-frost")`, but the `visibility` crate is pulled in only
+# by `unstable-voting-circuits` (`dep:visibility`). Enabling `unstable-frost`
+# alone therefore fails to compile (E0433: unlinked crate `visibility`). We don't
+# use the voting-circuit APIs; this just links `visibility` so the macro resolves.
+# zakura-pczt 0.1.0-rc2 pins orchard `=1.0.0`, so we can't take the 1.0.1 fix.
+orchard = { version = "=1.0.0", package = "zakura-orchard", optional = true, features = ["unstable-frost", "unstable-voting-circuits"] }
 zcash_address = { version = "0.13", optional = true }
-pasta_curves = { version = "0.5", optional = true }
-ff = { version = "0.13", optional = true }
+# Aligned to the Zakura crypto cohort (ff 0.14 / zakura-pasta-curves) so the
+# PrimeField/FromUniformBytes traits and the pallas field types come from the
+# same `ff` — nk/rivk are still emitted as canonical bytes and fed to
+# zakura-orchard's FVK parser, so this only removes a duplicate ff/pasta copy.
+pasta_curves = { version = "=1.0.0", package = "zakura-pasta-curves", optional = true }
+ff = { version = "0.14", optional = true }
 
 # Wallet/light-client stack (feature `wallet`). Heavy: pulls the zcash
-# light-client backend, lightwalletd gRPC, PCZT builder, and sqlite.
-zcash_client_backend = { version = "=0.24.0-rc.7", optional = true, default-features = false, features = [
+# light-client backend, lightwalletd gRPC, PCZT builder, and sqlite — all from
+# the Zakura fork so their Orchard/Ironwood types match `zakura-orchard` above.
+zcash_client_backend = { version = "=0.1.0-rc4", package = "zakura-client-backend", optional = true, default-features = false, features = [
     "orchard",
     "sync",
     "lightwalletd-tonic",
@@ -60,10 +80,10 @@ zcash_client_backend = { version = "=0.24.0-rc.7", optional = true, default-feat
     "lightwalletd-tonic-tls-webpki-roots",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "=0.22.0-rc.8", optional = true, features = ["orchard", "transparent-inputs", "unstable", "serde"] }
-pczt = { version = "0.9.1", optional = true, features = ["signer"] }
-zcash_keys = { version = "0.16.1", optional = true, features = ["orchard"] }
-zcash_protocol = { version = "0.10.3", optional = true }
+zcash_client_sqlite = { version = "=0.1.0-rc4", package = "zakura-client-sqlite", optional = true, features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+pczt = { version = "=0.1.0-rc2", package = "zakura-pczt", optional = true, features = ["signer"] }
+zcash_keys = { version = "=1.0.0", package = "zakura-keys", optional = true, features = ["orchard"] }
+zcash_protocol = { version = "0.10.4", optional = true }
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-webpki-roots"] }
 # SQLCipher (bundled amalgamation) so the per-group wallet database is encrypted
 # at rest. Feature-unifies with zcash_client_sqlite's `bundled` rusqlite: the
@@ -73,7 +93,17 @@ tonic = { version = "0.14", optional = true, default-features = false, features 
 rusqlite = { version = "0.37", optional = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 prost = { version = "0.14", optional = true }
 async-trait = { version = "0.1", optional = true }
-zcash_primitives = { version = "0.30.0", optional = true }
+# zakura-client-sqlite's WalletDb requires its RNG type param to implement
+# rand_core 0.10's `Rng` (infallible) + Clone + 'static. rand 0.8's `OsRng`
+# (the workspace `rand`) no longer qualifies — in rand 0.9+ OsRng became
+# fallible (TryRngCore only), and rand 0.10's `StdRng` is not `Clone`. We use a
+# ChaCha20 CSPRNG (Clone + infallible) OS-seeded via rand 0.10's `make_rng`,
+# both aliased so they coexist with the workspace rand 0.8 the FROST layer uses.
+# ChaCha20Rng is cryptographically secure — required, since this RNG produces the
+# wallet's transaction randomness; a non-crypto PRNG (e.g. SmallRng) is unsafe here.
+rand_010 = { package = "rand", version = "0.10", optional = true, default-features = false, features = ["std", "std_rng", "sys_rng"] }
+rand_chacha = { version = "0.10", optional = true }
+zcash_primitives = { version = "=1.0.0", package = "zakura-primitives", optional = true }
 
 [features]
 # Orchard FVK / unified-address derivation from group key material.
@@ -91,6 +121,8 @@ wallet = [
     "dep:async-trait",
     "dep:zcash_primitives",
     "dep:pczt",
+    "dep:rand_010",
+    "dep:rand_chacha",
 ]
 
 [dev-dependencies]

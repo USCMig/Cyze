@@ -245,7 +245,7 @@ pub async fn lightwalletd_info(url: &str) -> Result<LightwalletdInfo, CoreError>
 
 use std::path::{Path, PathBuf};
 
-use rand::rngs::OsRng;
+use rand_chacha::ChaCha20Rng;
 use zcash_client_backend::data_api::chain::error::Error as ChainError;
 use zcash_client_backend::data_api::chain::{
     BlockSource, ChainState, CommitmentTreeRoot,
@@ -268,7 +268,15 @@ use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::memo::{Memo, MemoBytes};
 
-type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
+type GroupDb = WalletDb<rusqlite::Connection, Network, SystemClock, ChaCha20Rng>;
+
+/// Fresh OS-seeded CSPRNG for a `WalletDb`. zakura-client-sqlite requires the
+/// RNG param to be an infallible `Rng + Clone + 'static`; `ChaCha20Rng`
+/// qualifies and is cryptographically secure (rand 0.8's `OsRng` and rand
+/// 0.10's `StdRng` don't — see the `rand_010`/`rand_chacha` note in Cargo.toml).
+fn wallet_rng() -> ChaCha20Rng {
+    rand_010::make_rng()
+}
 
 /// `(wallet.sqlite path, fsblockdb dir)` for a group on a given network.
 /// Scoped by network (`.../<group_id>/<network>/...`) so testnet and mainnet
@@ -462,7 +470,7 @@ pub fn sync_progress(
         return Ok((0, 0));
     }
     let conn = open_readonly_connection(&db_path, db_key)?;
-    let db = WalletDb::from_connection(&conn, network.params(), SystemClock, OsRng);
+    let db = WalletDb::from_connection(&conn, network.params(), SystemClock, wallet_rng());
     let summary = db
         .get_wallet_summary(ConfirmationsPolicy::default())
         .map_err(|e| CoreError::Crypto(format!("wallet summary: {e}")))?;
@@ -549,7 +557,7 @@ fn open_db(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<Grou
         migrate_plaintext_to_encrypted(db_path, db_key)?;
     }
     let conn = open_keyed_connection(db_path, db_key)?;
-    let mut db = WalletDb::from_connection(conn, network.params(), SystemClock, OsRng);
+    let mut db = WalletDb::from_connection(conn, network.params(), SystemClock, wallet_rng());
     init_wallet_db(&mut db, None)
         .map_err(|e| CoreError::Crypto(format!("init wallet db: {e}")))?;
     // Restrict the sqlite file itself to owner-only.
@@ -571,7 +579,7 @@ fn open_db(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<Grou
 /// SELECT under WAL takes only a shared lock and cannot block the writer.
 fn open_db_read(db_path: &Path, network: WalletNetwork, db_key: &[u8]) -> Result<GroupDb, CoreError> {
     let conn = open_keyed_connection(db_path, db_key)?;
-    Ok(WalletDb::from_connection(conn, network.params(), SystemClock, OsRng))
+    Ok(WalletDb::from_connection(conn, network.params(), SystemClock, wallet_rng()))
 }
 
 /// A single shielded/transparent pool's balance, broken into spendable now,
